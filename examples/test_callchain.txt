@@ -1,0 +1,16 @@
+{
+    int identity(int x) { return x; }
+    int add(int a, int b) { return a + b; }
+    int sub(int a, int b) { return a - b; }
+
+    int call_chain() {
+        var int a = identity(5);
+        var int b = add(a, a);
+        var int c = sub(b, 3);
+        var int d = add(c, identity(1));
+        return d;
+    }
+    int main() {
+        return call_chain();
+    }
+}

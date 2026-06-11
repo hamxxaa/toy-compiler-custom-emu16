@@ -1,0 +1,8 @@
+include "../lib/io.lib";
+
+{
+    int main() {
+        set_palette(5, 1234);
+        return peek(PRAM + 5 * 2);
+    }
+}

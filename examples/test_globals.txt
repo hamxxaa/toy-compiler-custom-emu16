@@ -1,0 +1,12 @@
+{
+    var int gCounter = 0;
+    int use_global() {
+        gCounter = gCounter + 10;
+        return gCounter;
+    }
+    int main() {
+        var int a = use_global();
+        var int b = use_global();
+        return a + b;
+    }
+}

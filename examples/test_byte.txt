@@ -1,0 +1,10 @@
+{
+    byte add_bytes(byte x, byte y) {
+        return x + y;
+    }
+    int main() {
+        var byte a = 200;
+        var byte b = 100;
+        return add_bytes(a, b);
+    }
+}

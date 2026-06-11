@@ -1,0 +1,12 @@
+{
+    int sum_five(int a, int b, int c, int d, int e) {
+        var int ab = a + b;
+        var int cde = c + d;
+        cde = cde + e;
+        return ab + cde;
+    }
+
+    int main() {
+        return sum_five(1, 2, 3, 4, 5);
+    }
+}

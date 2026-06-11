@@ -1,0 +1,14 @@
+{
+    int loop_sum(int n) {
+        var int i = 0;
+        var int total = 0;
+        while i < n do {
+            total = total + i;
+            i = i + 1;
+        }
+        return total;
+    }
+    int main() {
+        return loop_sum(5);
+    }
+}

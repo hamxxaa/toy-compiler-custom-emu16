@@ -1,0 +1,31 @@
+{
+    int is_even(int n) {
+        var int half = 0;
+        var int doubled = 0;
+        while doubled < n do {
+            half = half + 1;
+            doubled = half + half;
+        }
+        if doubled == n do {
+            return 1;
+        }
+        return 0;
+    }
+
+    int count_evens(int limit) {
+        var int i = 0;
+        var int count = 0;
+        while i < limit do {
+            var int e = is_even(i);
+            if e == 1 do {
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        return count;
+    }
+
+    int main() {
+        return count_evens(10);
+    }
+}

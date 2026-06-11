@@ -1,0 +1,8 @@
+{
+    int main() {
+        var int x = 0;
+        var int p = &x;
+        *p = 77;
+        return x;
+    }
+}

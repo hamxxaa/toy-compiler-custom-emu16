@@ -1,0 +1,12 @@
+{
+    int get42() {
+        asm {
+            LDI R0, 42
+            RET
+        }
+    }
+
+    int main() {
+        return get42();
+    }
+}

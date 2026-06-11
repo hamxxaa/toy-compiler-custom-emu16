@@ -1,0 +1,6 @@
+{
+    int main() {
+        var int x = 0xFF;
+        return x;
+    }
+}

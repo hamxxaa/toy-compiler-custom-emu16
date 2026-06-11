@@ -1,0 +1,13 @@
+{
+    int countdown(int n) {
+        var int result = 0;
+        while n > 0 do {
+            result = result + n;
+            n = n - 1;
+        }
+        return result;
+    }
+    int main() {
+        return countdown(5);
+    }
+}

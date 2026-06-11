@@ -1,0 +1,10 @@
+{
+    int sum_three(int a, int b, int c) {
+        var int temp = a + b;
+        return temp + c;
+    }
+
+    int main() {
+        return sum_three(10, 20, 30);
+    }
+}

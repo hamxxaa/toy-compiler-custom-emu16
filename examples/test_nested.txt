@@ -1,0 +1,11 @@
+{
+    int add(int a, int b) {
+        return a + b;
+    }
+
+    int main() {
+        var int x = add(3, 4);
+        var int y = add(10, x);
+        return y;
+    }
+}

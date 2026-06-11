@@ -4,7 +4,19 @@ import warnings
 
 class Optimizer:
     def __init__(self):
-        pass
+        self.folded = {}
+
+    # These ops define semantic boundaries where cross-instruction propagation
+    # is unsafe for a local optimizer (function/entry boundaries and calls).
+    BARRIER_OPS = {
+        "call",
+        "ret",
+        "func_begin",
+        "func_end",
+        "entry_begin",
+        "entry_end",
+        "asm",
+    }
 
     @staticmethod
     def wrap_to_32bit(value):
@@ -27,6 +39,10 @@ class Optimizer:
         return wrapped
 
     def optimize(self, TAC):
+        # Maps temps that were folded away (and their producing instruction removed)
+        # to their constant value, so cross-block uses (e.g. `ret t`, where `ret` is a
+        # block barrier) can be re-materialized after the per-block passes.
+        self.folded = {}
         blocks = self.get_blocks(TAC.instructions)
         for block in blocks:
             changed = True
@@ -35,6 +51,18 @@ class Optimizer:
                 p = self.constant_propagation(block)
                 changed = f or p
         TAC.instructions = [instr for block in blocks for instr in block]
+
+        # Global re-materialization: any remaining reference to a folded temp
+        # (it escaped its block) becomes the constant directly.
+        if self.folded:
+            for instr in TAC.instructions:
+                if instr.op == "asm":
+                    continue
+                if instr.arg1 in self.folded:
+                    instr.arg1 = self.folded[instr.arg1]
+                if instr.arg2 in self.folded:
+                    instr.arg2 = self.folded[instr.arg2]
+
         TAC.line_count = len(TAC.instructions)
 
     def get_blocks(self, instructions):
@@ -57,6 +85,11 @@ class Optimizer:
                 if i + 1 < len(instructions):
                     leader_indices.add(i + 1)
 
+            if instr.op in self.BARRIER_OPS:
+                leader_indices.add(i)
+                if i + 1 < len(instructions):
+                    leader_indices.add(i + 1)
+
         sorted_leaders = sorted(list(leader_indices))
 
         blocks = []
@@ -75,6 +108,8 @@ class Optimizer:
         def spread_constants(instrs, constant_map):
             changed = False
             for instr in instrs:
+                if instr.op == "asm":
+                    continue
                 if instr.arg1 in constant_map:
                     changed = True
                     instr.arg1 = Const(constant_map[instr.arg1], type=instr.arg1.type)
@@ -86,6 +121,7 @@ class Optimizer:
         temp_map = {}
         changed = False
 
+        to_remove = []
         for instr in instrs:
             if instr.op in [
                 "+",
@@ -100,6 +136,8 @@ class Optimizer:
                 ">=",
                 "==",
                 "!=",
+                "shl",
+                "shr",
             ]:
                 if (
                     isinstance(instr.arg1, Const)
@@ -124,7 +162,7 @@ class Optimizer:
                             raise ZeroDivisionError(
                                 "Division by zero in constant folding"
                             )
-                        constant = instr.arg1.value / instr.arg2.value
+                        constant = int(instr.arg1.value / instr.arg2.value)
                     elif instr.op == "&":
                         constant = instr.arg1.value and instr.arg2.value
                     elif instr.op == "|":
@@ -141,8 +179,18 @@ class Optimizer:
                         constant = 1 if int(instr.arg1.value == instr.arg2.value) else 0
                     elif instr.op == "!=":
                         constant = 1 if int(instr.arg1.value != instr.arg2.value) else 0
+                    elif instr.op == "shl":
+                        constant = self.wrap_to_32bit(int(instr.arg1.value) << (int(instr.arg2.value) & 0xF))
+                    elif instr.op == "shr":
+                        constant = self.wrap_to_32bit(int(instr.arg1.value) >> (int(instr.arg2.value) & 0xF))
                     temp_map[instr.result] = constant
-                    instrs.remove(instr)
+                    self.folded[instr.result] = Const(constant, type=instr.result.type)
+                    to_remove.append(instr)
+
+        if to_remove:
+            changed = True
+            for instr in to_remove:
+                instrs.remove(instr)
 
         c = spread_constants(instrs, temp_map)
         return changed or c
@@ -151,7 +199,10 @@ class Optimizer:
         def spread_vars(instrs, var_map, when_to_del):
             changed = False
             for i, instr in enumerate(instrs):
-                if instr.op == "print":
+                if instr.op in ("print", "asm", "addrof", "def_arr"):
+                    # addrof: replacing a Var with its constant value would be wrong
+                    #   (we need the *address*, not the value stored at that address).
+                    # def_arr: arg1/arg2 are a string/int, not operands — skip safely.
                     continue
 
                 if instr.arg1 in var_map and (

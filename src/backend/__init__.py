@@ -2,9 +2,20 @@
 Backend Module
 
 This module contains target-specific code generation:
-- X86Backend: x86 assembly code generator
+- EmuBackend: 16-bit emulator ROM backend
+- core: backend-agnostic analysis and allocation helpers
 """
 
-from .X86Backend import X86Backend
+from .EmuBackend import EmuBackend
+from .core import (
+	analyze_liveness,
+	allocate_function,
+	FunctionFrame,
+)
 
-__all__ = ['X86Backend']
+__all__ = [
+	'EmuBackend',
+	'analyze_liveness',
+	'allocate_function',
+	'FunctionFrame',
+]

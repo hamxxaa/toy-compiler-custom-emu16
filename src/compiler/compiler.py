@@ -1,14 +1,76 @@
-import subprocess
 import argparse
 import sys
-import platform
 import os
+import re
 from lexer import Tokenizer
 from parser import Parser
+from parser.parserNodes import ProgramNode, ScopeNode, DefinerNode, FactorNode
 from codegen import TAC, TACGenerator
 from optimization import Optimizer
-from backend import X86Backend
+from backend import EmuBackend
 from analyzer import SemanticAnalyzer
+
+# `include "path";` directive (stripped before tokenizing; handled at the AST level).
+INCLUDE_RE = re.compile(r'include\s+"([^"]+)"\s*;')
+
+# Hardware addresses injected as global constants ("prelude") so games and the IO
+# library can reference them by name. Matches definitions.h.
+HW_CONSTANTS = {
+    "VRAM_START": 0xB000,
+    "PRAM": 0xAE00,
+    "INPUT_ADDR": 0xADFF,
+    "SCREEN_WIDTH": 160,
+    "SCREEN_HEIGHT": 128,
+}
+
+
+def _hw_constant_nodes():
+    nodes = []
+    for name, value in HW_CONSTANTS.items():
+        nodes.append(DefinerNode(name, FactorNode(str(value), is_variable=False), "int"))
+    return nodes
+
+
+def _collect_unit(path, seen, units):
+    """Recursively parse `path` and its includes; append parsed ProgramNodes
+    (dependencies first, this file last) to `units`."""
+    real = os.path.abspath(path)
+    if real in seen:
+        return
+    seen.add(real)
+    try:
+        with open(path, "r") as f:
+            src = f.read()
+    except FileNotFoundError:
+        print(f"Error: included file '{path}' not found.")
+        sys.exit(1)
+
+    base = os.path.dirname(os.path.abspath(path))
+    for inc in INCLUDE_RE.findall(src):
+        _collect_unit(os.path.join(base, inc), seen, units)
+
+    stripped = INCLUDE_RE.sub("", src)
+    units.append(Parser(tokenize(stripped)).parse_program())
+
+
+def build_merged_program(input_file):
+    """Parse the main file + all includes and splice them into one ProgramNode,
+    prefixed with the hardware-constant prelude. Errors on duplicate symbols."""
+    seen = set()
+    units = []
+    _collect_unit(input_file, seen, units)
+
+    merged = []
+    names = set()
+    for node in _hw_constant_nodes() + [d for u in units for d in u.scope.statements]:
+        name = getattr(node, "name", None)
+        if name is not None:
+            if name in names:
+                raise Exception(f"Link Error: duplicate symbol '{name}' across included units.")
+            names.add(name)
+        merged.append(node)
+
+    return ProgramNode(ScopeNode(merged))
 
 
 def create_tokenizer():
@@ -16,15 +78,15 @@ def create_tokenizer():
 
     tokenizer.add_skip_pattern("( |\t|\n)+")
 
-    tokenizer.add_pattern("KEYWORD", "(while|print|var|if|do)", priority=5)
-    tokenizer.add_pattern("TYPE", "(int|bool)", priority=5)
+    tokenizer.add_pattern("KEYWORD", "(while|print|var|if|do|return)", priority=5)
+    tokenizer.add_pattern("TYPE", "(int|bool|void|byte)", priority=5)
     tokenizer.add_pattern("BOOLEAN", "(true|false)", priority=6)  # Add boolean literals
     tokenizer.add_pattern(
         "IDENTIFIER", "([a-z]|[A-Z])([a-z]|[A-Z]|[0-9]|_)*", priority=4
     )
     tokenizer.add_pattern("SIGNED_NUMBER", "-[0-9]+", priority=6)
-    tokenizer.add_pattern("NUMBER", "[0-9]+", priority=3)
-    tokenizer.add_pattern("SYMBOL", "(;|\\(|\\)|=|}|{)", priority=2)
+    tokenizer.add_pattern("NUMBER", "(0x[0-9a-fA-F]+|[0-9]+)", priority=3)
+    tokenizer.add_pattern("SYMBOL", "(;|,|\\(|\\)|=|}|{|\\[|\\])", priority=2)
     tokenizer.add_pattern("OPERATOR", "(\\+|-|\\*|/)", priority=1)
     tokenizer.add_pattern("CONDITIONAL_OPERATOR", "(<|>|==|<=|>=|!=)", priority=1)
     tokenizer.add_pattern("LOGICAL_OPERATOR", "(&|\\|)", priority=1)
@@ -38,28 +100,6 @@ def tokenize(input_str):
     return tokens
 
 
-def get_os_commands():
-    """Detect operating system and return appropriate commands"""
-    system = platform.system().lower()
-
-    if system == "windows":
-        return {
-            "nasm": ["nasm", "-f", "win32"],
-            "linker": ["link", "/subsystem:console", "/entry:main"],
-            "executable_ext": ".exe",
-            "object_ext": ".obj",
-            "run_prefix": "",
-        }
-    else:  # Linux, macOS and other Unix-like systems
-        return {
-            "nasm": ["nasm", "-f", "elf32"],
-            "linker": ["ld", "-m", "elf_i386"],
-            "executable_ext": "",
-            "object_ext": ".o",
-            "run_prefix": "./",
-        }
-
-
 def compile_program(
     input_file,
     optimize=True,
@@ -68,7 +108,7 @@ def compile_program(
     print_ast=False,
     print_tac=False,
     print_optimized_tac=False,
-    save_asm=None,
+    save_rom=None,
 ):
     input_str = ""
     try:
@@ -84,12 +124,12 @@ def compile_program(
         print("Error: Input file is empty.")
         sys.exit(1)
 
-    tokens = tokenize(input_str)
-    parser = Parser(tokens)
+    parser = Parser([])  # used only for print_ast
     if print_tokens:
-        for token in tokens:
+        stripped = INCLUDE_RE.sub("", input_str)
+        for token in tokenize(stripped):
             print(token)
-    ast = parser.parse_program()
+    ast = build_merged_program(input_file)
     sa = SemanticAnalyzer()
     sa.analyze(ast)
     tacg = TACGenerator()
@@ -107,89 +147,27 @@ def compile_program(
             for instr in tac.instructions:
                 print(instr)
 
-    x86 = X86Backend(tac)
-    code = x86.generate()
-
-    # Detect operating system and get appropriate commands
-    os_commands = get_os_commands()
+    backend = EmuBackend(tac, address_taken=sa.address_taken)
+    rom_bytes = backend.generate()
 
     # Determine file paths
     build_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "build")
-    objects_dir = os.path.join(build_dir, "objects")
-    executables_dir = os.path.join(build_dir, "executables")
+    rom_dir = os.path.join(build_dir, "roms")
 
     # Ensure directories exist
-    os.makedirs(objects_dir, exist_ok=True)
-    os.makedirs(executables_dir, exist_ok=True)
+    os.makedirs(rom_dir, exist_ok=True)
 
-    # Determine file names
-    if save_asm:
-        # If save_asm is specified, save the asm file with that name
-        asm_file = os.path.join(objects_dir, save_asm)
-        if not asm_file.endswith('.asm'):
-            asm_file += '.asm'
+    if save_rom:
+        rom_file = os.path.join(rom_dir, save_rom)
+        if not rom_file.endswith(".rom"):
+            rom_file += ".rom"
     else:
-        # Use temporary asm file that will be deleted later
-        asm_file = os.path.join(objects_dir, "temp.asm")
-    
-    object_file = os.path.join(objects_dir, "temp" + os_commands["object_ext"])
-    executable_file = os.path.join(
-        executables_dir, output_file + os_commands["executable_ext"]
-    )
+        rom_file = os.path.join(rom_dir, output_file + ".rom")
 
-    # Write assembly file
-    with open(asm_file, "w") as f:
-        f.write(code)
+    with open(rom_file, "wb") as f:
+        f.write(rom_bytes)
 
-    try:
-        # Compile assembly with NASM
-        nasm_cmd = os_commands["nasm"] + ["-o", object_file, asm_file]
-        subprocess.run(
-            nasm_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-        )
-
-        if platform.system().lower() == "windows":
-            # Windows linking
-            link_cmd = os_commands["linker"] + [object_file, "/out:" + executable_file]
-            subprocess.run(
-                link_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-            )
-
-            # Run on Windows
-            subprocess.run([executable_file], check=True)
-        else:
-            # Linux/Unix linking
-            link_cmd = os_commands["linker"] + [
-                "-o",
-                executable_file,
-                object_file,
-            ]
-            subprocess.run(
-                link_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-            )
-
-            # Run on Linux/Unix
-            subprocess.run([executable_file], check=True)
-
-        # Clean up temporary ASM file if not saving it
-        if not save_asm and os.path.exists(asm_file):
-            os.remove(asm_file)
-
-    except subprocess.CalledProcessError as e:
-        print(f"Error: Command execution failed: {e}")
-        if e.stderr:
-            print(f"Details: {e.stderr.decode()}")
-        # Clean up temporary ASM file if compilation failed and not saving it
-        if not save_asm and os.path.exists(asm_file):
-            os.remove(asm_file)
-        sys.exit(1)
-    except FileNotFoundError as e:
-        print(f"Error: Required tool not found: {e}")
-        print("Please ensure that NASM and the required linker tools are installed.")
-        # Clean up temporary ASM file if compilation failed and not saving it
-        if not save_asm and os.path.exists(asm_file):
-            os.remove(asm_file)
-        sys.exit(1)
+    print(f"ROM generated: {rom_file}")
 
 
 def main():
@@ -211,8 +189,8 @@ def main():
         "--print-optimized-tac", action="store_true", help="Print optimized TAC"
     )
     parser.add_argument(
-        "--save-asm",
-        help="Save assembly file with specified name (default: don't save)",
+        "--save-rom",
+        help="Save ROM file with specified name (default: <output>.rom)",
     )
 
     args = parser.parse_args()
@@ -225,7 +203,7 @@ def main():
         print_ast=args.print_ast,
         print_tac=args.print_tac,
         print_optimized_tac=args.print_optimized_tac,
-        save_asm=args.save_asm,
+        save_rom=args.save_rom,
     )
 
 

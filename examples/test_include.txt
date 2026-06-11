@@ -1,0 +1,7 @@
+include "lib_test.lib";
+
+{
+    int main() {
+        return triple(14);
+    }
+}

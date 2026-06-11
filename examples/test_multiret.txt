@@ -1,0 +1,14 @@
+{
+    int multi_return(int x) {
+        if x < 0 do {
+            return 0 - x;
+        }
+        if x == 0 do {
+            return 0;
+        }
+        return x;
+    }
+    int main() {
+        return multi_return(5);
+    }
+}

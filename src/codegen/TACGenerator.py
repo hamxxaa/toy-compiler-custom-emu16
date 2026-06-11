@@ -93,6 +93,7 @@ class TACGenerator:
         self.instructions = []
         self.temp_count = 0
         self.label_count = 0
+        self.current_function = None
 
     def generate_tac(self, ast):
         self.generate(ast)
@@ -122,11 +123,70 @@ class TACGenerator:
         raise Exception(f"No visit_{type(node).__name__} method")
 
     def visit_ProgramNode(self, node):
-        self.generate(node.scope)
+        top_level_declarations = node.scope.statements
+        global_definitions = []
+        function_definitions = []
+
+        for declaration in top_level_declarations:
+            node_name = type(declaration).__name__
+            if node_name in ("DefinerNode", "ArrayDefinerNode"):
+                global_definitions.append(declaration)
+            elif node_name == "FunctionDefNode":
+                function_definitions.append(declaration)
+            else:
+                raise Exception(
+                    f"Codegen Error: Unsupported top-level declaration '{node_name}'."
+                )
+
+        # Entry block: evaluate global initializers and call main.
+        self.create_instruction("entry_begin")
+        for definition in global_definitions:
+            self.generate(definition)
+        main_result = self.new_temp("int")
+        self.create_instruction("call", arg1="main", arg2=0, result=main_result)
+        self.create_instruction("entry_end")
+
+        for function in function_definitions:
+            self.generate(function)
 
     def visit_ScopeNode(self, node):
         for statement in node.statements:
             self.generate(statement)
+
+    def visit_FunctionDefNode(self, node):
+        previous_function = self.current_function
+        self.current_function = node
+
+        self.create_instruction("func_begin", arg1=node.name, arg2=node.return_type)
+        for param in node.params:
+            self.create_instruction("param", arg1=f"{param.name}:{param.type}")
+
+        self.generate(node.scope)
+
+        # Naked functions supply their own RET inside the asm block; don't auto-add one.
+        if node.return_type == "void" and not getattr(node, "is_naked", False):
+            if not self.instructions or self.instructions[-1].op != "ret":
+                self.create_instruction("ret")
+
+        self.create_instruction("func_end", arg1=node.name)
+        self.current_function = previous_function
+
+    def visit_FunctionCallNode(self, node):
+        for arg in node.args:
+            evaluated_arg = self.generate(arg)
+            self.create_instruction("arg", arg1=evaluated_arg)
+
+        if node.type == "void":
+            self.create_instruction("call", arg1=node.name, arg2=len(node.args))
+            return None
+
+        result = self.new_temp(node.type)
+        self.create_instruction("call", arg1=node.name, arg2=len(node.args), result=result)
+        return result
+
+    def visit_ReturnNode(self, node):
+        return_value = self.generate(node.expression) if node.expression else None
+        self.create_instruction("ret", arg1=return_value)
 
     def visit_DefinerNode(self, node):
         value = self.generate(node.value) if node.value else None
@@ -179,6 +239,10 @@ class TACGenerator:
         expression_result = self.generate(node.expression)
         self.create_instruction("print", arg1=expression_result)
 
+    def visit_AsmNode(self, node):
+        # Carry the raw asm lines through to the backend's mini-assembler.
+        self.create_instruction("asm", arg1=node.lines)
+
     def visit_ConditionNode(self, node):
         left = self.generate(node.left)
         right = self.generate(node.right)
@@ -213,9 +277,94 @@ class TACGenerator:
                 else:
                     raise ValueError(f"Invalid boolean value: {node.value}")
             else:
-                value = int(node.value)
+                # int(..., 0) handles both decimal and 0x hex literals
+                value = int(node.value, 0) if isinstance(node.value, str) else int(node.value)
                 if value < -2147483648 or value > 2147483647:
                     raise ValueError(
                         f"Integer constant out of bounds (32-bit): {value}"
                     )
             return Const(value, type=node.type)
+
+    # ── M2: Arrays ──────────────────────────────────────────────────────────
+    def visit_ArrayDefinerNode(self, node):
+        """Reserve data-section storage for an array; no runtime code emitted."""
+        arr_var = Var(node.name, type=node.elem_type + "[]",
+                      storage=node.storage, scope_id=node.scope_id)
+        self.create_instruction("def_arr",
+                                arg1=node.elem_type,
+                                arg2=node.size,
+                                result=arr_var)
+
+    def visit_IndexNode(self, node):
+        """arr[i] — compute address, emit load_ptr."""
+        arr_var = Var(node.array_name, type=node.elem_type + "[]",
+                      storage=node.storage, scope_id=node.scope_id)
+        base_temp = self.new_temp("int")
+        self.create_instruction("addrof", arg1=arr_var, result=base_temp)
+
+        idx_temp = self.generate(node.index)
+        elem_size = 2 if node.elem_type == "int" else 1
+
+        if elem_size == 2:
+            # offset = idx * 2 = idx << 1
+            off_temp = self.new_temp("int")
+            self.create_instruction("shl",
+                                    arg1=idx_temp, arg2=Const(1, "int"),
+                                    result=off_temp)
+            addr_temp = self.new_temp("int")
+            self.create_instruction("+", arg1=base_temp, arg2=off_temp, result=addr_temp)
+        else:
+            # byte array: offset = idx (no scaling)
+            addr_temp = self.new_temp("int")
+            self.create_instruction("+", arg1=base_temp, arg2=idx_temp, result=addr_temp)
+
+        result_temp = self.new_temp(node.elem_type)
+        self.create_instruction("load_ptr", arg1=addr_temp, result=result_temp)
+        return result_temp
+
+    def visit_IndexAssignNode(self, node):
+        """arr[i] = val — compute address, emit store_ptr."""
+        arr_var = Var(node.array_name, type=node.elem_type + "[]",
+                      storage=node.storage, scope_id=node.scope_id)
+        base_temp = self.new_temp("int")
+        self.create_instruction("addrof", arg1=arr_var, result=base_temp)
+
+        idx_temp = self.generate(node.index)
+        elem_size = 2 if node.elem_type == "int" else 1
+
+        if elem_size == 2:
+            off_temp = self.new_temp("int")
+            self.create_instruction("shl",
+                                    arg1=idx_temp, arg2=Const(1, "int"),
+                                    result=off_temp)
+            addr_temp = self.new_temp("int")
+            self.create_instruction("+", arg1=base_temp, arg2=off_temp, result=addr_temp)
+        else:
+            addr_temp = self.new_temp("int")
+            self.create_instruction("+", arg1=base_temp, arg2=idx_temp, result=addr_temp)
+
+        val_temp = self.generate(node.value)
+        self.create_instruction("store_ptr", arg1=val_temp, arg2=addr_temp)
+
+    # ── M2: Pointers ─────────────────────────────────────────────────────────
+    def visit_AddrOfNode(self, node):
+        """&x — address of a named variable."""
+        # Reconstruct the Var the same way it was created during DefinerNode emit.
+        var_var = Var(node.name, type=node.var_type,
+                      storage=node.var_storage, scope_id=node.var_scope_id)
+        result_temp = self.new_temp("int")
+        self.create_instruction("addrof", arg1=var_var, result=result_temp)
+        return result_temp
+
+    def visit_DerefNode(self, node):
+        """*ptr — load from pointer (rvalue)."""
+        ptr_temp = self.generate(node.inner)
+        result_temp = self.new_temp(node.type)
+        self.create_instruction("load_ptr", arg1=ptr_temp, result=result_temp)
+        return result_temp
+
+    def visit_DerefAssignNode(self, node):
+        """*ptr = val — store through pointer (statement)."""
+        ptr_temp = self.generate(node.ptr_expr)
+        val_temp = self.generate(node.value)
+        self.create_instruction("store_ptr", arg1=val_temp, arg2=ptr_temp)

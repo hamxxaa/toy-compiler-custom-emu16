@@ -1,0 +1,9 @@
+{
+    int main() {
+        var byte barr[8];
+        barr[0] = 1;
+        barr[3] = 7;
+        barr[7] = 99;
+        return barr[3];
+    }
+}

@@ -1,0 +1,20 @@
+{
+    int sum5() {
+        asm {
+            LDI R0, 0
+            LDI R1, 1
+        loop:
+            ADD R0, R1
+            LDI R2, 1
+            ADD R1, R2
+            LDI R2, 6
+            CMP R1, R2
+            JNZ loop
+            RET
+        }
+    }
+
+    int main() {
+        return sum5();
+    }
+}

@@ -1,0 +1,101 @@
+{
+    // ====================================================================
+    //  IO library for the handheld console.
+    //
+    //  All routines are NAKED asm functions: no prologue/epilogue, the asm
+    //  body supplies its own RET. Calling convention (matches the compiler):
+    //      arg1 -> R1,  arg2 -> R2,  arg3 -> R3,  return value -> R0
+    //  Scratch: R0..R3 may be clobbered freely.
+    //
+    //  Hardware map (definitions.h):
+    //      INPUT  0xADFF (1 byte)
+    //      PRAM   0xAE00 (256 colors * 2 bytes, little-endian RGB565)
+    //      VRAM   0xB000 (160x128, 1 palette-index byte per pixel)
+    // ====================================================================
+
+    // memory[addr] = low byte of val
+    void poke_byte(int addr, int val) {
+        asm {
+            STR R2, [R1], byte
+            RET
+        }
+    }
+
+    // returns memory[addr] (one byte, zero-extended)
+    int peek_byte(int addr) {
+        asm {
+            LDI R0, 0
+            LDR R0, [R1], byte
+            RET
+        }
+    }
+
+    // memory[addr..addr+1] = val (little-endian word)
+    void poke(int addr, int val) {
+        asm {
+            STR R2, [R1]
+            RET
+        }
+    }
+
+    // returns the word at memory[addr..addr+1]
+    int peek(int addr) {
+        asm {
+            LDR R0, [R1]
+            RET
+        }
+    }
+
+    // VRAM[y*160 + x] = color   (x=R1, y=R2, color=R3)
+    void plot(int x, int y, int color) {
+        asm {
+            LDI R0, 160
+            MUL R2, R0          // R2 = y * 160
+            ADD R2, R1          // R2 = y*160 + x
+            LDI R0, 0xB000      // VRAM base
+            ADD R2, R0          // R2 = &VRAM[y*160+x]
+            MOV R1, R2
+            STR R3, [R1], byte  // store color (low byte)
+            RET
+        }
+    }
+
+    // Fill all of VRAM with a color index (writes words, two pixels at a time).
+    void fill(int color) {
+        asm {
+            MOV R0, R1          // R0 = color
+            SHL R0, 8           // R0 = color << 8
+            OR  R0, R1          // R0 = (color<<8)|color  -> both bytes = color
+            LDI R2, 0xB000      // ptr = VRAM start
+        fill_loop:
+            STR R0, [R2]        // write two pixels
+            LDI R3, 2
+            ADD R2, R3          // ptr += 2
+            CMP R2, 0           // wrapped past 0xFFFE -> 0x0000 ?
+            JNZ fill_loop
+            RET
+        }
+    }
+
+    // PRAM[i] = color   (i=R1 palette index, color=R2 RGB565)
+    void set_palette(int i, int color) {
+        asm {
+            LDI R0, 2
+            MUL R1, R0          // R1 = i*2
+            LDI R0, 0xAE00      // PRAM base
+            ADD R1, R0          // R1 = &PRAM[i*2]
+            STR R2, [R1]        // store low then high byte (word)
+            RET
+        }
+    }
+
+    // returns the button bitmask at INPUT (one byte)
+    int read_input() {
+        asm {
+            LDI R0, 0
+            LDI R1, 0xADFF
+            LDR R0, [R1], byte
+            RET
+        }
+    }
+}

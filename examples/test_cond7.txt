@@ -1,0 +1,18 @@
+{
+    int conditional(int x) {
+        var int result = 0;
+        if x > 10 do {
+            result = 1;
+        }
+        if x < 5 do {
+            result = 2;
+        }
+        if x == 7 do {
+            result = 3;
+        }
+        return result;
+    }
+    int main() {
+        return conditional(7);
+    }
+}

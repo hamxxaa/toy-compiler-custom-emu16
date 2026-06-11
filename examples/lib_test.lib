@@ -1,0 +1,5 @@
+{
+    int triple(int x) {
+        return x + x + x;
+    }
+}

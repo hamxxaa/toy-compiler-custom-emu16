@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="EMU16 CPU Simulator — Browser-based testing environment for the custom 16-bit CPU and toy compiler">
+    <title>EMU16 Simulator</title>
+    <link rel="stylesheet" href="index.css">
+</head>
+<body>
+    <div class="app-container">
+
+        <!-- Header -->
+        <header class="app-header">
+            <div class="app-title">
+                <div class="logo">E16</div>
+                <span>EMU16 Simulator</span>
+            </div>
+            <div class="header-right">
+                <span id="status-message" class="status-msg info">No ROM loaded</span>
+                <span id="fps-counter">— FPS</span>
+            </div>
+        </header>
+
+        <!-- Main content -->
+        <div class="main-content">
+
+            <!-- Left: Display + Controls -->
+            <div class="display-panel">
+
+                <!-- ROM Drop Zone -->
+                <div id="drop-zone" class="drop-zone">
+                    <div class="drop-icon">📁</div>
+                    <div class="drop-text">Drop .rom file here or click to browse</div>
+                    <input type="file" id="rom-file" accept=".rom,.bin">
+                </div>
+
+                <!-- Screen -->
+                <div class="screen-container">
+                    <div class="screen-bezel">
+                        <canvas id="screen"></canvas>
+                    </div>
+                    <div id="screen-power" class="screen-power"></div>
+                </div>
+
+                <!-- Controls -->
+                <div class="controls-bar">
+                    <button id="btn-run" class="ctrl-btn primary" disabled>
+                        <span class="icon">▶</span> Run
+                    </button>
+                    <button id="btn-pause" class="ctrl-btn primary hidden" disabled>
+                        <span class="icon">⏸</span> Pause
+                    </button>
+                    <button id="btn-step" class="ctrl-btn" disabled>
+                        <span class="icon">⏭</span> Step
+                    </button>
+                    <button id="btn-reset" class="ctrl-btn danger" disabled>
+                        <span class="icon">↺</span> Reset
+                    </button>
+
+                    <div class="speed-control">
+                        <label>Speed:</label>
+                        <input type="range" id="speed-slider" min="0" max="100" value="66">
+                        <span id="speed-label">100K</span>
+                    </div>
+                </div>
+
+                <!-- Gamepad Input Display -->
+                <div class="gamepad-display">
+                    <div class="pad-group">
+                        <span class="pad-group-label">D-Pad</span>
+                        <div class="dpad">
+                            <div class="dpad-spacer"></div>
+                            <div id="btn-↑" class="dpad-btn">↑</div>
+                            <div class="dpad-spacer"></div>
+                            <div id="btn-←" class="dpad-btn">←</div>
+                            <div class="dpad-spacer"></div>
+                            <div id="btn-→" class="dpad-btn">→</div>
+                            <div class="dpad-spacer"></div>
+                            <div id="btn-↓" class="dpad-btn">↓</div>
+                            <div class="dpad-spacer"></div>
+                        </div>
+                    </div>
+                    <div class="pad-group">
+                        <span class="pad-group-label">Buttons</span>
+                        <div class="action-buttons">
+                            <div id="btn-X" class="action-btn">X</div>
+                            <div id="btn-Y" class="action-btn">Y</div>
+                            <div id="btn-A" class="action-btn">A</div>
+                            <div id="btn-B" class="action-btn">B</div>
+                        </div>
+                    </div>
+                    <div class="input-state-display">
+                        <span>Input: </span><span id="input-hex">0x00</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Debug Sidebar -->
+            <aside class="debug-sidebar">
+
+                <!-- CPU Status -->
+                <div class="debug-section">
+                    <div class="debug-section-header">CPU Status</div>
+                    <div class="debug-section-body">
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="status-label">State</span>
+                                <span id="cpu-status" class="status-value halted">HALTED</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">PC</span>
+                                <span id="reg-pc" class="status-value" style="color: var(--cyan);">0x0000</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">Instructions</span>
+                                <span id="instr-count" class="status-value">0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Registers -->
+                <div class="debug-section">
+                    <div class="debug-section-header">Registers</div>
+                    <div class="debug-section-body">
+                        <div class="register-grid">
+                            <div class="register-row">
+                                <span class="reg-name">R0</span>
+                                <span id="reg-r0" class="reg-value">0x0000</span>
+                            </div>
+                            <div class="register-row">
+                                <span class="reg-name">R1</span>
+                                <span id="reg-r1" class="reg-value">0x0000</span>
+                            </div>
+                            <div class="register-row">
+                                <span class="reg-name">R2</span>
+                                <span id="reg-r2" class="reg-value">0x0000</span>
+                            </div>
+                            <div class="register-row">
+                                <span class="reg-name">R3</span>
+                                <span id="reg-r3" class="reg-value">0x0000</span>
+                            </div>
+                            <div class="register-row">
+                                <span class="reg-name">R4</span>
+                                <span id="reg-r4" class="reg-value">0x0000</span>
+                            </div>
+                            <div class="register-row">
+                                <span class="reg-name">R5</span>
+                                <span id="reg-r5" class="reg-value">0x0000</span>
+                            </div>
+                            <div class="register-row">
+                                <span class="reg-name special">R6 FP</span>
+                                <span id="reg-r6" class="reg-value">0x0000</span>
+                            </div>
+                            <div class="register-row">
+                                <span class="reg-name special">R7 SP</span>
+                                <span id="reg-r7" class="reg-value">0x0000</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Flags -->
+                <div class="debug-section">
+                    <div class="debug-section-header">Flags</div>
+                    <div class="debug-section-body">
+                        <div class="flags-row">
+                            <span id="flag-zero" class="flag-badge inactive">Z</span>
+                            <span id="flag-sign" class="flag-badge inactive">S</span>
+                            <span id="flag-carry" class="flag-badge inactive">C</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Memory Viewer -->
+                <div class="debug-section">
+                    <div class="debug-section-header">Memory</div>
+                    <div class="debug-section-body">
+                        <div class="mem-controls">
+                            <label>Addr:</label>
+                            <input type="text" id="mem-address" value="0000" maxlength="4" spellcheck="false">
+                            <button class="mem-jump" data-addr="0000">Code</button>
+                            <button class="mem-jump" data-addr="9000">ROM</button>
+                            <button class="mem-jump" data-addr="ADFF">Input</button>
+                            <button class="mem-jump" data-addr="AE00">PRAM</button>
+                            <button class="mem-jump" data-addr="B000">VRAM</button>
+                        </div>
+                        <pre id="mem-viewer"></pre>
+                    </div>
+                </div>
+
+                <!-- Key Bindings -->
+                <div class="debug-section">
+                    <div class="debug-section-header">Key Bindings</div>
+                    <div class="debug-section-body">
+                        <div class="keybindings">
+                            <div class="keybind-row">
+                                <span class="keybind-label">D-Pad</span>
+                                <span class="keybind-key">Arrow Keys</span>
+                            </div>
+                            <div class="keybind-row">
+                                <span class="keybind-label">Button A</span>
+                                <span class="keybind-key">Z</span>
+                            </div>
+                            <div class="keybind-row">
+                                <span class="keybind-label">Button B</span>
+                                <span class="keybind-key">X</span>
+                            </div>
+                            <div class="keybind-row">
+                                <span class="keybind-label">Button X</span>
+                                <span class="keybind-key">A</span>
+                            </div>
+                            <div class="keybind-row">
+                                <span class="keybind-label">Button Y</span>
+                                <span class="keybind-key">S</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <!-- Scripts (order matters: dependencies first) -->
+    <script src="cpu.js"></script>
+    <script src="display.js"></script>
+    <script src="input.js"></script>
+    <script src="debug.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

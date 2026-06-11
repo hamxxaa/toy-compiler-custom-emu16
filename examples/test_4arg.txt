@@ -1,0 +1,11 @@
+{
+    int sum_four(int a, int b, int c, int d) {
+        var int ab = a + b;
+        var int cd = c + d;
+        return ab + cd;
+    }
+
+    int main() {
+        return sum_four(10, 20, 30, 40);
+    }
+}

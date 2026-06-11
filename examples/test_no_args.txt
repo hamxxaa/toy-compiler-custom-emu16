@@ -1,0 +1,9 @@
+{
+    int get_value() {
+        return 42;
+    }
+
+    int main() {
+        return get_value();
+    }
+}

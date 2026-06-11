@@ -1,0 +1,8 @@
+include "../lib/io.lib";
+
+{
+    int main() {
+        fill(7);
+        return peek_byte(VRAM_START + 12345);
+    }
+}
