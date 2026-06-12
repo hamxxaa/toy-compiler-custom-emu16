@@ -89,9 +89,10 @@ class EqualizeNode:
 
 
 class IfNode:
-    def __init__(self, condition, scope):
+    def __init__(self, condition, scope, else_body=None):
         self.condition = condition
         self.scope = scope
+        self.else_body = else_body
 
 
 class WhileNode:
@@ -194,6 +195,13 @@ class DerefNode:
     def __init__(self, inner):
         self.inner = inner      # expression that yields the pointer
         self.type = None        # element type, set by sema
+
+
+class BitNotNode:
+    """~expr  — bitwise NOT (lowered to expr ^ 0xFFFF in TAC)."""
+    def __init__(self, inner):
+        self.inner = inner
+        self.type = None
 
 
 class DerefAssignNode:

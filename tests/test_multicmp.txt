@@ -1,0 +1,20 @@
+{
+    int multi_comparison(int x) {
+        var int r = 0;
+        if x >= 10 {
+            r = r + 1;
+        }
+        if x <= 5 {
+            r = r + 10;
+        }
+        if x != 0 {
+            r = r + 100;
+        }
+        return r;
+    }
+    int main() {
+        var int a = multi_comparison(10);
+        var int b = multi_comparison(3);
+        return a + b;
+    }
+}

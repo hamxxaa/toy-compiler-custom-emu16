@@ -12,22 +12,32 @@ ROM_DIR = os.path.join(ROOT, "build", "roms")
 TESTS = [
     # (source_file, rom_name, expected_return)
     # ── M1 regression ──────────────────────────────────────────────────────
-    ("examples/test_mul.txt",       "test_mul",       42),
-    ("examples/test_div.txt",       "test_div",       6),
-    ("examples/test_byte.txt",      "test_byte",      300),
-    ("examples/test_asm.txt",       "test_asm",       42),
-    ("examples/test_asm_loop.txt",  "test_asm_loop",  15),
-    ("examples/test_include.txt",   "test_include",   42),
-    ("examples/test_plot.txt",      "test_plot",      99),
-    ("examples/test_fill.txt",      "test_fill",      7),
-    ("examples/test_palette.txt",   "test_palette",   1234),
-    ("examples/demo.txt",           "demo",           42),
+    ("tests/test_mul.txt",       "test_mul",       42),
+    ("tests/test_div.txt",       "test_div",       6),
+    ("tests/test_byte.txt",      "test_byte",      300),
+    ("tests/test_asm.txt",       "test_asm",       42),
+    ("tests/test_asm_loop.txt",  "test_asm_loop",  15),
+    ("tests/test_include.txt",   "test_include",   42),
+    ("tests/test_plot.txt",      "test_plot",      99),
+    ("tests/test_fill.txt",      "test_fill",      7),
+    ("tests/test_palette.txt",   "test_palette",   1234),
+    ("tests/demo.txt",           "demo",           42),
     # ── M2 new tests ────────────────────────────────────────────────────────
-    ("examples/test_hex.txt",       "test_hex",       255),
-    ("examples/test_array_int.txt", "test_array_int", 42),
-    ("examples/test_array_byte.txt","test_array_byte",7),
-    ("examples/test_pointer.txt",   "test_pointer",   99),
-    ("examples/test_deref_write.txt","test_deref_write",77),
+    ("tests/test_hex.txt",       "test_hex",       255),
+    ("tests/test_array_int.txt", "test_array_int", 42),
+    ("tests/test_array_byte.txt","test_array_byte",7),
+    ("tests/test_pointer.txt",   "test_pointer",   99),
+    ("tests/test_deref_write.txt","test_deref_write",77),
+    # ── M3 bitwise operators ───────────────────────────────────────────────
+    ("tests/test_bitand.txt",    "test_bitand",    11),
+    ("tests/test_bitor.txt",     "test_bitor",     255),
+    ("tests/test_bitxor.txt",    "test_bitxor",    240),
+    ("tests/test_bitnot.txt",    "test_bitnot",    255),
+    ("tests/test_shift.txt",     "test_shift",     36),
+    ("tests/test_logical.txt",   "test_logical",   3),
+    # ── M4 else / else-if + drop do ───────────────────────────────────────────
+    ("tests/test_else.txt",      "test_else",      2),
+    ("tests/test_elseif.txt",    "test_elseif",    30),
 ]
 
 

@@ -78,7 +78,7 @@ def create_tokenizer():
 
     tokenizer.add_skip_pattern("( |\t|\n)+")
 
-    tokenizer.add_pattern("KEYWORD", "(while|print|var|if|do|return)", priority=5)
+    tokenizer.add_pattern("KEYWORD", "(while|print|var|if|else|return)", priority=5)
     tokenizer.add_pattern("TYPE", "(int|bool|void|byte)", priority=5)
     tokenizer.add_pattern("BOOLEAN", "(true|false)", priority=6)  # Add boolean literals
     tokenizer.add_pattern(
@@ -89,7 +89,9 @@ def create_tokenizer():
     tokenizer.add_pattern("SYMBOL", "(;|,|\\(|\\)|=|}|{|\\[|\\])", priority=2)
     tokenizer.add_pattern("OPERATOR", "(\\+|-|\\*|/)", priority=1)
     tokenizer.add_pattern("CONDITIONAL_OPERATOR", "(<|>|==|<=|>=|!=)", priority=1)
-    tokenizer.add_pattern("LOGICAL_OPERATOR", "(&|\\|)", priority=1)
+    tokenizer.add_pattern("LOGICAL_OPERATOR", "(&&|\\|\\|)", priority=1)
+    tokenizer.add_pattern("BITWISE_OPERATOR", "(&|\\||^|~)", priority=1)
+    tokenizer.add_pattern("SHIFT_OPERATOR", "(<<|>>)", priority=2)
 
     return tokenizer
 
@@ -108,6 +110,8 @@ def compile_program(
     print_ast=False,
     print_tac=False,
     print_optimized_tac=False,
+    print_alloc=False,
+    print_emit=False,
     save_rom=None,
 ):
     input_str = ""
@@ -147,7 +151,8 @@ def compile_program(
             for instr in tac.instructions:
                 print(instr)
 
-    backend = EmuBackend(tac, address_taken=sa.address_taken)
+    backend = EmuBackend(tac, address_taken=sa.address_taken,
+                         print_alloc=print_alloc, print_emit=print_emit)
     rom_bytes = backend.generate()
 
     # Determine file paths
@@ -188,6 +193,10 @@ def main():
     parser.add_argument(
         "--print-optimized-tac", action="store_true", help="Print optimized TAC"
     )
+    parser.add_argument("--print-alloc", action="store_true",
+                        help="Print register allocation decisions")
+    parser.add_argument("--print-emit", action="store_true",
+                        help="Print raw instruction emission trace (address, opcode, operands)")
     parser.add_argument(
         "--save-rom",
         help="Save ROM file with specified name (default: <output>.rom)",
@@ -203,6 +212,8 @@ def main():
         print_ast=args.print_ast,
         print_tac=args.print_tac,
         print_optimized_tac=args.print_optimized_tac,
+        print_alloc=args.print_alloc,
+        print_emit=args.print_emit,
         save_rom=args.save_rom,
     )
 

@@ -21,8 +21,8 @@
 # <expression_opt> ::= epsilon | <expression>
 # <expression_statement> ::= <function_call> ";"
 #
-# <if_structure> ::= "if" <condition> "do" <scope>
-# <while_structure> ::= "while" <condition> "do" <scope>
+# <if_structure> ::= "if" <condition> <scope> ("else" (<if_structure> | <scope>))?
+# <while_structure> ::= "while" <condition> <scope>
 # <print> ::= "print" "(" <expression> ")" ";"
 #
 # <condition> ::= <expression>
@@ -41,7 +41,10 @@
 #
 # <operator> ::= "+" | "-" | "*" | "/"
 # <conditional_operator> ::= "<" | ">" | "==" | "<=" | ">=" | "!="
-# <logical_operator> ::= "&" | "|"
+# <logical_operator> ::= "&&" | "||"
+# <bitwise_operator> ::= "&" | "|" | "^"          (flat level, left-assoc; "~" is unary)
+# <shift_operator> ::= "<<" | ">>"
+# precedence (loosest..tightest): bitwise < shift < additive < term < factor
 # <number> ::= <digit>+
 # <signed_number> ::= <number> | "-" <number>
 # <digit> ::= 1|2|3|4|5|6|7|8|9|0
@@ -75,10 +78,13 @@ from .parserNodes import (
     AddrOfNode,
     DerefNode,
     DerefAssignNode,
+    BitNotNode,
 )
 
 conditional_operators = {"<", ">", "==", "<=", ">=", "!="}
-logical_operators = {"&", "|"}
+logical_operators = {"&&", "||"}
+bitwise_operators = {"&", "|", "^"}
+shift_operators = {"<<", ">>"}
 
 
 class TokenHelper:
@@ -287,18 +293,23 @@ class Parser:
         return args
 
     def parse_if_structure(self):
-        # <if_structure> ::= "if" <condition> "do" <scope>
+        # <if_structure> ::= "if" <condition> <scope> ("else" (<if_structure> | <scope>))?
         self.tokens.consume("if", "KEYWORD")
         condition = self.parse_condition()
-        self.tokens.consume("do", "KEYWORD")
         scope = self.parse_scope()
-        return IfNode(condition, scope)
+        else_body = None
+        if self.tokens.peek() and self.tokens.peek()[1] == "else":
+            self.tokens.consume("else", "KEYWORD")
+            if self.tokens.peek() and self.tokens.peek()[1] == "if":
+                else_body = self.parse_if_structure()
+            else:
+                else_body = self.parse_scope()
+        return IfNode(condition, scope, else_body)
 
     def parse_while_structure(self):
-        # <while_structure> ::= "while" <condition> "do" <scope>
+        # <while_structure> ::= "while" <condition> <scope>
         self.tokens.consume("while", "KEYWORD")
         condition = self.parse_condition()
-        self.tokens.consume("do", "KEYWORD")
         scope = self.parse_scope()
         return WhileNode(condition, scope)
 
@@ -323,6 +334,11 @@ class Parser:
                 right = self.parse_condition()
                 self.tokens.consume(")", "SYMBOL")
                 node = ConditionNode(node, operator, right)
+            # Allow a comparison after a parenthesized group:  (x & 1) == 1
+            if self.tokens.peek() and self.tokens.peek()[1] in conditional_operators:
+                operator = self.tokens.consume(expected_type="CONDITIONAL_OPERATOR")[1]
+                right = self.parse_expression()
+                node = ConditionNode(node, operator, right)
             return node
         else:
             left = self.parse_expression()
@@ -336,7 +352,25 @@ class Parser:
             return ConditionNode(left, operator, right)
 
     def parse_expression(self):
-        # <expression> ::= <term> (("+" | "-") <term>)*
+        # <expression> ::= <shift> (("&" | "|" | "^") <shift>)*   flat, left-assoc
+        node = self.parse_shift()
+        while self.tokens.peek() and self.tokens.peek()[1] in bitwise_operators:
+            operator = self.tokens.consume(expected_type="BITWISE_OPERATOR")[1]
+            right = self.parse_shift()
+            node = ExpressionNode(node, operator, right)
+        return node
+
+    def parse_shift(self):
+        # <shift> ::= <additive> (("<<" | ">>") <additive>)*
+        node = self.parse_additive()
+        while self.tokens.peek() and self.tokens.peek()[1] in shift_operators:
+            operator = self.tokens.consume(expected_type="SHIFT_OPERATOR")[1]
+            right = self.parse_additive()
+            node = ExpressionNode(node, operator, right)
+        return node
+
+    def parse_additive(self):
+        # <additive> ::= <term> (("+" | "-") <term>)*
         node = self.parse_term()
         while self.tokens.peek() and self.tokens.peek()[1] in ("+", "-"):
             operator = self.tokens.consume(expected_type="OPERATOR")[1]
@@ -364,11 +398,16 @@ class Parser:
             node = self.parse_expression()
             self.tokens.consume(")", "SYMBOL")
             return node
-        elif token[0] == "LOGICAL_OPERATOR" and token[1] == "&":
+        elif token[0] == "BITWISE_OPERATOR" and token[1] == "&":
             # Address-of:  &varname
-            self.tokens.consume(expected_type="LOGICAL_OPERATOR")
+            self.tokens.consume(expected_type="BITWISE_OPERATOR")
             var_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
             return AddrOfNode(var_name)
+        elif token[0] == "BITWISE_OPERATOR" and token[1] == "~":
+            # Bitwise NOT:  ~expr
+            self.tokens.consume(expected_type="BITWISE_OPERATOR")
+            inner = self.parse_factor()
+            return BitNotNode(inner)
         elif token[0] == "OPERATOR" and token[1] == "*":
             # Pointer dereference as rvalue:  *ptr
             self.tokens.consume(expected_type="OPERATOR")
@@ -446,6 +485,9 @@ class Parser:
             print(f"{prefix}If:")
             self.print_ast(node.condition, indent + 1)
             self.print_ast(node.scope, indent + 1)
+            if node.else_body is not None:
+                print(f"{prefix}Else:")
+                self.print_ast(node.else_body, indent + 1)
 
         elif isinstance(node, WhileNode):
             print(f"{prefix}While:")

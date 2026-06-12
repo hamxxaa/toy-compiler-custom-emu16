@@ -1,0 +1,13 @@
+include "../lib/io.lib";
+
+{
+    int main() {
+        var int i = 0;
+        while i < 128 {
+            plot(i, i, 1);          // white diagonal on black background
+            i = i + 1;
+        }
+        plot(10, 20, 42);           // a known off-diagonal pixel
+        return peek_byte(VRAM_START + 20 * 160 + 10);   // read it back -> 42
+    }
+}

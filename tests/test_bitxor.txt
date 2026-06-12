@@ -1,0 +1,9 @@
+{
+    int flip_low(int v) {
+        return v ^ 0x0F;
+    }
+
+    int main() {
+        return flip_low(0xFF);
+    }
+}

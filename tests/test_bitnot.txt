@@ -1,0 +1,14 @@
+{
+    int invert(int v) {
+        return ~v;
+    }
+
+    int main() {
+        var int folded = ~0xFF00;
+        var int runtime = invert(0xFF00);
+        if (folded == runtime) {
+            return folded;
+        }
+        return 0;
+    }
+}

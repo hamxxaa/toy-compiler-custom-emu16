@@ -1,0 +1,294 @@
+{
+    var int gCounter = 0;
+
+    int identity(int x) {
+        return x;
+    }
+
+    int add(int a, int b) {
+        return a + b;
+    }
+
+    int sub(int a, int b) {
+        return a - b;
+    }
+
+    int sum3(int a, int b, int c) {
+        var int ab = a + b;
+        return ab + c;
+    }
+
+    int sum4(int a, int b, int c, int d) {
+        var int ab = a + b;
+        var int cd = c + d;
+        return ab + cd;
+    }
+
+    int sum5(int a, int b, int c, int d, int e) {
+        var int abc = a + b;
+        abc = abc + c;
+        var int de = d + e;
+        return abc + de;
+    }
+
+    int nested_call() {
+        var int x = add(3, 4);
+        var int y = add(10, x);
+        return y;
+    }
+
+    int deep_nesting() {
+        return add(add(1, 2), add(3, add(4, 5)));
+    }
+
+    int conditional(int x) {
+        var int result = 0;
+        if x > 10 {
+            result = 1;
+        }
+        if x < 5 {
+            result = 2;
+        }
+        if x == 7 {
+            result = 3;
+        }
+        return result;
+    }
+
+    int loop_sum(int n) {
+        var int i = 0;
+        var int total = 0;
+        while i < n {
+            total = total + i;
+            i = i + 1;
+        }
+        return total;
+    }
+
+    int countdown(int n) {
+        var int result = 0;
+        while n > 0 {
+            result = result + n;
+            n = n - 1;
+        }
+        return result;
+    }
+
+    int fibonacci(int n) {
+        var int a = 0;
+        var int b = 1;
+        var int i = 0;
+        while i < n {
+            var int temp = b;
+            b = a + b;
+            a = temp;
+            i = i + 1;
+        }
+        return a;
+    }
+
+    int use_global() {
+        gCounter = gCounter + 10;
+        return gCounter;
+    }
+
+    int multi_comparison(int x) {
+        var int r = 0;
+        if x >= 10 {
+            r = r + 1;
+        }
+        if x <= 5 {
+            r = r + 10;
+        }
+        if x != 0 {
+            r = r + 100;
+        }
+        return r;
+    }
+
+    int reassignment() {
+        var int x = 1;
+        x = x + 1;
+        x = x + 1;
+        x = x + 1;
+        x = x + 1;
+        return x;
+    }
+
+    int call_chain() {
+        var int a = identity(5);
+        var int b = add(a, a);
+        var int c = sub(b, 3);
+        var int d = add(c, identity(1));
+        return d;
+    }
+
+    int is_even(int n) {
+        var int half = 0;
+        var int doubled = 0;
+        while doubled < n {
+            half = half + 1;
+            doubled = half + half;
+        }
+        if doubled == n {
+            return 1;
+        }
+        return 0;
+    }
+
+    int count_evens(int limit) {
+        var int i = 0;
+        var int count = 0;
+        while i < limit {
+            var int e = is_even(i);
+            if e == 1 {
+                count = count + 1;
+            }
+            i = i + 1;
+        }
+        return count;
+    }
+
+    int abs_diff(int a, int b) {
+        if a > b {
+            return a - b;
+        }
+        return b - a;
+    }
+
+    int multi_return(int x) {
+        if x < 0 {
+            return 0 - x;
+        }
+        if x == 0 {
+            return 0;
+        }
+        return x;
+    }
+
+    int main() {
+        var int pass = 0;
+        var int fail = 0;
+
+        var int t01 = identity(42);
+        if t01 == 42 { pass = pass + 1; }
+        if t01 != 42 { fail = fail + 1; }
+
+        var int t02 = add(10, 20);
+        if t02 == 30 { pass = pass + 1; }
+        if t02 != 30 { fail = fail + 1; }
+
+        var int t03 = sub(50, 17);
+        if t03 == 33 { pass = pass + 1; }
+        if t03 != 33 { fail = fail + 1; }
+
+        var int t04 = sum3(10, 20, 30);
+        if t04 == 60 { pass = pass + 1; }
+        if t04 != 60 { fail = fail + 1; }
+
+        var int t05 = sum4(10, 20, 30, 40);
+        if t05 == 100 { pass = pass + 1; }
+        if t05 != 100 { fail = fail + 1; }
+
+        var int t06 = sum5(1, 2, 3, 4, 5);
+        if t06 == 15 { pass = pass + 1; }
+        if t06 != 15 { fail = fail + 1; }
+
+        var int t07 = nested_call();
+        if t07 == 17 { pass = pass + 1; }
+        if t07 != 17 { fail = fail + 1; }
+
+        var int t08 = deep_nesting();
+        if t08 == 15 { pass = pass + 1; }
+        if t08 != 15 { fail = fail + 1; }
+
+        var int t09 = conditional(15);
+        if t09 == 1 { pass = pass + 1; }
+        if t09 != 1 { fail = fail + 1; }
+
+        var int t10 = conditional(3);
+        if t10 == 2 { pass = pass + 1; }
+        if t10 != 2 { fail = fail + 1; }
+
+        var int t11 = conditional(7);
+        if t11 == 3 { pass = pass + 1; }
+        if t11 != 3 { fail = fail + 1; }
+
+        var int t12 = loop_sum(5);
+        if t12 == 10 { pass = pass + 1; }
+        if t12 != 10 { fail = fail + 1; }
+
+        var int t13 = countdown(5);
+        if t13 == 15 { pass = pass + 1; }
+        if t13 != 15 { fail = fail + 1; }
+
+        var int t14 = fibonacci(10);
+        if t14 == 55 { pass = pass + 1; }
+        if t14 != 55 { fail = fail + 1; }
+
+        var int t15 = use_global();
+        if t15 == 10 { pass = pass + 1; }
+        if t15 != 10 { fail = fail + 1; }
+
+        var int t16 = use_global();
+        if t16 == 20 { pass = pass + 1; }
+        if t16 != 20 { fail = fail + 1; }
+
+        var int t17 = multi_comparison(10);
+        if t17 == 101 { pass = pass + 1; }
+        if t17 != 101 { fail = fail + 1; }
+
+        var int t18 = multi_comparison(3);
+        if t18 == 110 { pass = pass + 1; }
+        if t18 != 110 { fail = fail + 1; }
+
+        var int t19 = reassignment();
+        if t19 == 5 { pass = pass + 1; }
+        if t19 != 5 { fail = fail + 1; }
+
+        var int t20 = call_chain();
+        if t20 == 8 { pass = pass + 1; }
+        if t20 != 8 { fail = fail + 1; }
+
+        var int t21 = loop_sum(1);
+        if t21 == 0 { pass = pass + 1; }
+        if t21 != 0 { fail = fail + 1; }
+
+        var int t22 = loop_sum(0);
+        if t22 == 0 { pass = pass + 1; }
+        if t22 != 0 { fail = fail + 1; }
+
+        var int t23 = fibonacci(0);
+        if t23 == 0 { pass = pass + 1; }
+        if t23 != 0 { fail = fail + 1; }
+
+        var int t24 = fibonacci(1);
+        if t24 == 1 { pass = pass + 1; }
+        if t24 != 1 { fail = fail + 1; }
+
+        var int t25 = count_evens(10);
+        if t25 == 5 { pass = pass + 1; }
+        if t25 != 5 { fail = fail + 1; }
+
+        var int t26 = abs_diff(20, 8);
+        if t26 == 12 { pass = pass + 1; }
+        if t26 != 12 { fail = fail + 1; }
+
+        var int t27 = abs_diff(3, 15);
+        if t27 == 12 { pass = pass + 1; }
+        if t27 != 12 { fail = fail + 1; }
+
+        var int t28 = multi_return(5);
+        if t28 == 5 { pass = pass + 1; }
+        if t28 != 5 { fail = fail + 1; }
+
+        var int t29 = multi_return(0);
+        if t29 == 0 { pass = pass + 1; }
+        if t29 != 0 { fail = fail + 1; }
+
+        if fail == 0 {
+            return pass;
+        }
+        return 0 - fail;
+    }
+}

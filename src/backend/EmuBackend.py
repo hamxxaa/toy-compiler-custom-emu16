@@ -75,7 +75,7 @@ class EmuBackend:
     REG_B = REG_ARG2
     REG_ADDR = REG_ARG3      # Use R3 as temp for address calculation (when needed)
 
-    def __init__(self, tac, address_taken=None):
+    def __init__(self, tac, address_taken=None, print_alloc=False, print_emit=False):
         self.tac = tac
         self.address_taken = address_taken or set()
         self.code = bytearray()
@@ -95,8 +95,8 @@ class EmuBackend:
         
         # Current instruction index within a function
         self.current_instr_index = 0
-        # Enable emission debug if environment variable EMU_EMIT_DEBUG=1
-        self.emit_debug = True
+        self.emit_debug = print_emit
+        self.print_alloc = print_alloc
 
 
     def _analyze_and_allocate_functions(self):
@@ -144,7 +144,7 @@ class EmuBackend:
             epilogue_label = f".epilogue_{func_name}"
             
             loc_map = allocate_function(liveness, len(param_names), param_names,
-                                        self.address_taken)
+                                        self.address_taken, verbose=self.print_alloc)
             
             frame = FunctionFrame(
                 name=func_name,
@@ -583,7 +583,7 @@ class EmuBackend:
             self.current_instr_index += 1
             return
 
-        if op in ("+", "-", "&", "|", "*", "/", "shl", "shr"):
+        if op in ("+", "-", "&", "|", "^", "*", "/", "shl", "shr"):
             frame = self.function_frames.get(self.current_function)
             self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
 
@@ -593,7 +593,7 @@ class EmuBackend:
                 arg2_loc = frame.loc(instruction.arg2)
 
             opcode_map = {
-                "+": OP_ADD, "-": OP_SUB, "&": OP_AND, "|": OP_OR,
+                "+": OP_ADD, "-": OP_SUB, "&": OP_AND, "|": OP_OR, "^": OP_XOR,
                 "*": OP_MUL, "/": OP_DIV, "shl": OP_SHL, "shr": OP_SHR,
             }
             alu_op = opcode_map[op]

@@ -130,6 +130,7 @@ class Optimizer:
                 "/",
                 "|",
                 "&",
+                "^",
                 "<",
                 "<=",
                 ">",
@@ -164,9 +165,11 @@ class Optimizer:
                             )
                         constant = int(instr.arg1.value / instr.arg2.value)
                     elif instr.op == "&":
-                        constant = instr.arg1.value and instr.arg2.value
+                        constant = int(instr.arg1.value) & int(instr.arg2.value)
                     elif instr.op == "|":
-                        constant = instr.arg1.value or instr.arg2.value
+                        constant = int(instr.arg1.value) | int(instr.arg2.value)
+                    elif instr.op == "^":
+                        constant = int(instr.arg1.value) ^ int(instr.arg2.value)
                     elif instr.op == "<":
                         constant = 1 if int(instr.arg1.value < instr.arg2.value) else 0
                     elif instr.op == "<=":

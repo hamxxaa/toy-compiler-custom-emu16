@@ -1,0 +1,13 @@
+{
+    int abs_diff(int a, int b) {
+        if a > b {
+            return a - b;
+        }
+        return b - a;
+    }
+    int main() {
+        var int x = abs_diff(20, 8);
+        var int y = abs_diff(3, 15);
+        return x + y;
+    }
+}

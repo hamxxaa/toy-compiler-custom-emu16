@@ -20,7 +20,7 @@ class LocationMap:
     frame_size: int                     # bytes to SUB from SP
 
 def allocate_function(liveness_info: LivenessInfo, param_count: int, param_names: List[str],
-                      address_taken: set = None) -> LocationMap:
+                      address_taken: set = None, verbose: bool = False) -> LocationMap:
     """
     Assign a fixed Location (register or stack) to every variable in the function.
 
@@ -211,8 +211,10 @@ def allocate_function(liveness_info: LivenessInfo, param_count: int, param_names
             loc.fp_offset = real_fp_offset
 
     frame_size = next_slot_idx * 2
-    
-    print(f"ALLOCATOR: func param_names={param_names}")
-    for k, v in locations.items():
-        print(f"  {getattr(k, 'name', k)} -> {v}")
+
+    if verbose:
+        print(f"ALLOCATOR: func param_names={param_names}")
+        for k, v in locations.items():
+            print(f"  {getattr(k, 'name', k)} -> {v}")
+
     return LocationMap(locations, callee_saved_list, frame_size)

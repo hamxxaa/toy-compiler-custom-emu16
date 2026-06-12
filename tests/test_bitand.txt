@@ -1,0 +1,9 @@
+{
+    int low_nibble(int v) {
+        return v & 0x0F;
+    }
+
+    int main() {
+        return low_nibble(0xAB);
+    }
+}

@@ -28,5 +28,7 @@ runtime/print_integer.o
 *.tmp
 *.bak
 
-# Test Files
-/tests/*
+# Build artifacts (regenerated from source — see README)
+pc_emu.exe
+simulator/emu.js
+simulator/emu.wasm

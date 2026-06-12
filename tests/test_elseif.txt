@@ -1,0 +1,17 @@
+{
+    int classify(int v) {
+        if v == 1 {
+            return 10;
+        } else if v == 2 {
+            return 20;
+        } else if v == 3 {
+            return 30;
+        } else {
+            return 99;
+        }
+    }
+
+    int main() {
+        return classify(3);
+    }
+}

@@ -10,8 +10,8 @@
  */
 
 class App {
-    constructor() {
-        this.cpu = new CPU();
+    constructor(core) {
+        this.cpu = core;
         this.display = new Display('screen');
         this.input = new InputHandler();
         this.debug = new DebugPanel();
@@ -36,43 +36,8 @@ class App {
         this._bindROMLoader();
         this._bindSpeedControl();
 
-        // Initial debug update
-        this.cpu.initialize();
+        // Initial debug update (core already initialized by the bootstrap).
         this.debug.update(this.cpu);
-    }
-
-    // --- Default PRAM initialization (matches init_default_pram in main.cpp) ---
-
-    _initDefaultPRAM() {
-        const { PRAM_START_ADDRESS } = window.EMU_CONSTANTS;
-        const mem = this.cpu.memory;
-
-        // First 8 palette entries: standard colors (RGB565 values from pc_emulator_main.cpp)
-        const defaults = [
-            0x0000,  // 0: Black
-            0xFFFF,  // 1: White
-            0xF800,  // 2: Red
-            0x001F,  // 3: Blue
-            0x07E0,  // 4: Green
-            0xF81F,  // 5: Magenta
-            0x07FF,  // 6: Cyan
-            0xFFE0,  // 7: Yellow
-        ];
-
-        for (let i = 0; i < 8; i++) {
-            mem[PRAM_START_ADDRESS + (i * 2)]     = defaults[i] & 0xFF;
-            mem[PRAM_START_ADDRESS + (i * 2) + 1] = (defaults[i] >> 8) & 0xFF;
-        }
-
-        // Remaining 248 entries: grayscale gradient (matches tft.color565(i, i, i))
-        for (let i = 8; i < 256; i++) {
-            const r5 = (i & 0xF8) << 8;
-            const g6 = (i & 0xFC) << 3;
-            const b5 = i >> 3;
-            const gray = r5 | g6 | b5;
-            mem[PRAM_START_ADDRESS + (i * 2)]     = gray & 0xFF;
-            mem[PRAM_START_ADDRESS + (i * 2) + 1] = (gray >> 8) & 0xFF;
-        }
     }
 
     // --- ROM loading ---
@@ -124,7 +89,7 @@ class App {
     }
 
     _loadROM(romBytes, name = 'ROM') {
-        const { STACK_START_ADDRESS, VRAM_START_ADDRESS, VRAM_SIZE, INPUT_ADDRESS } = window.EMU_CONSTANTS;
+        const { STACK_START_ADDRESS } = window.EMU_CONSTANTS;
 
         // Validate ROM size
         if (romBytes.length > STACK_START_ADDRESS - 1) {
@@ -135,24 +100,11 @@ class App {
         // Store ROM data for reset
         this.romData = romBytes;
 
-        // Initialize CPU
+        // Reset core: zeroes memory, lays down default palette, clears VRAM/input (all in C).
         this.cpu.initialize();
 
-        // Load ROM into memory at address 0
-        for (let i = 0; i < romBytes.length; i++) {
-            this.cpu.memory[i] = romBytes[i];
-        }
-
-        // Initialize PRAM with default palette
-        this._initDefaultPRAM();
-
-        // Clear VRAM
-        for (let i = 0; i < VRAM_SIZE; i++) {
-            this.cpu.memory[VRAM_START_ADDRESS + i] = 0;
-        }
-
-        // Clear input
-        this.cpu.memory[INPUT_ADDRESS] = 0;
+        // Load ROM into guest memory at address 0 (after init, which zeroes everything).
+        this.cpu.memory.set(romBytes, 0);
 
         this.romLoaded = true;
         this._showStatus(`Loaded: ${name} (${romBytes.length} bytes)`, 'success');
@@ -310,7 +262,18 @@ class App {
     }
 }
 
-// Boot
+// Boot: instantiate the WASM emulator core, then start the app.
 document.addEventListener('DOMContentLoaded', () => {
-    window.app = new App();
+    createEmu().then((module) => {
+        const core = new EmuCore(module);
+        core.initialize();
+        window.app = new App(core);
+    }).catch((err) => {
+        console.error('Failed to load emulator WASM:', err);
+        const el = document.getElementById('status-message');
+        if (el) {
+            el.textContent = 'Failed to load emulator core (emu.wasm). Serve over http://, not file://.';
+            el.className = 'status-msg error';
+        }
+    });
 });

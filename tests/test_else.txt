@@ -1,0 +1,13 @@
+{
+    int check(int x) {
+        if x > 10 {
+            return 1;
+        } else {
+            return 2;
+        }
+    }
+
+    int main() {
+        return check(5);
+    }
+}

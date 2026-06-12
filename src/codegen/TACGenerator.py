@@ -214,13 +214,24 @@ class TACGenerator:
 
     def visit_IfNode(self, node):
         condition = self.generate(node.condition)
-        start_label = self.new_label()
-        self.create_instruction("if", arg1=condition, result=start_label)
-        end_label = self.new_label()
-        self.create_instruction("goto", result=end_label)
-        self.create_instruction("label", result=start_label)
-        self.generate(node.scope)
-        self.create_instruction("label", result=end_label)
+        then_label = self.new_label()
+        self.create_instruction("if", arg1=condition, result=then_label)
+        if node.else_body is None:
+            end_label = self.new_label()
+            self.create_instruction("goto", result=end_label)
+            self.create_instruction("label", result=then_label)
+            self.generate(node.scope)
+            self.create_instruction("label", result=end_label)
+        else:
+            else_label = self.new_label()
+            end_label = self.new_label()
+            self.create_instruction("goto", result=else_label)
+            self.create_instruction("label", result=then_label)
+            self.generate(node.scope)
+            self.create_instruction("goto", result=end_label)
+            self.create_instruction("label", result=else_label)
+            self.generate(node.else_body)
+            self.create_instruction("label", result=end_label)
 
     def visit_WhileNode(self, node):
         start_label = self.new_label()
@@ -247,14 +258,25 @@ class TACGenerator:
         left = self.generate(node.left)
         right = self.generate(node.right)
         temp = self.new_temp(type=node.type)
-        self.create_instruction(node.operator, arg1=left, arg2=right, result=temp)
+        # Bools are 0/1 words, so logical && / || lower to the bitwise ALU ops.
+        op = {"&&": "&", "||": "|"}.get(node.operator, node.operator)
+        self.create_instruction(op, arg1=left, arg2=right, result=temp)
         return temp
 
     def visit_ExpressionNode(self, node):
         left = self.generate(node.left)
         right = self.generate(node.right)
         temp = self.new_temp(type=node.type)
-        self.create_instruction(node.operator, arg1=left, arg2=right, result=temp)
+        # Backend speaks "shl"/"shr" for shifts.
+        op = {"<<": "shl", ">>": "shr"}.get(node.operator, node.operator)
+        self.create_instruction(op, arg1=left, arg2=right, result=temp)
+        return temp
+
+    def visit_BitNotNode(self, node):
+        # ~x  ==  x ^ 0xFFFF  (16-bit one's complement; no NOT opcode in the ISA)
+        inner = self.generate(node.inner)
+        temp = self.new_temp(type=node.type)
+        self.create_instruction("^", arg1=inner, arg2=Const(0xFFFF, "int"), result=temp)
         return temp
 
     def visit_TermNode(self, node):

@@ -223,7 +223,8 @@
     </div>
 
     <!-- Scripts (order matters: dependencies first) -->
-    <script src="cpu.js"></script>
+    <script src="emu.js"></script>      <!-- Emscripten glue (defines createEmu); built from emu.cpp -->
+    <script src="wasm.js"></script>     <!-- EmuCore shim + EMU_CONSTANTS -->
     <script src="display.js"></script>
     <script src="input.js"></script>
     <script src="debug.js"></script>

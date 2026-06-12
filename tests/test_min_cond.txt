@@ -1,0 +1,15 @@
+{
+    int test(int x) {
+        var int result = 0;
+        if x > 10 {
+            result = 1;
+        }
+        if x < 5 {
+            result = 2;
+        }
+        return result;
+    }
+    int main() {
+        return test(15);
+    }
+}

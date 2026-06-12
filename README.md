@@ -1,12 +1,27 @@
-# Toy Compiler
+# EMU16
 
-A compiler for a small C-like language that targets a custom 16-bit CPU ISA, built for a
-Game Boy-style handheld console running on an ESP32. Every stage of the pipeline — lexer, parser,
-semantic analysis, IR generation, optimizer, register allocator, and code generator — is written by
-hand, without external compiler libraries.
+A homebrew game platform built from scratch: a custom 16-bit CPU ISA, a C-like compiler that
+targets it, an ESP32-S3 handheld console, and a browser simulator — all in one repo.
 
-The output is a flat `.rom` image loaded directly by the ESP32 firmware (or the included PC
-desktop emulator for development and testing).
+| Layer | What it is |
+|---|---|
+| **Language** | C-like (types, arrays, pointers, bitwise, else/else-if, inline asm) |
+| **Compiler** | Hand-written: Thompson NFA lexer → recursive descent parser → TAC IR → linear-scan allocator → `.rom` |
+| **CPU / ISA** | Custom 16-bit, 8 registers, 64 KB address space |
+| **Targets** | ESP32-S3 handheld · PC desktop emulator · browser WebAssembly simulator |
+
+Write a program once, run it on real hardware, in the terminal, or in a browser tab.
+
+```bash
+# Compile
+python main.py examples/demo.txt --save-rom demo
+
+# Run on PC
+pc_emu.exe --rom build/roms/demo.rom --frames 1
+
+# Flash to handheld (PlatformIO)
+make flash && make uploadfs
+```
 
 ---
 
@@ -65,6 +80,35 @@ var byte c = 0xFF;        // hex literal (byte or int)
 var int  d = 0xB000;      // hex address constant
 ```
 
+### Operators
+
+| Category | Operators | Operand types | Result |
+|---|---|---|---|
+| Arithmetic | `+` `-` `*` `/` | int/byte | int |
+| Bitwise | `&` `\|` `^` `~` (unary) | int/byte | int |
+| Shift | `<<` `>>` (logical) | int/byte | int |
+| Comparison | `<` `>` `==` `<=` `>=` `!=` | int/byte | bool |
+| Logical | `&&` `\|\|` | bool | bool |
+
+Precedence, loosest to tightest: `& \| ^`  <  `<< >>`  <  `+ -`  <  `* /`. The bitwise
+operators share one flat level (left-to-right), so `a \| b & c` is `(a \| b) & c` — use
+parentheses when mixing them. Comparisons bind looser than everything, so `x & 1 == 1`
+parses as `(x & 1) == 1` (unlike C).
+
+```c
+var int masked  = color & 0x0F;     // bitwise AND
+var int merged  = hi << 8 | lo;     // shift then OR
+var int flipped = ~bits;            // bitwise NOT (16-bit)
+var int parity  = v ^ key;          // XOR
+
+if (x > 0) && (x < SCREEN_WIDTH) {   // logical AND on bools
+    plot(x, y, 1);
+}
+```
+
+Shift amounts are masked to 4 bits by the CPU (max shift 15); `>>` is a logical shift
+(zero-fill). `~x` compiles to `x ^ 0xFFFF` — there is no NOT opcode.
+
 ### Arrays
 
 Arrays are always in the data section (static storage). All sizes must be compile-time constants.
@@ -93,12 +137,18 @@ base address through `&arr[0]` or by passing the array name to an asm function.
 
 ### Control Flow
 
+Parentheses around conditions are optional — the opening `{` delimits the condition.
+
 ```c
-if (a > b) do {
+if a > b {
+    // ...
+} else if a == b {
+    // ...
+} else {
     // ...
 }
 
-while (count < 10) do {
+while count < 10 {
     count = count + 1;
 }
 ```
@@ -196,7 +246,7 @@ include "lib/io.lib";
     int main() {
         fill(0);
         var int x = 0;
-        while (x < SCREEN_WIDTH) do {
+        while x < SCREEN_WIDTH {
             plot(x, 64, 2);
             x = x + 1;
         }
@@ -252,34 +302,72 @@ python main.py examples/demo.txt --print-tac
 python main.py examples/demo.txt --print-optimized-tac
 ```
 
-### Desktop Emulator (PC test runner)
+### Building
+
+A `Makefile` covers all build and test targets (requires GNU make — `mingw32-make` on Windows):
+
+```bash
+make           # build pc_emu.exe + WASM simulator
+make pc_emu    # desktop emulator only  (needs GCC / MinGW)
+make wasm      # WebAssembly only       (needs Emscripten on PATH)
+make test      # compile + run all 23 regression tests
+make verify    # headless WASM cross-check via Node
+make clean     # remove all build artifacts
+```
+
+Manual equivalents if you don't have `make`:
+
+```bash
+# Desktop emulator
+g++ -std=c++17 -O2 -static emulator/pc_emulator_main.cpp emulator/emu.cpp -o pc_emu.exe
+
+# WASM module
+bash simulator/build.sh
+```
+
+### Desktop Emulator
 
 `pc_emu.exe` is a statically linked desktop build of the same emulator core used on the ESP32.
 It runs a ROM for a fixed number of frames and writes the final framebuffer as a PPM image.
 
 ```bash
-# Run for 1 frame, print result
 pc_emu.exe --rom build/roms/demo.rom --frames 1
-
-# Output:
 # REGS R0=0x002A R1=... ...
 # RESULT halted=1 frames=1 return=42 pc=0x1032 ... frame=build/pc_emulator/frame.ppm
 ```
 
-Build the PC emulator (MinGW / GCC):
+### Web Simulator
+
+The browser simulator in `simulator/` runs the **exact same `emu.cpp` core**, compiled to
+WebAssembly — there is no second emulator implementation to keep in sync. Drag a `.rom` onto the
+page to load it; the canvas renders VRAM through the palette, and the debug panel shows registers,
+flags, and a live memory view.
+
+Serve over HTTP (WASM won't load from `file://`) and open the page:
 
 ```bash
-g++ -static pc_emulator_main.cpp emu.cpp -o pc_emu.exe -std=c++17 -O2
+cd simulator && python -m http.server 8000
+# then open http://localhost:8000
+```
+
+`emulator/emu_wasm.cpp` is the thin `extern "C"` bridge (`emu_init`, `emu_mem`, `emu_run_frame`,
+`emu_reg`, …); `simulator/wasm.js` wraps it. Re-run `make wasm` after any ISA change to `emu.cpp`.
+
+`verify_wasm.js` runs every test ROM through the WASM core under Node and checks `R0` — a headless
+proof the browser core matches `pc_emu.exe`:
+
+```bash
+node verify_wasm.js   # or: make verify
 ```
 
 ### Regression Tests
 
 ```bash
-python run_tests.py
+python run_tests.py   # or: make test
 ```
 
-Runs all 15 tests (M1 + M2), compiles each source file, executes it in the desktop emulator, and
-checks the `return=` value:
+Runs all 23 tests (M1 + M2 + M3 + M4), compiles each source file, executes it in the desktop
+emulator, and checks the `return=` value:
 
 ```
 Test                    expect       got
@@ -299,6 +387,14 @@ test_array_int              42        42  PASS
 test_array_byte              7         7  PASS
 test_pointer                99        99  PASS
 test_deref_write            77        77  PASS
+test_bitand                 11        11  PASS
+test_bitor                 255       255  PASS
+test_bitxor                240       240  PASS
+test_bitnot                255       255  PASS
+test_shift                  36        36  PASS
+test_logical                 3         3  PASS
+test_else                    2         2  PASS
+test_elseif                 30        30  PASS
 --------------------------------------------------
 ALL PASS: True
 ```
@@ -321,20 +417,76 @@ toy-compiler/
 │       └── core/
 │           ├── allocator.py    Linear-scan register allocator + liveness
 │           └── function_frame.py
+├── emulator/
+│   ├── emu.cpp             16-bit CPU emulator core — single source for all targets
+│   ├── emu.h
+│   ├── definitions.h       Memory map + screen dimensions (no hardware pins)
+│   ├── emu_wasm.cpp        extern "C" bridge for the WASM build
+│   ├── pc_emulator_main.cpp  PC test harness (builds pc_emu.exe)
+│   └── library.json        PlatformIO descriptor — exposes emu.cpp as a library
+├── firmware/               PlatformIO project for the ESP32-S3 handheld
+│   ├── platformio.ini      lib_extra_dirs = ../emulator (no emu.cpp copy)
+│   ├── src/
+│   │   ├── main.cpp        Arduino setup/loop — TFT, LittleFS, input, frame loop
+│   │   └── hw_pins.h       ESP32-S3 GPIO pin assignments
+│   └── data/               ROM files flashed to LittleFS (pio run -t uploadfs)
+├── simulator/
+│   ├── wasm.js         EmuCore shim (wraps WASM exports, same API as old cpu.js)
+│   ├── app.js          UI logic
+│   ├── display.js
+│   ├── debug.js
+│   ├── index.html
+│   └── build.sh        Emscripten build script → emu.js + emu.wasm
 ├── lib/
 │   └── io.lib          IO library (plot, fill, set_palette, poke_byte, peek_byte, …)
-├── examples/           Sample programs + regression test sources
-├── emu.cpp             16-bit CPU emulator core (shared with ESP32 firmware)
-├── emu.h
-├── definitions.h       Hardware addresses, screen dimensions
-├── pc_emulator_main.cpp  PC test harness (builds pc_emu.exe)
+├── tests/              Regression test source files
+├── examples/           Sample programs
+├── Makefile            Build, test, flash, and clean targets
+├── verify_wasm.js      Headless WASM test runner (Node)
 ├── run_tests.py        Regression test runner
 └── main.py             Compiler entry point
 ```
 
-`emu.cpp` and `pc_emulator_main.cpp` live here because every ISA change requires coordinated
-updates to both the emulator and `emu_isa.py`. Having them in one repo makes that reflex automatic
-and keeps the test suite self-contained.
+`emu.cpp` is the single source of truth for the CPU core — compiled to a PC binary, to WASM, and
+to the ESP32 firmware from the same file. An ISA change only needs to happen once.
+
+---
+
+## Firmware (ESP32-S3)
+
+The `firmware/` directory is a PlatformIO project for the physical handheld. Open the
+`firmware/` folder (not the repo root) in VS Code — PlatformIO reads `platformio.ini` from there.
+`emulator/emu.cpp` is pulled in via `src/emu_shim.cpp`; there is no second copy of the CPU core.
+
+```bash
+# Build + flash the firmware
+make flash          # pio run -t upload
+
+# Upload ROM files to LittleFS (do this once after flashing, then only when ROMs change)
+make uploadfs       # pio run -t uploadfs
+```
+
+To ship a new ROM:
+```bash
+python main.py mygame.txt --save-rom mygame
+copy build\roms\mygame.rom firmware\data\mygame.rom
+# edit firmware/src/main.cpp: load_rom_from_flash("/mygame.rom");
+make uploadfs
+```
+
+### Performance knobs
+
+The main bottleneck is SPI pixel transfer (~12 ms at 27 MHz for a full 160×128 frame).
+Current defaults are already tuned: 40 MHz SPI + DMA push (`pushImageDMA`).
+
+| Setting | File | Note |
+|---|---|---|
+| `SPI_FREQUENCY` | `firmware/platformio.ini` | 40 MHz default; try 80 MHz if your panel supports it |
+| `USE_DMA_TO_TFT` | `firmware/platformio.ini` | Enabled — frees CPU during pixel transfer |
+| Instruction budget | `emulator/emu.cpp` `run_frame_instructions` | Currently 100 000 per frame; raise if games feel slow |
+| `ENABLE_DEBUG_LOGS` | `firmware/src/main.cpp` | Set `true` for Serial output during development |
+
+GPIO pin assignments are in `firmware/src/hw_pins.h`.
 
 ---
 

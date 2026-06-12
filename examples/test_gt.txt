@@ -1,8 +1,0 @@
-{
-    int main() {
-        if 15 > 10 do {
-            return 1;
-        }
-        return 0;
-    }
-}

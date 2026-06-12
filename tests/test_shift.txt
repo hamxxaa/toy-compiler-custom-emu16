@@ -1,0 +1,11 @@
+{
+    int shl2(int v) {
+        return v << 2;
+    }
+
+    int main() {
+        var int runtime = shl2(5);
+        var int folded = 0x80 >> 3;
+        return runtime + folded;
+    }
+}

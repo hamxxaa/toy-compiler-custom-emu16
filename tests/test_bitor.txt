@@ -1,0 +1,9 @@
+{
+    int with_low(int v) {
+        return v | 0x0F;
+    }
+
+    int main() {
+        return with_low(0xF0);
+    }
+}

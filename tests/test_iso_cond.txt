@@ -1,0 +1,19 @@
+{
+    int conditional(int x) {
+        var int result = 0;
+        if x > 10 {
+            result = 1;
+        }
+        if x < 5 {
+            result = 2;
+        }
+        if x == 7 {
+            result = 3;
+        }
+        return result;
+    }
+
+    int main() {
+        return conditional(15);
+    }
+}

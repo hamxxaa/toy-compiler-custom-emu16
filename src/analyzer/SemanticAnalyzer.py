@@ -197,7 +197,7 @@ class SemanticAnalyzer:
                 )
             node.type = "bool"
             return "bool"
-        elif node.operator in ("&", "|"):
+        elif node.operator in ("&&", "||"):
             if left_type != "bool" or right_type != "bool":
                 raise Exception(
                     f"Type Error: Logical operations require boolean operands, got '{left_type}' and '{right_type}'."
@@ -226,8 +226,33 @@ class SemanticAnalyzer:
                 raise Exception(
                     f"Type Error: Cannot perform '{node.operator}' on types '{left_type}' and '{right_type}'."
                 )
+        elif node.operator in ("&", "|", "^"):
+            if self._is_numeric(left_type) and self._is_numeric(right_type):
+                node.type = "int"
+                return "int"
+            else:
+                raise Exception(
+                    f"Type Error: Bitwise '{node.operator}' requires int/byte operands, got '{left_type}' and '{right_type}'. Use '&&'/'||' for booleans."
+                )
+        elif node.operator in ("<<", ">>"):
+            if self._is_numeric(left_type) and self._is_numeric(right_type):
+                node.type = "int"
+                return "int"
+            else:
+                raise Exception(
+                    f"Type Error: Shift '{node.operator}' requires int/byte operands, got '{left_type}' and '{right_type}'."
+                )
         else:
             raise Exception(f"Unknown operator '{node.operator}' in expression.")
+
+    def visit_BitNotNode(self, node):
+        inner_type = self.visit(node.inner)
+        if not self._is_numeric(inner_type):
+            raise Exception(
+                f"Type Error: Bitwise '~' requires an int/byte operand, got '{inner_type}'."
+            )
+        node.type = "int"
+        return "int"
 
     def visit_TermNode(self, node):
         left_type = self.visit(node.left)
@@ -310,6 +335,8 @@ class SemanticAnalyzer:
                 f"Type Error: If condition must be of type 'bool', got '{condition_type}'."
             )
         self.visit(node.scope)
+        if node.else_body is not None:
+            self.visit(node.else_body)
 
     def visit_WhileNode(self, node):
         condition_type = self.visit(node.condition)
