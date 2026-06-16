@@ -68,8 +68,9 @@ see `src/parser/Parser.py`; for real programs see `examples/` and `lib/`.
 ## Libraries (`lib/`)
 
 - **`io.lib`** — graphics, written in the language itself: `plot`, `fill`, `set_palette`, `read_input`,
-  `peek_byte`/`poke_byte`, `draw_char`, `draw_string`. The 8×8 font is a baked-in array, so it ships
-  inside every ROM that includes the library.
+  `peek_byte`/`poke_byte`, `draw_sprite`, `draw_char`/`draw_string` (text rides on `draw_sprite`). The
+  8×8 font is a baked-in array, so it ships inside every ROM that includes the library. Turn ASCII art
+  into sprite byte arrays with `tools/sprite.py`.
 - **`sys.lib`** — wrappers for the host syscalls below.
 
 ## Syscalls
@@ -130,8 +131,9 @@ emulator/    emu.cpp (the one CPU core) + definitions.h, the PC harness, the WAS
 firmware/    ESP32-S3 PlatformIO project (main.cpp, hw_pins.h, data/ ROMs)
 simulator/   browser sim — HTML/JS over the WASM core
 lib/         io.lib, sys.lib
+tools/       sprite.py — ASCII art -> sprite byte array
 examples/    sample programs (incl. menu.txt, walking.txt)
-tests/       regression sources      main.py · run_tests.py · run_rom.py · Makefile
+tests/       regression sources      main.py · run_tests.py · Makefile
 ```
 
 ## Requirements
