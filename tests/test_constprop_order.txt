@@ -1,0 +1,11 @@
+{
+    int f(int v) {
+        var int y;
+        y = v;        // y must capture v's CURRENT value...
+        v = 55;       // ...not the constant assigned to v afterwards
+        return y;     // = 7, not 55 (regression guard for the backward const-propagation bug)
+    }
+    int main() {
+        return f(7);
+    }
+}

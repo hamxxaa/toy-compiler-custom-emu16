@@ -1,0 +1,73 @@
+// lib/sys.lib — host syscall (interrupt) wrappers.
+//
+// A guest BYTE-store to SYSCALL_PORT (0xADFE) synchronously invokes the host-registered
+// handler. By convention the handler reads its arguments from R1..R3 and returns its
+// result in R0; the value written to the port is the syscall *number*. A byte store is
+// required — a word store to 0xADFE would also write 0xADFF and clobber INPUT.
+//
+// These are naked asm functions: parameters already arrive in R1/R2 (param0->R1,
+// param1->R2), so the body must not disturb them before triggering the call. R0 holds the
+// syscall number on the way in and the result on the way out; R3 is free (every syscall
+// here takes <= 2 args) and carries the port address.
+{
+    // num 1 = LIST_ROMS: dest->R1, max->R2  =>  R0 = count
+    // (also dumps the available names into dest as [len][name][NUL] records)
+    int sys_list_roms(int dest, int max) {
+        asm { LDI R0, 1
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 2 = GET_ROM_NAME: index->R1, dest->R2  =>  R0 = length (writes name + NUL at dest)
+    int sys_get_rom_name(int index, int dest) {
+        asm { LDI R0, 2
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 3 = LOAD_ROM: index->R1  (host halts the CPU and queues the chosen game)
+    void sys_load_rom(int index) {
+        asm { LDI R0, 3
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 4 = RESET: return to the menu (host halts the CPU and queues /menu.rom)
+    void sys_reset() {
+        asm { LDI R0, 4
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 0x7F = ECHO (diagnostic): R0 = R1 + R2. Implemented ONLY by the PC dev handler
+    // (pc_emu --menu). Used by tests/test_syscall_echo.txt to regression-test the interrupt
+    // path end to end: port write -> handler -> arg pass (R1,R2) -> result (R0).
+    // num 5 = PRESENT: yield this frame to the host (it displays the finished frame and paces to
+    // ~60 Hz), then resumes you. Call once per frame, AFTER drawing, for flicker-free, frame-paced
+    // updates. Handled by the emulator core, so it behaves identically on firmware / PC / WASM.
+    void sys_present() {
+        asm { LDI R0, 5
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 6 = TIME: R0 = milliseconds since boot (low 16 bits; wraps every ~65 s).
+    int sys_time() {
+        asm { LDI R0, 6
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    int sys_echo(int a, int b) {
+        asm { LDI R0, 0x7F
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+}

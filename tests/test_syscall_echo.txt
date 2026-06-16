@@ -1,0 +1,10 @@
+// Regression test for the host syscall / interrupt path.
+// sys_echo triggers syscall 0x7F (the PC dev handler's echo: R0 = R1 + R2), proving the
+// byte-store to SYSCALL_PORT fires the handler, passes R1/R2, and returns R0.
+// Run with `pc_emu --menu` so the handler is registered.  Expected return: 42.
+include "../lib/sys.lib";
+{
+    int main() {
+        return sys_echo(40, 2);
+    }
+}

@@ -143,11 +143,12 @@ class AsmNode:
 # ── M2: Arrays ──────────────────────────────────────────────────────────────
 
 class ArrayDefinerNode:
-    """var int arr[N];  or  var byte arr[N];"""
-    def __init__(self, name, elem_type, size):
+    """var int arr[N];  or  var byte arr[N];  or  var byte arr[N] = { c0, c1, ... };"""
+    def __init__(self, name, elem_type, size, initializer=None):
         self.name = name
         self.elem_type = elem_type  # "int" or "byte"
         self.size = size            # integer element count
+        self.initializer = initializer  # list of constant expr nodes, or None
         self.storage = None         # set by sema ("global" for all arrays)
         self.scope_id = None        # set by sema
 

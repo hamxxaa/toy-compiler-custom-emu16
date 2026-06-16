@@ -1,0 +1,15 @@
+{
+    int f(int v, int w) {
+        var int x;
+        var int y;
+        x = v;        // x and y can share a register (non-overlapping live ranges)
+        y = x;
+        x = w;        // DEAD store to x (never read again), non-const so it doesn't hit the
+                      // separate optimizer constant-propagation bug. DSE must drop it so it
+                      // can't corrupt y if x and y were coalesced to one register.
+        return y;     // the original v = 7
+    }
+    int main() {
+        return f(7, 99);
+    }
+}

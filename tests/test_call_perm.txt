@@ -1,0 +1,11 @@
+{
+    int sub(int a, int b) {
+        return a - b;
+    }
+    int swapcall(int x, int y) {
+        return sub(y, x);     // args sourced from R2,R1 (a permutation) -> arg-staging conflict fallback
+    }
+    int main() {
+        return swapcall(3, 10);   // sub(10, 3) = 7
+    }
+}

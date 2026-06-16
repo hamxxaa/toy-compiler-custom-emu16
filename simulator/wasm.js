@@ -34,6 +34,9 @@ class EmuCore {
         this._pcF     = module.cwrap('emu_pc',        'number', []);
         this._flagsF  = module.cwrap('emu_flags',     'number', []);
         this._runF    = module.cwrap('emu_running',   'number', []);
+        this._setRomCount = module.cwrap('emu_set_rom_count', null,     ['number']);
+        this._romNamesPtr = module.cwrap('emu_rom_names',     'number', []);
+        this._pendingRom  = module.cwrap('emu_pending_rom',   'number', []);
 
         this.memPtr = 0;
         this.instructionCount = 0;
@@ -66,6 +69,21 @@ class EmuCore {
     get pc()      { return this._pcF(); }
     get flags()   { return this._flagsF(); }
     get running() { return this._runF() === 1; }
+
+    // --- ROM-library bridge for the M7d syscall handler ---
+    pendingRom() { return this._pendingRom(); }
+
+    setRomLibrary(names) {
+        const base = this._romNamesPtr();
+        const STRIDE = 64;
+        const n = Math.min(names.length, 16);
+        for (let i = 0; i < n; i++) {
+            const b = new TextEncoder().encode(names[i].slice(0, 63));
+            this.m.HEAPU8.set(b, base + i * STRIDE);
+            this.m.HEAPU8[base + i * STRIDE + b.length] = 0;   // NUL
+        }
+        this._setRomCount(n);
+    }
 }
 
 window.EmuCore = EmuCore;

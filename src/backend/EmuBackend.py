@@ -35,6 +35,8 @@ from .emu_isa import (
     pack_i16_header,
     pack_r_type,
     pack_m_type,
+    pack_m_type_abs,
+    ABS_FLAG,
 )
 from .core.liveness import analyze_liveness
 from .core.allocator import allocate_function, LocationMap
@@ -44,15 +46,18 @@ from .core.function_frame import FunctionFrame
 class EmuBackend:
     # Memory layout:
     #   0x0000-0x0007  Bootstrap (LDI sp + JMP code_start)
-    #   0x0008-0x0FFF  Data section (~4 KB for globals + arrays, grows up from 0x0008)
-    #   0x1000-0xADFD  Code section (functions, grows up from 0x1000)
-    #   0xADFE         Stack (grows DOWN from here toward code)
+    #   0x0008-0x0FFF  Data section (globals + arrays, incl. the ROM-shipped font; up from 0x0008)
+    #   0x1000-0xADFB  Code section (functions, grows up from 0x1000)
+    #   0xADFC         Stack base (grows DOWN from here)
+    #   0xADFE         SYSCALL_PORT (write-triggered host call)
     #   0xADFF         INPUT (hardware mapped)
     #   0xAE00-0xAFFF  PRAM (hardware mapped, 512 bytes)
     #   0xB000-0xFFFF  VRAM (hardware mapped, 20480 bytes)
     CODE_START_ADDRESS = 0x1000
     DATA_START_ADDRESS = 0x0008
-    STACK_START_ADDRESS = 0xADFE
+    DATA_END_ADDRESS   = 0x1000   # data grows up to code start (the old FONT region is reclaimed)
+    STACK_START_ADDRESS = 0xADFC
+    SYSCALL_PORT = 0xADFE
     INPUT_ADDRESS = 0xADFF
 
     # Calling convention registers
@@ -75,6 +80,13 @@ class EmuBackend:
     REG_B = REG_ARG2
     REG_ADDR = REG_ARG3      # Use R3 as temp for address calculation (when needed)
 
+    # Binary-op opcode map + which ops are commutative (operand-aware emission).
+    ALU_OPCODE = {
+        "+": OP_ADD, "-": OP_SUB, "&": OP_AND, "|": OP_OR, "^": OP_XOR,
+        "*": OP_MUL, "/": OP_DIV, "shl": OP_SHL, "shr": OP_SHR,
+    }
+    COMMUTATIVE = {"+", "&", "|", "^", "*"}
+
     def __init__(self, tac, address_taken=None, print_alloc=False, print_emit=False):
         self.tac = tac
         self.address_taken = address_taken or set()
@@ -84,6 +96,8 @@ class EmuBackend:
         self.temp_label_counter = 0
         self.operand_addresses = {}
         self.next_data_address = self.DATA_START_ADDRESS
+        # Array-literal initializers to bake into the ROM image's DATA region: (address, bytes).
+        self.data_initializers = []
         
         # Function context for prologue/epilogue and allocation
         self.current_function = None
@@ -97,6 +111,13 @@ class EmuBackend:
         self.current_instr_index = 0
         self.emit_debug = print_emit
         self.print_alloc = print_alloc
+
+        # Phase-2 optimization marks, precomputed in the pre-pass and keyed by id(instr)
+        # (id, not current_instr_index, because that index doesn't advance on param/label/arg).
+        self.fused_cmp = {}     # id(comparison) -> target label: emit CMP + direct branch
+        self.skip_if = set()    # id(if): already handled by a fused comparison, emit nothing
+        self.call_spill = {}    # id(call) -> [caller-saved regs live across the call, to spill]
+        self.dead_instr = set() # id(instr): dead pure-def, skip emission (DSE)
 
 
     def _analyze_and_allocate_functions(self):
@@ -157,6 +178,60 @@ class EmuBackend:
                 epilogue_label=epilogue_label
             )
             self.function_frames[func_name] = frame
+            self._precompute_marks(instrs, liveness, loc_map)
+
+    # Comparison ops that set flags and can drive a conditional branch directly.
+    _CMP_OPS = {"<", "<=", ">", ">=", "==", "!="}
+    # Pure, side-effect-free ops whose result is a value — candidates for dead-store elimination.
+    # Deliberately excludes call / store_ptr / load_ptr / def_arr (effects, or load may touch MMIO).
+    _DSE_OPS = {"+", "-", "*", "/", "|", "&", "^", "shl", "shr",
+                "<", "<=", ">", ">=", "==", "!=", "def", "eq", "addrof"}
+
+    def _is_addr_taken(self, var):
+        """True if `var`'s address is taken anywhere (&var). Mirrors allocator._is_addr_taken:
+        the address_taken set is keyed by (base_name, scope_id)."""
+        if not self.address_taken or not hasattr(var, "name") or not hasattr(var, "scope_id"):
+            return False
+        base = var.name.split("_s")[0] if "_s" in var.name else var.name
+        return (base, var.scope_id) in self.address_taken
+
+    def _precompute_marks(self, instrs, liveness, loc_map):
+        """Populate the phase-2 optimization marks (fused_cmp / skip_if / call_spill / dead_instr)
+        for one function from its liveness + allocation. Keyed by id(instr)."""
+        live_at = liveness.live_at
+        n = len(instrs)
+        reg_of = {v: loc.register for v, loc in loc_map.locations.items()
+                  if loc.kind == "register"}
+
+        for i, ins in enumerate(instrs):
+            # --- Compare+branch fusion: `cmp -> if` adjacent, result used only by that if ---
+            if ins.op in self._CMP_OPS and i + 1 < n:
+                nxt = instrs[i + 1]
+                dead_after = (i + 2 > n) or (ins.result not in live_at[i + 2])
+                if nxt.op == "if" and nxt.arg1 is ins.result and dead_after:
+                    self.fused_cmp[id(ins)] = nxt.result   # branch target label
+                    self.skip_if.add(id(nxt))
+
+            # --- Call-site spilling: only caller-saved regs live across the call ---
+            if ins.op == "call":
+                live_after = live_at[i + 1] if i + 1 < len(live_at) else set()
+                self.call_spill[id(ins)] = [r for r in (self.REG_ARG1, self.REG_ARG2, self.REG_ARG3)
+                                            if any(reg_of.get(v) == r for v in live_after)]
+
+            # --- Dead-store elimination: pure def whose result is never read again ---
+            if ins.op in self._DSE_OPS and isinstance(ins.result, (Var, TempVar)):
+                if ins.op in ("def", "eq") and ins.arg1 is None:
+                    continue   # bare declaration — already emits nothing
+                # Per-function liveness can't observe two kinds of cross-context reads, so a store
+                # to either is NEVER provably dead here:
+                #   - globals: another function may read them.
+                #   - address-taken locals: a later *p read goes through the pointer, not the name.
+                if getattr(ins.result, "storage", None) == "global":
+                    continue
+                if self._is_addr_taken(ins.result):
+                    continue
+                if i + 1 <= n and ins.result not in (live_at[i + 1] if i + 1 < len(live_at) else set()):
+                    self.dead_instr.add(id(ins))
 
     def generate(self):
         # Pre-analysis pass: do liveness analysis and register allocation for each function
@@ -173,7 +248,17 @@ class EmuBackend:
         self._emit_i16(OP_HLT, 0)
 
         self._resolve_fixups()
+        self._bake_data_initializers()
         return bytes(self.code)
+
+    def _bake_data_initializers(self):
+        """Write array-literal bytes into the ROM image at their DATA addresses. The 0x0008-0x0FFF
+        region is already present in self.code as zero-padding (from _pad_to_code_start), so this
+        only overwrites padding and never grows the image. Loaded verbatim by every host, so the
+        data is present in memory the moment the ROM is loaded — no host-side initialization."""
+        for addr, byts in self.data_initializers:
+            for i, b in enumerate(byts):
+                self.code[addr + i] = b & 0xFF
 
     def _emit_bootstrap_jump(self):
         # Initialize stack pointer before jumping to code
@@ -214,6 +299,22 @@ class EmuBackend:
         self._emit_word(header)
         self._emit_word(offset & 0xFFFF)
 
+    def _emit_m_abs(self, opcode, reg1, addr):
+        """M-type absolute: reg1 = reg1 OP mem[#addr]  (ALU/CMP). Base register ignored."""
+        header = pack_m_type_abs(opcode, reg1)
+        if self.emit_debug:
+            print(f"EMIT_MABS addr=0x{self._current_address():04X} op=0x{opcode:02X} r1={reg1} mem=0x{addr & 0xFFFF:04X} func={self.current_function} idx={self.current_instr_index}")
+        self._emit_word(header)
+        self._emit_word(addr & 0xFFFF)
+
+    def _emit_ldroff_abs(self, dst_reg, addr):
+        """Absolute load: dst = mem[#addr]  (4 bytes, no scratch register)."""
+        header = pack_r_type(OP_LDROFF, dst_reg, 0, size_flag=0, lower_flag=0) | ABS_FLAG
+        if self.emit_debug:
+            print(f"EMIT_LDABS addr=0x{self._current_address():04X} dst={dst_reg} mem=0x{addr & 0xFFFF:04X} func={self.current_function} idx={self.current_instr_index}")
+        self._emit_word(header)
+        self._emit_word(addr & 0xFFFF)
+
     def _mark_label(self, label_name):
         self.labels[label_name] = self._current_address()
 
@@ -239,34 +340,6 @@ class EmuBackend:
         name = f"__{prefix}_{self.temp_label_counter}"
         self.temp_label_counter += 1
         return name
-
-    def _has_more_instructions_in_function(self, current_instr):
-        """Check if there are more instructions after current_instr in the current function.
-        
-        Returns True if there are instructions before func_end.
-        """
-        if not self.current_function:
-            return False
-        
-        found_current = False
-        for instr in self.tac.instructions:
-            if instr is current_instr:
-                found_current = True
-                continue
-            
-            if found_current:
-                # After finding current instruction
-                if instr.op == "func_end" and instr.arg1 == self.current_function:
-                    # Reached end of function
-                    return False
-                elif instr.op == "func_end":
-                    # Different function end
-                    continue
-                else:
-                    # Found another instruction in same function
-                    return True
-        
-        return False
 
     def _emit_ldroff(self, dst_reg, base_reg, offset):
         """Emit LDROFF instruction: dst = memory[base + offset].
@@ -439,6 +512,11 @@ class EmuBackend:
         if frame.frame_size > 0:
             self._emit_i16(OP_SUB, frame.frame_size, reg=self.REG_SP)
 
+        # 4. Spill address-taken register-params (R1-R3) into their forced stack slots.
+        #    Steps 1-3 never touch R1-R3, so the incoming argument values are still intact.
+        for reg, fp_offset in frame.location_map.spilled_params:
+            self._emit_stroff(reg, self.REG_FP, fp_offset)
+
     def _emit_epilogue(self, function_name):
         frame = self.function_frames[function_name]
         
@@ -468,10 +546,10 @@ class EmuBackend:
         return the already-assigned address without re-allocating."""
         if operand not in self.operand_addresses:
             address = self.next_data_address
-            if address + size_bytes > self.CODE_START_ADDRESS:
+            if address + size_bytes > self.DATA_END_ADDRESS:
                 raise RuntimeError(
                     f"Data section overflow: need {size_bytes} B at 0x{address:04X} "
-                    f"but code starts at 0x{self.CODE_START_ADDRESS:04X}"
+                    f"but data ceiling is 0x{self.DATA_END_ADDRESS:04X} (FONT region starts there)"
                 )
             self.operand_addresses[operand] = address
             self.next_data_address += size_bytes
@@ -493,10 +571,11 @@ class EmuBackend:
                 self._emit_ldroff(reg, self.REG_FP, loc.fp_offset)
             return
 
-        # Fallback to global data section
+        # Fallback to global data section: absolute load straight into `reg` (4 bytes, no
+        # scratch). Previously this used LDI R3,addr; LDR reg,[R3], which clobbered R3 (a live
+        # 3rd-argument register).
         addr = self._ensure_data_address(operand)
-        self._emit_i16(OP_LDI, addr, reg=self.REG_ADDR)
-        self._emit_r(OP_LDR, reg, self.REG_ADDR, size_flag=0, lower_flag=0)
+        self._emit_ldroff_abs(reg, addr)
 
     def _emit_from_reg(self, operand, reg, frame: FunctionFrame):
         """Store register to operand's location."""
@@ -514,8 +593,77 @@ class EmuBackend:
         addr = self._ensure_data_address(operand)
         self._emit_i16(OP_STRI, addr, reg=reg)
 
+    # ---- Operand-form helpers (operand-aware codegen) -------------------------
+    def _home_reg(self, operand, frame):
+        """Register number if `operand` lives in a register, else None.
+        Const, stack-spilled, and global operands all return None."""
+        if isinstance(operand, Const):
+            return None
+        if frame and (operand in frame.location_map.locations
+                      or any(v == operand for v in frame.location_map.locations)):
+            loc = frame.loc(operand)
+            return loc.register if loc.kind == "register" else None
+        return None
+
+    def _same_home(self, a, b, frame):
+        """True iff `a` and `b` are both spilled to the same stack slot, so a copy between
+        them is a no-op (the allocator coalesced two non-interfering vars to one slot)."""
+        if not frame:
+            return False
+        a_in = (a in frame.location_map.locations or any(v == a for v in frame.location_map.locations))
+        b_in = (b in frame.location_map.locations or any(v == b for v in frame.location_map.locations))
+        if a_in and b_in:
+            la, lb = frame.loc(a), frame.loc(b)
+            return la.kind == "stack" and lb.kind == "stack" and la.fp_offset == lb.fp_offset
+        return False
+
+    def _operand_form(self, operand, frame):
+        """How to address `operand` in place as the RHS of an ALU/CMP op:
+              ("imm", value)     -> I16          (4 B)
+              ("reg", r)         -> R-type       (2 B)
+              ("stk", fp_offset) -> M-type FP    (4 B)
+              ("abs", addr)      -> M-type abs   (4 B)  [global scalar]
+        Never loads the operand into a scratch register."""
+        if isinstance(operand, Const):
+            return ("imm", self._const_to_word(operand.value))
+        if frame and (operand in frame.location_map.locations
+                      or any(v == operand for v in frame.location_map.locations)):
+            loc = frame.loc(operand)
+            if loc.kind == "register":
+                return ("reg", loc.register)
+            return ("stk", loc.fp_offset)
+        return ("abs", self._ensure_data_address(operand))
+
+    def _emit_op_rhs(self, opcode, acc_reg, form):
+        """Emit `acc_reg = acc_reg <opcode> form` for ALU or CMP, choosing the in-place
+        encoding from `form`. The second operand is never materialized into a register."""
+        kind = form[0]
+        if kind == "imm":
+            self._emit_i16(opcode, form[1], reg=acc_reg)
+        elif kind == "reg":
+            self._emit_r(opcode, acc_reg, form[1], size_flag=0, lower_flag=1)
+        elif kind == "stk":
+            self._emit_m(opcode, acc_reg, self.REG_FP, form[1])
+        elif kind == "abs":
+            self._emit_m_abs(opcode, acc_reg, form[1])
+
     def _emit_instruction(self, instruction):
         op = instruction.op
+
+        # ---- Dead-store elimination ---------------------------------------------------------
+        # This instruction's result is never read again, so emitting it is pointless. Skipping it
+        # ALSO fixes the dead-store aliasing bug: the allocator may give two variables the same
+        # register when their live ranges don't overlap, but a write to a variable AFTER its last
+        # use (a dead store) would still hit that shared register and corrupt the other, still-live
+        # variable. Not emitting dead stores makes that corruption impossible.
+        #
+        # SAFE ONLY because the pre-pass (_DSE_OPS) marks pure, side-effect-free defs (arithmetic /
+        # copies / comparisons / addrof). It NEVER marks call, store_ptr, load_ptr, STRI, or def_arr
+        # — those have effects (or may touch MMIO) and must run even when their result is unused.
+        if id(instruction) in self.dead_instr:
+            self.current_instr_index += 1
+            return
+        # -------------------------------------------------------------------------------------
 
         if op == "entry_begin":
             # Entry block: globals are initialized here, then main() is called.
@@ -565,9 +713,17 @@ class EmuBackend:
             return
 
         if op == "if":
+            if id(instruction) in self.skip_if:
+                # The preceding comparison was fused and already emitted the branch to our target.
+                self.current_instr_index += 1
+                return
             frame = self.function_frames.get(self.current_function)
-            self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
-            self._emit_i16(OP_CMP, 0, reg=self.REG_RETVAL)
+            # Compare the condition in place when it already lives in a register (skip the MOV).
+            creg = self._home_reg(instruction.arg1, frame)
+            if creg is None:
+                self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
+                creg = self.REG_RETVAL
+            self._emit_i16(OP_CMP, 0, reg=creg)
             self._emit_branch_fixup(OP_JNZ, instruction.result)
             self.current_instr_index += 1
             return
@@ -576,39 +732,70 @@ class EmuBackend:
             if instruction.arg1 is None:
                 self.current_instr_index += 1
                 return
-            
+
             frame = self.function_frames.get(self.current_function)
-            self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
-            self._emit_from_reg(instruction.result, self.REG_RETVAL, frame)
+            src, dst = instruction.arg1, instruction.result
+            dst_reg = self._home_reg(dst, frame)          # None => dst on stack/global
+            if isinstance(src, Const):
+                if dst_reg is not None:
+                    self._emit_i16(OP_LDI, self._const_to_word(src.value), reg=dst_reg)
+                else:
+                    self._emit_to_reg(src, self.REG_RETVAL, frame)
+                    self._emit_from_reg(dst, self.REG_RETVAL, frame)
+            else:
+                src_reg = self._home_reg(src, frame)
+                if dst_reg is not None and src_reg is not None:
+                    if dst_reg != src_reg:
+                        self._emit_r(OP_MOV, dst_reg, src_reg, size_flag=0, lower_flag=0)
+                    # same register -> emit nothing
+                elif dst_reg is not None:
+                    self._emit_to_reg(src, dst_reg, frame)        # stack/global -> register (1 instr)
+                elif src_reg is not None:
+                    self._emit_from_reg(dst, src_reg, frame)      # register -> stack/global (1 instr)
+                elif self._same_home(src, dst, frame):
+                    pass                                          # coalesced to same slot -> no-op
+                else:
+                    # stack/global -> stack/global: bounce through R0.
+                    self._emit_to_reg(src, self.REG_RETVAL, frame)
+                    self._emit_from_reg(dst, self.REG_RETVAL, frame)
             self.current_instr_index += 1
             return
 
-        if op in ("+", "-", "&", "|", "^", "*", "/", "shl", "shr"):
-            frame = self.function_frames.get(self.current_function)
-            self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
+        if op in self.ALU_OPCODE:
+            # result = arg1 OP arg2.  arg2 is addressed in place via _operand_form/_emit_op_rhs
+            # (immediate / register / stack / global) — never loaded into a scratch register.
+            # Only arg1 is moved into an accumulator, because the ALU's first operand must be a
+            # register and is overwritten by the result.
+            frame   = self.function_frames.get(self.current_function)
+            alu     = self.ALU_OPCODE[op]
+            res_reg = self._home_reg(instruction.result, frame)   # None => result on stack/global
+            a2_reg  = self._home_reg(instruction.arg2, frame)
+            form2   = self._operand_form(instruction.arg2, frame)
 
-            # Check arg2 location
-            arg2_loc = None
-            if frame and (instruction.arg2 in frame.location_map.locations or any(v == instruction.arg2 for v in frame.location_map.locations.keys())):
-                arg2_loc = frame.loc(instruction.arg2)
-
-            opcode_map = {
-                "+": OP_ADD, "-": OP_SUB, "&": OP_AND, "|": OP_OR, "^": OP_XOR,
-                "*": OP_MUL, "/": OP_DIV, "shl": OP_SHL, "shr": OP_SHR,
-            }
-            alu_op = opcode_map[op]
-            
-            if arg2_loc and arg2_loc.kind == "register":
-                self._emit_r(alu_op, self.REG_RETVAL, arg2_loc.register, size_flag=0, lower_flag=1)
-            elif arg2_loc and arg2_loc.kind == "stack":
-                # Use M-type!
-                self._emit_m(alu_op, self.REG_RETVAL, self.REG_FP, arg2_loc.fp_offset)
+            if res_reg is not None:
+                if a2_reg is not None and a2_reg == res_reg:
+                    # arg2 already occupies the destination register.
+                    if op in self.COMMUTATIVE:
+                        # res = arg2 OP arg1  ==  arg1 OP arg2
+                        self._emit_op_rhs(alu, res_reg, self._operand_form(instruction.arg1, frame))
+                    else:
+                        # e.g. x = y - x: compute in R0 so arg2 is read from res_reg before overwrite.
+                        self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
+                        self._emit_op_rhs(alu, self.REG_RETVAL, form2)
+                        self._emit_r(OP_MOV, res_reg, self.REG_RETVAL, size_flag=0, lower_flag=0)
+                else:
+                    a1_reg = self._home_reg(instruction.arg1, frame)
+                    if a1_reg != res_reg:
+                        # Load arg1 into the destination. Safe: arg2 is not in res_reg here, and a
+                        # global arg1 loads via LDROFF-abs (no scratch), so nothing live is clobbered.
+                        self._emit_to_reg(instruction.arg1, res_reg, frame)
+                    # else arg1 already in dest -> operate in place (e.g. i = i + 1)
+                    self._emit_op_rhs(alu, res_reg, form2)
             else:
-                # const or global
-                self._emit_to_reg(instruction.arg2, self.REG_SAVED1, frame)
-                self._emit_r(alu_op, self.REG_RETVAL, self.REG_SAVED1, size_flag=0, lower_flag=1)
-            
-            self._emit_from_reg(instruction.result, self.REG_RETVAL, frame)
+                # Result lives on the stack/global: compute in R0, then store out.
+                self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
+                self._emit_op_rhs(alu, self.REG_RETVAL, form2)
+                self._emit_from_reg(instruction.result, self.REG_RETVAL, frame)
             self.current_instr_index += 1
             return
 
@@ -622,13 +809,6 @@ class EmuBackend:
             self._emit_comparison(instruction)
             return
 
-        if op == "arg":
-            # Collect argument in pending buffer
-            # Will be processed when call instruction is encountered
-            self.pending_args.append(instruction.arg1)
-            self.current_instr_index += 1
-            return
-
         if op == "call":
             frame = self.function_frames.get(self.current_function)
             
@@ -638,30 +818,37 @@ class EmuBackend:
             self.pending_args = self.pending_args[:-arg_count] if arg_count > 0 else self.pending_args
             stack_arg_count = max(0, arg_count - 3)
             
-            # --- Step 1: Determine which caller-saved regs to spill ---
-            has_more = self._has_more_instructions_in_function(instruction)
-            caller_saved_to_spill = []
-            if has_more and self.current_function:
-                caller_saved_to_spill = [self.REG_ARG1, self.REG_ARG2, self.REG_ARG3]
-            
+            arg_registers = [self.REG_ARG1, self.REG_ARG2, self.REG_ARG3]
+
+            # --- Step 1: Spill only the caller-saved regs that hold a value live across the call
+            # (precomputed from liveness in _precompute_marks). The callee may clobber any of
+            # R1-R3, so we save each one holding a live-across variable. ---
+            caller_saved_to_spill = self.call_spill.get(id(instruction), [])
             for reg in caller_saved_to_spill:
                 self._emit_r(OP_PSH, reg)
-            
+
             # --- Step 2: Push stack arguments right-to-left ---
             for i in range(arg_count - 1, 2, -1):
                 self._emit_to_reg(call_args[i], self.REG_RETVAL, frame)
                 self._emit_r(OP_PSH, self.REG_RETVAL)
-            
-            # --- Step 3: Load register arguments safely ---
-            # To avoid clobbering, push all register args, then pop them into place
+
+            # --- Step 3: Load register arguments (option (i): direct loads) ---
+            # The only clobber hazard is an arg whose VALUE currently lives in one of R1-R3
+            # (loading args in place could overwrite a not-yet-read source — e.g. f(b, a)).
+            # Constants / stack / globals / R4-R5 sources never conflict, so load them directly.
+            # Only when some arg is R1-R3-sourced do we fall back to the safe push-all-then-pop.
             num_reg_args = min(3, arg_count)
-            for i in range(num_reg_args):
-                self._emit_to_reg(call_args[i], self.REG_RETVAL, frame)
-                self._emit_r(OP_PSH, self.REG_RETVAL)
-                
-            arg_registers = [self.REG_ARG1, self.REG_ARG2, self.REG_ARG3]
-            for i in range(num_reg_args - 1, -1, -1):
-                self._emit_r(OP_POP, arg_registers[i])
+            conflict = any(self._home_reg(call_args[i], frame) in arg_registers
+                           for i in range(num_reg_args))
+            if not conflict:
+                for i in range(num_reg_args):
+                    self._emit_to_reg(call_args[i], arg_registers[i], frame)
+            else:
+                for i in range(num_reg_args):
+                    self._emit_to_reg(call_args[i], self.REG_RETVAL, frame)
+                    self._emit_r(OP_PSH, self.REG_RETVAL)
+                for i in range(num_reg_args - 1, -1, -1):
+                    self._emit_r(OP_POP, arg_registers[i])
             
             # --- Step 4: Push FP (caller saves frame pointer) ---
             self._emit_r(OP_PSH, self.REG_FP)
@@ -697,7 +884,18 @@ class EmuBackend:
             count = instruction.arg2       # element count (int)
             elem_size = 2 if elem_type == "int" else 1
             total = count * elem_size
-            self._ensure_data_address(arr_var, total)
+            addr = self._ensure_data_address(arr_var, total)
+            # Array literal: bake the constant elements into the ROM image (back-patched in
+            # generate(), after addresses are final). byte -> 1 B; int -> 2 B little-endian.
+            if instruction.extra:
+                byts = bytearray()
+                for v in instruction.extra:
+                    if elem_size == 1:
+                        byts.append(v & 0xFF)
+                    else:
+                        byts.append(v & 0xFF)
+                        byts.append((v >> 8) & 0xFF)
+                self.data_initializers.append((addr, bytes(byts)))
             self.current_instr_index += 1
             return
 
@@ -742,36 +940,48 @@ class EmuBackend:
             return
 
         if op == "load_ptr":
-            # Load a word or byte from the address stored in arg1.
-            # result.type tells us the access width.
+            # result = mem[arg1].  Load the pointer value into the destination register itself and
+            # dereference in place (self-base, safe after the LDR rd==rb hardening). Bytes are
+            # zero-extended with a post-load mask. No scratch register, no R3 clobber.
             frame = self.function_frames.get(self.current_function)
-            self._emit_to_reg(instruction.arg1, self.REG_ADDR, frame)
-            result_type = getattr(instruction.result, "type", "int")
-            if result_type == "byte":
-                # Zero-extend: LDI R0, 0 then LDR R0, [R3], byte
-                self._emit_i16(OP_LDI, 0, reg=self.REG_RETVAL)
-                self._emit_r(OP_LDR, self.REG_RETVAL, self.REG_ADDR,
-                             size_flag=1, lower_flag=1)
+            width = getattr(instruction.result, "type", "int")
+            res_reg = self._home_reg(instruction.result, frame)
+            dst = res_reg if res_reg is not None else self.REG_RETVAL
+            self._emit_to_reg(instruction.arg1, dst, frame)             # dst = pointer value
+            if width == "byte":
+                self._emit_r(OP_LDR, dst, dst, size_flag=1, lower_flag=1)   # dst.low = mem[dst]
+                self._emit_i16(OP_AND, 0x00FF, reg=dst)                     # zero-extend
             else:
-                self._emit_r(OP_LDR, self.REG_RETVAL, self.REG_ADDR,
-                             size_flag=0, lower_flag=0)
-            self._emit_from_reg(instruction.result, self.REG_RETVAL, frame)
+                self._emit_r(OP_LDR, dst, dst, size_flag=0, lower_flag=0)   # dst = mem[dst]
+            if res_reg is None:
+                self._emit_from_reg(instruction.result, self.REG_RETVAL, frame)
             self.current_instr_index += 1
             return
 
         if op == "store_ptr":
-            # Store arg1 (value) to the address in arg2 (pointer).
-            # arg1.type tells us the access width.
+            # mem[arg2] = arg1.  Use the pointer's register directly as the base when it has one.
             frame = self.function_frames.get(self.current_function)
-            self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
-            self._emit_to_reg(instruction.arg2, self.REG_ADDR, frame)
-            val_type = getattr(instruction.arg1, "type", "int")
-            if val_type == "byte":
-                self._emit_r(OP_STR, self.REG_RETVAL, self.REG_ADDR,
-                             size_flag=1, lower_flag=1)
+            width = getattr(instruction.arg1, "type", "int")
+            sf, lf = (1, 1) if width == "byte" else (0, 0)
+            p_reg = self._home_reg(instruction.arg2, frame)   # pointer
+            v_reg = self._home_reg(instruction.arg1, frame)   # value
+            if p_reg is not None:
+                if v_reg is not None:
+                    self._emit_r(OP_STR, v_reg, p_reg, size_flag=sf, lower_flag=lf)
+                else:
+                    self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
+                    self._emit_r(OP_STR, self.REG_RETVAL, p_reg, size_flag=sf, lower_flag=lf)
             else:
-                self._emit_r(OP_STR, self.REG_RETVAL, self.REG_ADDR,
-                             size_flag=0, lower_flag=0)
+                self._emit_to_reg(instruction.arg2, self.REG_RETVAL, frame)   # R0 = address
+                if v_reg is not None:
+                    self._emit_r(OP_STR, v_reg, self.REG_RETVAL, size_flag=sf, lower_flag=lf)
+                else:
+                    # Both pointer and value lack a register: guard R4 to hold the value.
+                    # Rare (e.g. *p = <const/stack/global> with p spilled).
+                    self._emit_r(OP_PSH, self.REG_SAVED1)
+                    self._emit_to_reg(instruction.arg1, self.REG_SAVED1, frame)
+                    self._emit_r(OP_STR, self.REG_SAVED1, self.REG_RETVAL, size_flag=sf, lower_flag=lf)
+                    self._emit_r(OP_POP, self.REG_SAVED1)
             self.current_instr_index += 1
             return
 
@@ -792,23 +1002,57 @@ class EmuBackend:
 
         raise RuntimeError(f"Unsupported TAC op for EmuBackend: {op}")
 
+    def _emit_op_into_flags(self, instruction, frame):
+        """Emit the CMP for a comparison: arg1 in place (CMP doesn't write register1) or loaded
+        into R0, then arg2 addressed in place via _operand_form. Leaves the result in the flags."""
+        a1_reg = self._home_reg(instruction.arg1, frame)
+        if a1_reg is None:
+            self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
+            cmp_reg = self.REG_RETVAL
+        else:
+            cmp_reg = a1_reg
+        self._emit_op_rhs(OP_CMP, cmp_reg, self._operand_form(instruction.arg2, frame))
+
+    def _emit_fused_branch(self, op, target):
+        """Branch to `target` when comparison `op` is TRUE, using flags from a preceding CMP.
+        Mirrors the per-op jump logic of the 0/1 materialization, but jumps to the real target."""
+        if op == "<":
+            self._emit_branch_fixup(OP_JS, target)
+        elif op == ">=":
+            self._emit_branch_fixup(OP_JNS, target)
+        elif op == "==":
+            self._emit_branch_fixup(OP_JZ, target)
+        elif op == "!=":
+            self._emit_branch_fixup(OP_JNZ, target)
+        elif op == "<=":                                  # sign OR zero
+            self._emit_branch_fixup(OP_JS, target)
+            self._emit_branch_fixup(OP_JZ, target)
+        elif op == ">":                                   # NOT sign AND NOT zero
+            skip = self._new_internal_label("fcmp_skip")
+            self._emit_branch_fixup(OP_JS, skip)
+            self._emit_branch_fixup(OP_JZ, skip)
+            self._emit_branch_fixup(OP_JMP, target)
+            self._mark_label(skip)
+        else:
+            raise RuntimeError(f"Unsupported comparison op: {op}")
+
     def _emit_comparison(self, instruction):
         frame = self.function_frames.get(self.current_function)
-        self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
-        
-        # Check arg2 location
-        arg2_loc = None
-        if frame and (instruction.arg2 in frame.location_map.locations or any(v == instruction.arg2 for v in frame.location_map.locations.keys())):
-            arg2_loc = frame.loc(instruction.arg2)
-            
-        if arg2_loc and arg2_loc.kind == "register":
-            self._emit_r(OP_CMP, self.REG_RETVAL, arg2_loc.register, size_flag=0, lower_flag=1)
-        elif arg2_loc and arg2_loc.kind == "stack":
-            self._emit_m(OP_CMP, self.REG_RETVAL, self.REG_FP, arg2_loc.fp_offset)
-        else:
-            # const or global
-            self._emit_to_reg(instruction.arg2, self.REG_SAVED1, frame)
-            self._emit_r(OP_CMP, self.REG_RETVAL, self.REG_SAVED1, size_flag=0, lower_flag=1)
+
+        # FUSED: result is consumed only by the immediately-following `if` (that `if` is in
+        # self.skip_if). Emit the CMP and branch straight to the if's target — no 0/1 materialization.
+        target = self.fused_cmp.get(id(instruction))
+        if target is not None:
+            self._emit_op_into_flags(instruction, frame)
+            self._emit_fused_branch(instruction.op, target)
+            self.current_instr_index += 1
+            return
+
+        # Unfused: materialize a 0/1 result.
+        # CMP does not write register1, so if arg1 already lives in a register we compare it in
+        # place (no MOV, no clobber). arg2 is addressed in place via _operand_form — never loaded
+        # into a scratch register.
+        self._emit_op_into_flags(instruction, frame)
 
         true_label = self._new_internal_label("cmp_true")
         end_label = self._new_internal_label("cmp_end")

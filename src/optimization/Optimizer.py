@@ -199,43 +199,32 @@ class Optimizer:
         return changed or c
 
     def constant_propagation(self, instrs):
-        def spread_vars(instrs, var_map, when_to_del):
-            changed = False
-            for i, instr in enumerate(instrs):
-                if instr.op in ("print", "asm", "addrof", "def_arr"):
-                    # addrof: replacing a Var with its constant value would be wrong
-                    #   (we need the *address*, not the value stored at that address).
-                    # def_arr: arg1/arg2 are a string/int, not operands — skip safely.
-                    continue
-
-                if instr.arg1 in var_map and (
-                    i <= when_to_del[instr.arg1]
-                    if when_to_del.get(instr.arg1)
-                    else True
-                ):
-
-                    changed = True
+        # SINGLE FORWARD PASS over the block. A `var = <const>` assignment makes that variable a
+        # known constant only for uses that come AFTER it, and only until the variable is
+        # reassigned. The previous version built one block-wide map first and then substituted it
+        # into every use — including uses BEFORE the assignment — which propagated a constant
+        # BACKWARD and miscompiled e.g. `y = v; v = 5; return y` (y wrongly became 5).
+        # (Cross-block leakage is already prevented: get_blocks splits on control flow, calls, and
+        # other barriers, so propagation never crosses a branch or a call that could change a var.)
+        var_map = {}   # Var -> current known constant value (valid from here forward in this block)
+        changed = False
+        # Ops whose operands must NOT be const-substituted: addrof needs the variable's address
+        # (not its value); print/asm/def_arr are opaque to the optimizer.
+        OPAQUE = ("print", "asm", "addrof", "def_arr")
+        for instr in instrs:
+            # 1. Substitute already-known constants into this instruction's operands.
+            if instr.op not in OPAQUE:
+                if instr.arg1 in var_map:
                     instr.arg1 = Const(var_map[instr.arg1], type=instr.arg1.type)
-                if instr.arg2 in var_map and (
-                    i <= when_to_del[instr.arg2]
-                    if when_to_del.get(instr.arg2)
-                    else True
-                ):
                     changed = True
+                if instr.arg2 in var_map:
                     instr.arg2 = Const(var_map[instr.arg2], type=instr.arg2.type)
-            return changed
-
-        var_map = {}
-        when_to_del = {}
-        for i, instr in enumerate(instrs):
-            if instr.op in ["eq", "def"] and isinstance(instr.result, Var):
-                if isinstance(instr.arg1, Const):
-                    var_map[instr.result] = instr.arg1.value
-                elif isinstance(instr.arg1, Var) and instr.arg1 in var_map:
-                    var_map[instr.result] = var_map[instr.arg1]
+                    changed = True
+            # 2. Update the map from this instruction's definition (after substitution above, so a
+            #    copy of a known constant — `b = a` with a known — also becomes known).
+            if isinstance(instr.result, Var):
+                if instr.op in ("eq", "def") and isinstance(instr.arg1, Const):
+                    var_map[instr.result] = instr.arg1.value     # now a known constant
                 else:
-                    if instr.result in var_map:
-                        when_to_del[instr.result] = i
-
-        c = spread_vars(instrs, var_map, when_to_del)
-        return c
+                    var_map.pop(instr.result, None)              # reassigned to a non-constant
+        return changed

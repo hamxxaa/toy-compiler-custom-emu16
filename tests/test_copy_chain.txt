@@ -1,0 +1,13 @@
+{
+    int chain(int v) {
+        var int x;
+        var int y;
+        x = v;          // copy param -> local
+        y = x;          // copy local -> local
+        x = x + 100;    // mutate x; x and y stay live -> distinct homes, y must be unaffected
+        return y + x;   // y = 7 (original v), x = 107  => 114
+    }
+    int main() {
+        return chain(7);
+    }
+}

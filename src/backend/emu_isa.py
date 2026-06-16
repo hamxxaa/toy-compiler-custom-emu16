@@ -56,6 +56,15 @@ def pack_m_type(opcode, reg1, base_reg):
     )
 
 
+ABS_FLAG = 1 << 1  # M-type / LDROFF absolute-addressing flag (bit 1)
+
+
+def pack_m_type_abs(opcode, reg1):
+    # Absolute M-type: base register ignored, abs flag set. The 16-bit immediate that
+    # follows the header is the absolute address (not a base+offset).
+    return pack_m_type(opcode, reg1, 0) | ABS_FLAG
+
+
 def pack_i8(opcode, reg1, immediate8):
     return ((opcode & 0x1F) << 11) | ((reg1 & 0x07) << 8) | (immediate8 & 0xFF)
 

@@ -38,6 +38,28 @@ TESTS = [
     # ── M4 else / else-if + drop do ───────────────────────────────────────────
     ("tests/test_else.txt",      "test_else",      2),
     ("tests/test_elseif.txt",    "test_elseif",    30),
+    # ── M6 font rendering ─────────────────────────────────────────────────────
+    ("tests/test_draw_char.txt",   "test_draw_char",   1),
+    ("tests/test_draw_string.txt", "test_draw_string", 1),
+    # ── Operand-aware codegen regressions (clobber bug class) ──────────────────
+    ("tests/test_global_3param.txt", "test_global_3param", 11),
+    ("tests/test_cmp_const_clobber.txt", "test_cmp_const_clobber", 6),
+    ("tests/test_rhs_clobber.txt",   "test_rhs_clobber",   30),
+    ("tests/test_copy_chain.txt",    "test_copy_chain",    114),
+    ("tests/test_ptr_3param.txt",    "test_ptr_3param",    56),
+    ("tests/test_addr_param.txt",    "test_addr_param",    42),
+    # ── Phase 2: fusion / call-site / DSE ──────────────────────────────────────
+    ("tests/test_fusion_loop.txt",   "test_fusion_loop",   10),
+    ("tests/test_call_perm.txt",     "test_call_perm",      7),
+    ("tests/test_dead_store_alias.txt", "test_dead_store_alias", 7),
+    ("tests/test_constprop_order.txt", "test_constprop_order", 7),
+    # ── M8: array literals (initialized data baked into the ROM image) ─────────
+    ("tests/test_arr_lit_byte.txt",   "test_arr_lit_byte",    3),
+    ("tests/test_arr_lit_int.txt",    "test_arr_lit_int",  8738),
+    ("tests/test_arr_lit_partial.txt","test_arr_lit_partial", 9),
+    ("tests/test_arr_lit_global.txt", "test_arr_lit_global", 13),
+    # ── M7: host syscall / interrupt regression (needs --menu so the dev handler is live) ──
+    ("tests/test_syscall_echo.txt",   "test_syscall_echo",   42, ["--menu"]),
 ]
 
 
@@ -52,17 +74,25 @@ def compile_test(src, rom_name):
         )
 
 
-def run_test(rom_name):
+def run_test(rom_name, emu_args=()):
+    """Run a ROM and return (return_value, instr_count_or_None, rom_size_bytes)."""
     rom_path = os.path.join(ROM_DIR, rom_name + ".rom")
     result = subprocess.run(
-        [EMU, "--rom", rom_path, "--frames", "1"],
+        [EMU, "--rom", rom_path, "--frames", "1", *emu_args],
         capture_output=True, text=True, cwd=ROOT
     )
+    rom_bytes = os.path.getsize(rom_path) if os.path.exists(rom_path) else 0
     for line in result.stdout.splitlines():
         if line.startswith("RESULT "):
+            got = None
+            instr = None
             for token in line.split():
                 if token.startswith("return="):
-                    return int(token.split("=")[1])
+                    got = int(token.split("=")[1])
+                elif token.startswith("instr="):
+                    instr = int(token.split("=")[1])
+            if got is not None:
+                return got, instr, rom_bytes
     raise RuntimeError(
         f"No RESULT line from emulator for {rom_name}.\n"
         f"stdout: {result.stdout!r}\nstderr: {result.stderr!r}"
@@ -70,25 +100,31 @@ def run_test(rom_name):
 
 
 def main():
-    print(f"{'Test':<22} {'expect':>8}  {'got':>8}  {'':>6}")
-    print("-" * 50)
+    print(f"{'Test':<22} {'expect':>8}  {'got':>8}  {'bytes':>6}  {'instr':>8}  {'':>6}")
+    print("-" * 66)
     all_pass = True
-    for src, rom_name, expected in TESTS:
+    total_bytes = 0
+    total_instr = 0
+    for entry in TESTS:
+        src, rom_name, expected = entry[0], entry[1], entry[2]
+        emu_args = entry[3] if len(entry) > 3 else []
         try:
             compile_test(src, rom_name)
-            got = run_test(rom_name)
+            got, instr, rom_bytes = run_test(rom_name, emu_args)
             status = "PASS" if got == expected else "FAIL"
             if got != expected:
                 all_pass = False
+            total_bytes += rom_bytes
+            total_instr += (instr or 0)
         except Exception as exc:
-            got = "ERROR"
-            status = "FAIL"
             all_pass = False
-            print(f"{rom_name:<22} {expected:>8}  {'ERROR':>8}  {status}")
+            print(f"{rom_name:<22} {expected:>8}  {'ERROR':>8}  {'':>6}  {'':>8}  FAIL")
             print(f"  {exc}")
             continue
-        print(f"{rom_name:<22} {expected:>8}  {got:>8}  {status}")
-    print("-" * 50)
+        instr_str = str(instr) if instr is not None else "n/a"
+        print(f"{rom_name:<22} {expected:>8}  {got:>8}  {rom_bytes:>6}  {instr_str:>8}  {status}")
+    print("-" * 66)
+    print(f"{'TOTAL':<22} {'':>8}  {'':>8}  {total_bytes:>6}  {total_instr:>8}")
     print(f"ALL PASS: {all_pass}")
     return 0 if all_pass else 1
 

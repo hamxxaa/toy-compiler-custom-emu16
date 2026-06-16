@@ -1,17 +1,20 @@
-# Toy Compiler — build, test, and clean targets.
+# Toy Compiler — build, test, and clean targets. Runs under Git Bash on Windows (or any Unix
+# shell); recipes use POSIX tools (g++, emcc, python, node, rm).
 #
 # Requirements:
-#   pc_emu : g++ / MinGW (any GCC ≥ 7)
-#   wasm   : Emscripten (emcc on PATH — run emsdk_env first, or use the workaround in memory/)
-#   test   : Python 3, pc_emu already built
-#   verify : Node.js, wasm already built
+#   pc_emu : g++ / MinGW (any GCC >= 7) on PATH
+#   wasm   : Emscripten (emcc on PATH) — Windows: run `emsdk_env` first; the recipe calls emcc
+#            directly (no bash), so it works from cmd/PowerShell once emsdk is activated.
+#   test   : Python 3 on PATH, pc_emu already built
+#   verify : Node.js on PATH (emsdk bundles one — activate emsdk), wasm already built
+#   flash / uploadfs : PlatformIO (pio) on PATH
 #
-# Usage:
-#   make           # build pc_emu.exe + WASM
+# Usage (Windows: mingw32-make <target>; Unix: make <target>):
+#   make           # build pc_emu + WASM
 #   make pc_emu    # desktop emulator only
-#   make wasm      # WebAssembly only
-#   make test      # regression tests (compiles + runs all 23 test ROMs)
-#   make verify    # headless WASM cross-check via Node
+#   make wasm      # WebAssembly only        (needs emcc on PATH)
+#   make test      # regression tests
+#   make verify    # headless WASM cross-check via Node   (needs node on PATH)
 #   make clean     # remove all build artifacts
 
 CXX      := g++
@@ -21,7 +24,19 @@ EMU_OUT  := pc_emu.exe
 EMU_SRCS := emulator/emu.cpp emulator/pc_emulator_main.cpp
 EMU_HDRS := emulator/emu.h emulator/definitions.h
 
-WASM_OUT := simulator/emu.js
+WASM_OUT  := simulator/emu.js
+EMCC      := emcc
+# Keep these flags in sync with simulator/build.sh (the manual bash build).
+EMCC_FLAGS := -O2 -s MODULARIZE=1 -s EXPORT_NAME=createEmu \
+              -s "EXPORTED_RUNTIME_METHODS=['cwrap','ccall','HEAPU8']" \
+              -s ALLOW_MEMORY_GROWTH=0 -s INITIAL_MEMORY=16777216 -s ENVIRONMENT=web,node
+
+# ── Clean shims ──────────────────────────────────────────────────────────────
+# POSIX rm (Git Bash on Windows, or any Unix shell). rm -f / -rf tolerate missing paths.
+RM_FILES = rm -f $(EMU_OUT) $(WASM_OUT) simulator/emu.wasm
+RM_BUILD = rm -rf build/roms
+RM_PCEMU = rm -rf build/pc_emulator
+RM_PIO   = rm -rf firmware/.pio
 
 .PHONY: all pc_emu wasm test verify flash uploadfs clean
 
@@ -31,17 +46,22 @@ all: pc_emu wasm
 
 pc_emu: $(EMU_OUT)
 
+# -DEMU_COUNT_INSTRUCTIONS enables the executed-instruction counter for metrics. It is set ONLY
+# for the desktop dev/metrics build; firmware (pio) and WASM omit it -> zero production overhead.
 $(EMU_OUT): $(EMU_SRCS) $(EMU_HDRS)
-	$(CXX) $(CXXFLAGS) $(EMU_SRCS) -o $@
+	$(CXX) $(CXXFLAGS) -DEMU_COUNT_INSTRUCTIONS $(EMU_SRCS) -o $@
 
 # ── WebAssembly simulator ────────────────────────────────────────────────────
+# Calls emcc directly (no bash) so it runs from cmd/PowerShell too. emcc must be on PATH
+# (Windows: run emsdk_env first). emcc accepts forward-slash paths on every platform.
 
 wasm: $(WASM_OUT)
 
 $(WASM_OUT): emulator/emu.cpp emulator/emu_wasm.cpp $(EMU_HDRS)
-	bash simulator/build.sh
+	$(EMCC) emulator/emu.cpp emulator/emu_wasm.cpp $(EMCC_FLAGS) -o $(WASM_OUT)
 
 # ── Firmware (ESP32) ─────────────────────────────────────────────────────────
+# `cd x && y` works in both cmd.exe and sh.
 
 flash:
 	cd firmware && pio run -t upload
@@ -60,5 +80,7 @@ verify: $(WASM_OUT)
 # ── Clean ────────────────────────────────────────────────────────────────────
 
 clean:
-	rm -f $(EMU_OUT) $(WASM_OUT) simulator/emu.wasm
-	rm -rf build/roms build/pc_emulator firmware/.pio
+	$(RM_FILES)
+	$(RM_BUILD)
+	$(RM_PCEMU)
+	$(RM_PIO)

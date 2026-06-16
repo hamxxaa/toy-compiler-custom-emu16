@@ -1,0 +1,6 @@
+{
+    int main() {
+        var byte t[4] = {1, 2, 3, 4};
+        return t[2];        // 3
+    }
+}

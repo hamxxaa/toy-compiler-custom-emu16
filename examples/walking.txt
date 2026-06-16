@@ -1,0 +1,130 @@
+include "../lib/io.lib";
+include "../lib/sys.lib";
+
+{
+    var byte mansprite[32] = {0x03, 0x80, 0x04, 0x40, 0x04, 0x40, 0x04, 0x40,
+                              0x03, 0x80, 0x01, 0x00, 0x01, 0x00, 0x0f, 0xe0,
+                              0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00,
+                              0x02, 0x80, 0x04, 0x40, 0x08, 0x20, 0x00, 0x00 };
+    var int manx = 0;
+    var int many = 0;
+    var int color = 1;
+    int main() {
+        print_man();
+        var int input = 0;
+        while(true) {
+            
+            input = read_input();
+            
+            if input != 0 {
+                erase_man();
+            }
+            
+            if (input & 8) != 0 { // up
+                many = many + 1;
+            }
+            if (input & 4) != 0 { // right
+                manx = manx + 1;
+            } 
+            if (input & 2) != 0 {  // down
+                many = many - 1;
+            }
+            if (input & 1) != 0 {  // left
+                manx = manx - 1;
+            }
+
+            if many < 0 {
+                many = 0;
+            }
+            if many > 112 {
+                many = 112;
+            }
+            if manx < 0 {
+                manx = 0;
+            }
+            if manx > 144 {
+                manx = 144;
+            }
+            
+            if input != 0{
+            print_man();
+            }
+
+            sys_present();   // show this frame and pace to ~60 Hz -> one move per frame
+        }
+       
+
+    }
+
+    int erase_man() {
+        var int row;
+        var int row_data1;
+        var int row_data2;
+        var int col;
+        var int bit;
+        var int pixel_x;
+        var int pixel_y;
+        row = 0;
+        while row < 16 {
+            row_data1 = peek_byte(&mansprite + row * 2);
+            row_data2 = peek_byte(&mansprite + row * 2 + 1);
+            col = 0;
+            while col < 8 {
+                bit = row_data1 & (0x80 >> col);
+                if (bit != 0) {
+                    pixel_x = manx + col;
+                    pixel_y = many + row;
+                    plot(pixel_x, pixel_y, 0);
+                }
+                col = col + 1;
+            }
+            col = 0;
+            while col < 8 {
+                bit = row_data2 & (0x80 >> col);
+                if (bit != 0) {
+                    pixel_x = manx + col + 8;
+                    pixel_y = many + row;
+                    plot(pixel_x, pixel_y, 0);
+                }
+                col = col + 1;
+            }
+            row = row + 1;
+        }
+    }
+
+    int print_man() {
+        var int row;
+        var int row_data1;
+        var int row_data2;
+        var int col;
+        var int bit;
+        var int pixel_x;
+        var int pixel_y;
+        row = 0;
+        while row < 16 {
+            row_data1 = peek_byte(&mansprite + row * 2);
+            row_data2 = peek_byte(&mansprite + row * 2 + 1);
+            col = 0;
+            while col < 8 {
+                bit = row_data1 & (0x80 >> col);
+                if (bit != 0) {
+                    pixel_x = manx + col;
+                    pixel_y = many + row;
+                    plot(pixel_x, pixel_y, color);
+                }
+                col = col + 1;
+            }
+            col = 0;
+            while col < 8 {
+                bit = row_data2 & (0x80 >> col);
+                if (bit != 0) {
+                    pixel_x = manx + col + 8;
+                    pixel_y = many + row;
+                    plot(pixel_x, pixel_y, color);
+                }
+                col = col + 1;
+            }
+            row = row + 1;
+        }
+    }
+}

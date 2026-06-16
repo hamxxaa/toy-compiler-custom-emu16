@@ -18,6 +18,9 @@ class LocationMap:
     locations: Dict[any, Location]
     callee_saved: List[int]             # subset of [4, 5]
     frame_size: int                     # bytes to SUB from SP
+    # Address-taken params that arrived in R1-R3 but were forced to a stack slot: the prologue
+    # must spill the incoming register into the slot. List of (incoming_register, fp_offset).
+    spilled_params: List[Tuple[int, int]] = field(default_factory=list)
 
 def allocate_function(liveness_info: LivenessInfo, param_count: int, param_names: List[str],
                       address_taken: set = None, verbose: bool = False) -> LocationMap:
@@ -92,11 +95,19 @@ def allocate_function(liveness_info: LivenessInfo, param_count: int, param_names
             # Param not used in function? We don't allocate a var, but register is free from start.
             occupied_until[reg_num] = 0
 
-    # 1b. Force address-taken params onto the stack instead of a register.
-    #     (Their caller-side value is still in R1/R2/R3 on entry; the prologue
-    #      copies them to the stack slot implicitly via spill-on-use — the backend
-    #      must do an explicit STROFF of the incoming reg to the slot.  This is
-    #      handled by the backend's func_begin prologue for spilled params.)
+    # Slot/scan bookkeeping — initialized BEFORE the address-taken-param loop so that loop can
+    # carve out stack slots (it runs before the linear scan). All slot consumers share one counter.
+    free_regs = [1, 2, 3, 4, 5]
+    active_regs: List[Tuple[int, int]] = []      # (end_idx, reg_num)
+    active_spills: List[Tuple[int, int]] = []    # (end_idx, slot_idx)
+    free_slots: List[int] = []
+    next_slot_idx = 0
+    callee_saved_used = set()                    # which callee-saved regs we actually used
+
+    # 1b. Force address-taken params onto the stack instead of a register.  Their caller-side
+    #     value is still in R1/R2/R3 on entry, so record (incoming_reg, var); the prologue must
+    #     STROFF that register into the slot (resolved to a final fp_offset below).
+    spilled_param_vars = []  # [(incoming_register, var)]
     for var in list(param_vars):
         if _is_addr_taken(var) and var in locations and locations[var].kind == "register":
             # Reclassify: free the register slot and give it a stack slot.
@@ -105,20 +116,9 @@ def allocate_function(liveness_info: LivenessInfo, param_count: int, param_names
             slot = next_slot_idx
             next_slot_idx += 1
             locations[var] = Location(kind="stack", fp_offset=-slot)
+            spilled_param_vars.append((reg, var))
 
     # 2. Allocate remaining variables (Linear Scan)
-    free_regs = [1, 2, 3, 4, 5]
-    
-    # active variables: list of (end_idx, reg_num)
-    active_regs: List[Tuple[int, int]] = []
-    
-    # active spilled variables: list of (end_idx, slot_idx)
-    active_spills: List[Tuple[int, int]] = []
-    free_slots: List[int] = []
-    next_slot_idx = 0
-    
-    # Which callee-saved registers did we actually use?
-    callee_saved_used = set()
     
     # Pre-pass: force all address-taken locals to a stack slot BEFORE linear scan.
     # This guarantees their FP-relative address is valid for the whole function.
@@ -212,9 +212,13 @@ def allocate_function(liveness_info: LivenessInfo, param_count: int, param_names
 
     frame_size = next_slot_idx * 2
 
+    # Address-taken register-params: resolve each slot to its final FP offset now that the
+    # placeholders above have been converted. The prologue spills R<reg> -> [FP + fp_offset].
+    spilled_params = [(reg, locations[var].fp_offset) for (reg, var) in spilled_param_vars]
+
     if verbose:
         print(f"ALLOCATOR: func param_names={param_names}")
         for k, v in locations.items():
             print(f"  {getattr(k, 'name', k)} -> {v}")
 
-    return LocationMap(locations, callee_saved_list, frame_size)
+    return LocationMap(locations, callee_saved_list, frame_size, spilled_params)

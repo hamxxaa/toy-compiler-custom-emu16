@@ -1,0 +1,11 @@
+{
+    int f(int x) {
+        var int p;
+        p = &x;          // x is a parameter; taking its address forces it to a stack slot,
+        *p = *p + 1;     // and the prologue must spill the incoming R1 into that slot.
+        return x;        // 41 + 1 = 42
+    }
+    int main() {
+        return f(41);
+    }
+}

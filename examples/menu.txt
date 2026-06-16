@@ -1,0 +1,95 @@
+// examples/menu.txt — ROM selector menu.
+//
+// A normal ROM compiled through the pipeline. It lists the games the host exposes (over
+// the syscall/interrupt mechanism) and launches the highlighted one. Boots first on the
+// handheld; on the desktop emulator run it with `pc_emu --menu`.
+//
+// Doubles as a syntax reference for the language: globals, arrays, address-of, function
+// calls, while loops, nested if/else, comparisons and bitwise tests.
+//
+// Rendering note: a "frame" is only ~100k instructions, but a full redraw (fill + one
+// draw_string per row) costs far more, so redrawing every frame never finishes and the
+// screen looks black. The fix below is to draw ONCE and redraw ONLY when the selection
+// changes; the rest of the time the loop just polls input and the picture stays put.
+
+include "../lib/io.lib";
+include "../lib/sys.lib";
+{
+    // GET_ROM_NAME writes one name here per row. LIST_ROMS (called once, for the count)
+    // also dumps ALL names here, so the buffer is sized for the whole list, not one name.
+    var byte namebuf[512];
+
+    int main() {
+        var int count;
+        var int shown;
+        var int selected;
+        var int drawn;
+        var int prev;
+        var int i;
+        var int input;
+        var int len;
+        var int color;
+
+        count = sys_list_roms(&namebuf, 16);    // R0 = number of ROMs
+
+        // Only ~12 rows of 8px text fit on the 128px-tall screen. Cap the row count so we
+        // never plot past the end of VRAM (which would be an out-of-bounds write).
+        shown = count;
+        if shown > 12 {
+            shown = 12;
+        }
+
+        selected = 0;
+        prev = 0;
+        drawn = -1;                             // -1 != selected, so the first frame draws
+
+        fill(0);                                // black background, painted once
+
+        while (true) {
+            // Redraw ONLY when the highlight moved. Redrawing every frame can't finish
+            // within the per-frame instruction budget, so the screen would look black.
+            if selected != drawn {
+                i = 0;
+                while (i < shown) {
+                    len = sys_get_rom_name(i, &namebuf);
+                    if i == selected {
+                        color = 2;              // red (selected)
+                    } else {
+                        color = 1;              // white
+                    }
+                    draw_string(&namebuf, len, 8, i * 10, color);
+                    i = i + 1;
+                }
+                drawn = selected;
+            }
+
+            // Navigation: act only on a FRESH press (bit set now AND clear last frame).
+            // The language has no '!' operator, so test the previous state with '== 0'.
+            input = read_input();
+
+            if (input & 8) != 0 {               // DOWN (0x08)
+                if (prev & 8) == 0 {
+                    if selected < shown - 1 {
+                        selected = selected + 1;
+                    }
+                }
+            }
+            if (input & 2) != 0 {               // UP (0x02)
+                if (prev & 2) == 0 {
+                    if selected > 0 {
+                        selected = selected - 1;
+                    }
+                }
+            }
+            if (input & 16) != 0 {              // A (0x10) -> launch the highlighted ROM
+                if (prev & 16) == 0 {
+                    sys_load_rom(selected);
+                }
+            }
+
+            prev = input;
+        }
+
+        return 0;
+    }
+}

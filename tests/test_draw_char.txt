@@ -1,0 +1,10 @@
+include "../lib/io.lib";
+
+{
+    int main() {
+        fill(0);
+        draw_char(65, 0, 0, 1);
+        // 'A' top row (0x0C) lights x=2,3 with the (un-mirrored) x+7-col layout.
+        return peek_byte(VRAM_START + 3);
+    }
+}

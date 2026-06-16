@@ -14,6 +14,20 @@
 #define EMU_TRACE_PRINT(...) ((void)0)
 #endif
 
+// Executed-instruction counter. Used only to measure codegen optimizations; gated behind a
+// compile-time macro so production builds (firmware/WASM) pay nothing. Build pc_emu with
+// -DEMU_COUNT_INSTRUCTIONS to enable.
+#ifdef EMU_COUNT_INSTRUCTIONS
+static uint32_t g_instr_count = 0;
+#define EMU_INSTR_TICK() (++g_instr_count)
+void emu_reset_instruction_count() { g_instr_count = 0; }
+uint32_t emu_instruction_count() { return g_instr_count; }
+#else
+#define EMU_INSTR_TICK() ((void)0)
+void emu_reset_instruction_count() {}
+uint32_t emu_instruction_count() { return 0; }
+#endif
+
 cpu cpu_instance;
 
 void set_flags(uint32_t result)
@@ -37,6 +51,64 @@ void write_word_le(uint16_t address, uint16_t value)
 {
     cpu_instance.memory[address] = static_cast<uint8_t>(value & 0x00FF);
     cpu_instance.memory[address + 1] = static_cast<uint8_t>((value >> 8) & 0x00FF);
+}
+
+// Syscall handler — null by default (no-op).  Set via emu_set_syscall_handler().
+static void (*g_syscall_handler)(uint16_t) = nullptr;
+
+void emu_set_syscall_handler(void (*fn)(uint16_t))
+{
+    g_syscall_handler = fn;
+}
+
+// Frame-yield ("present") flag. The PRESENT syscall is handled here in the core, not by a host
+// handler: it halts the CPU so the host can display the completed frame and pace to its refresh
+// rate, and the next frame resumes the CPU where it left off. Uniform across firmware/PC/WASM.
+static bool g_present = false;
+
+bool emu_present_pending() { return g_present; }
+
+// Resume the CPU if the previous frame ended on a PRESENT yield. Called at the start of each host frame.
+void emu_begin_frame()
+{
+    if (g_present)
+    {
+        cpu_instance.running = true;
+        g_present = false;
+    }
+}
+
+// Centralized store helpers. All guest memory writes for store opcodes go through
+// these so the SYSCALL_PORT hook fires regardless of which opcode triggered the write.
+static inline void mem_store_byte(uint16_t addr, uint8_t v)
+{
+    cpu_instance.memory[addr] = v;
+    if (addr == SYSCALL_PORT)
+    {
+        if (v == SYSCALL_PRESENT)            // frame yield: core-handled, resumes next frame
+        {
+            g_present = true;
+            cpu_instance.running = false;
+        }
+        else if (g_syscall_handler)
+            g_syscall_handler(static_cast<uint16_t>(v));
+    }
+}
+
+static inline void mem_store_word(uint16_t addr, uint16_t v)
+{
+    cpu_instance.memory[addr]     = static_cast<uint8_t>(v & 0xFF);
+    cpu_instance.memory[addr + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+    if (addr == SYSCALL_PORT)
+    {
+        if (v == SYSCALL_PRESENT)
+        {
+            g_present = true;
+            cpu_instance.running = false;
+        }
+        else if (g_syscall_handler)
+            g_syscall_handler(v);
+    }
 }
 
 uint16_t read_immediate16_i4()
@@ -111,7 +183,7 @@ uint32_t apply_byte_alu(uint8_t lhs, uint8_t rhs, alu_op op)
     return 0;
 }
 
-void execute_alu(alu_op op, uint16_t register1, uint16_t register2, uint16_t size_flag, uint16_t lower_flag, uint16_t mem_flag)
+void execute_alu(alu_op op, uint16_t register1, uint16_t register2, uint16_t size_flag, uint16_t lower_flag, uint16_t mem_flag, uint16_t abs_flag)
 {
     uint32_t result;
 
@@ -136,8 +208,12 @@ void execute_alu(alu_op op, uint16_t register1, uint16_t register2, uint16_t siz
         }
         else
         {
-            int16_t offset = static_cast<int16_t>(read_immediate16_i4());
-            uint16_t address = cpu_instance.registers[register2].word + offset;
+            // M-type: abs_flag=1 -> immediate IS the address (base reg ignored);
+            //         abs_flag=0 -> base register + signed offset (legacy behavior).
+            uint16_t imm = read_immediate16_i4();
+            uint16_t address = abs_flag ? imm
+                                        : static_cast<uint16_t>(cpu_instance.registers[register2].word
+                                                                + static_cast<int16_t>(imm));
             uint16_t mem_val = read_word_le(address);
             result = apply_word_alu(cpu_instance.registers[register1].word, mem_val, op);
             cpu_instance.registers[register1].word = static_cast<uint16_t>(result);
@@ -165,6 +241,8 @@ void execute_alu(alu_op op, uint16_t register1, uint16_t register2, uint16_t siz
 
 void initialize_cpu()
 {
+    emu_reset_instruction_count();
+    g_present = false;
     cpu_instance.running = true;
     cpu_instance.pc = 0;
     cpu_instance.registers[7].word = STACK_START_ADDRESS; // Initialize stack pointer (R7) to the top of memory
@@ -209,12 +287,14 @@ void decode_and_execute(uint16_t instruction)
         - Unused: 2 bits (bits 0-1)
         - Immediate: 16 bits (next two bytes in memory, signed offset)
      */
+    EMU_INSTR_TICK();
     uint16_t opcode = (instruction >> 11) & 0x1F;   // Extract the opcode (higher 5 bits)
     uint16_t register1 = (instruction >> 8) & 0x07; // Extract the first register (bits 8-10)
     uint16_t register2 = (instruction >> 5) & 0x07; // Extract the second register (bits 5-7)
     uint16_t size_flag = (instruction >> 4) & 0x1;  // Extract the size flag (bit 4)
     uint16_t lower_flag = (instruction >> 3) & 0x1; // Extract the lower flag (bit 3)
     uint16_t mem_flag = (instruction >> 2) & 0x1;   // Extract the memory flag (bit 2)
+    uint16_t abs_flag = (instruction >> 1) & 0x1;   // M-type/LDROFF absolute-address flag (bit 1)
     uint16_t immediate = instruction & 0xFF;        // Extract the 8 bit immediate value (lower 8 bits)
     switch (opcode)
     {
@@ -251,30 +331,23 @@ void decode_and_execute(uint16_t instruction)
     case 0x05: // Load register to immediate memory STRI (4 byte I-type)
     {
         uint16_t address = read_immediate16_i4();
-        cpu_instance.memory[address] = cpu_instance.registers[register1].lower;     // Store lower byte
-        cpu_instance.memory[address + 1] = cpu_instance.registers[register1].upper; // Store upper byte
-        cpu_instance.pc += 4;                                                       // Move to the next instruction
+        mem_store_word(address, cpu_instance.registers[register1].word);
+        cpu_instance.pc += 4;
         break;
     }
     case 0x06: // Load register to register pointed memory STR (R-type)
     {
-        if (size_flag == 0) // If size flag is 0, it's a word operation
+        uint16_t addr = cpu_instance.registers[register2].word;
+        if (size_flag == 0) // word operation
         {
-            cpu_instance.memory[cpu_instance.registers[register2].word] = cpu_instance.registers[register1].lower;     // Store lower byte
-            cpu_instance.memory[cpu_instance.registers[register2].word + 1] = cpu_instance.registers[register1].upper; // Store upper byte
+            mem_store_word(addr, cpu_instance.registers[register1].word);
         }
-        else // If size flag is 1, it's a byte operation
+        else // byte operation
         {
-            if (lower_flag == 0) // If lower flag is 0, store the upper byte
-            {
-                cpu_instance.memory[cpu_instance.registers[register2].word] = cpu_instance.registers[register1].upper;
-            }
-            else // If lower flag is 1, store the lower byte
-            {
-                cpu_instance.memory[cpu_instance.registers[register2].word] = cpu_instance.registers[register1].lower;
-            }
+            uint8_t byte_val = (lower_flag == 0) ? cpu_instance.registers[register1].upper
+                                                 : cpu_instance.registers[register1].lower;
+            mem_store_byte(addr, byte_val);
         }
-        // Move to the next instruction
         cpu_instance.pc += 2;
         break;
     }
@@ -282,8 +355,11 @@ void decode_and_execute(uint16_t instruction)
     {
         if (size_flag == 0) // If size flag is 0, it's a word operation
         {
-            cpu_instance.registers[register1].lower = cpu_instance.memory[cpu_instance.registers[register2].word];     // Load lower byte
-            cpu_instance.registers[register1].upper = cpu_instance.memory[cpu_instance.registers[register2].word + 1]; // Load upper byte
+            // Read the base address once so a self-base load (rd == rb, used by load_ptr) stays
+            // correct — writing register1.lower must not perturb the address for the upper byte.
+            uint16_t addr = cpu_instance.registers[register2].word;
+            cpu_instance.registers[register1].lower = cpu_instance.memory[addr];     // Load lower byte
+            cpu_instance.registers[register1].upper = cpu_instance.memory[addr + 1]; // Load upper byte
         }
         else // If size flag is 1, it's a byte operation
         {
@@ -331,37 +407,37 @@ void decode_and_execute(uint16_t instruction)
     }
     case 0x09: // Add register to register or immediate ADD (R-type or 4 byte I-type)
     {
-        execute_alu(alu_op::add, register1, register2, size_flag, lower_flag, mem_flag);
+        execute_alu(alu_op::add, register1, register2, size_flag, lower_flag, mem_flag, abs_flag);
         break;
     }
     case 0x0A: // Subtract register from register or immediate SUB (R-type or 4 byte I-type)
     {
-        execute_alu(alu_op::sub, register1, register2, size_flag, lower_flag, mem_flag);
+        execute_alu(alu_op::sub, register1, register2, size_flag, lower_flag, mem_flag, abs_flag);
         break;
     }
     case 0x0B: // Bitwise AND register with register or immediate AND (R-type or 4 byte I-type)
     {
-        execute_alu(alu_op::bit_and, register1, register2, size_flag, lower_flag, mem_flag);
+        execute_alu(alu_op::bit_and, register1, register2, size_flag, lower_flag, mem_flag, abs_flag);
         break;
     }
     case 0x0C: // Bitwise OR register with register or immediate OR (R-type or 4 byte I-type)
     {
-        execute_alu(alu_op::bit_or, register1, register2, size_flag, lower_flag, mem_flag);
+        execute_alu(alu_op::bit_or, register1, register2, size_flag, lower_flag, mem_flag, abs_flag);
         break;
     }
     case 0x0D: // Bitwise XOR register with register or immediate XOR (R-type or 4 byte I-type)
     {
-        execute_alu(alu_op::bit_xor, register1, register2, size_flag, lower_flag, mem_flag);
+        execute_alu(alu_op::bit_xor, register1, register2, size_flag, lower_flag, mem_flag, abs_flag);
         break;
     }
     case 0x0E: // Logical shift left register by register or immediate SHL (R-type or 4 byte I-type)
     {
-        execute_alu(alu_op::shl, register1, register2, size_flag, lower_flag, mem_flag);
+        execute_alu(alu_op::shl, register1, register2, size_flag, lower_flag, mem_flag, abs_flag);
         break;
     }
     case 0x0F: // Logical shift right register by register or immediate SHR (R-type or 4 byte I-type)
     {
-        execute_alu(alu_op::shr, register1, register2, size_flag, lower_flag, mem_flag);
+        execute_alu(alu_op::shr, register1, register2, size_flag, lower_flag, mem_flag, abs_flag);
         break;
     }
     case 0x10: // Compare register with register or immediate CMP (R-type or 4 byte I-type)
@@ -384,8 +460,11 @@ void decode_and_execute(uint16_t instruction)
             }
             else
             {
-                int16_t offset = static_cast<int16_t>(read_immediate16_i4());
-                uint16_t address = cpu_instance.registers[register2].word + offset;
+                // M-type CMP: abs_flag=1 -> immediate is the absolute address (base reg ignored).
+                uint16_t imm = read_immediate16_i4();
+                uint16_t address = abs_flag ? imm
+                                            : static_cast<uint16_t>(cpu_instance.registers[register2].word
+                                                                    + static_cast<int16_t>(imm));
                 uint16_t mem_val = read_word_le(address);
                 result = cpu_instance.registers[register1].word - mem_val;
                 set_flags(result);
@@ -542,11 +621,12 @@ void decode_and_execute(uint16_t instruction)
     }
     case 0x1C: // Load from base+offset LDROFF (4 byte I-type)
     {
-        // Format: first word has opcode (5), dst (3), base (3), unused
-        // Second word has signed 16-bit offset
-        uint16_t offset_imm = read_immediate16_i4();
-        int16_t signed_offset = static_cast<int16_t>(offset_imm);
-        uint16_t address = cpu_instance.registers[register2].word + signed_offset;
+        // Format: first word has opcode (5), dst (3), base (3), abs flag (bit 1)
+        // Second word has the signed offset, or the absolute address when abs_flag is set.
+        uint16_t imm = read_immediate16_i4();
+        uint16_t address = abs_flag ? imm
+                                    : static_cast<uint16_t>(cpu_instance.registers[register2].word
+                                                            + static_cast<int16_t>(imm));
         cpu_instance.registers[register1].word = read_word_le(address);
         cpu_instance.pc += 4;
         break;
@@ -558,18 +638,18 @@ void decode_and_execute(uint16_t instruction)
         uint16_t offset_imm = read_immediate16_i4();
         int16_t signed_offset = static_cast<int16_t>(offset_imm);
         uint16_t address = cpu_instance.registers[register2].word + signed_offset;
-        write_word_le(address, cpu_instance.registers[register1].word);
+        mem_store_word(address, cpu_instance.registers[register1].word);
         cpu_instance.pc += 4;
         break;
     }
     case 0x1E: // Multiply register by register or immediate MUL (R-type or 4 byte I-type)
     {
-        execute_alu(alu_op::mul, register1, register2, size_flag, lower_flag, mem_flag);
+        execute_alu(alu_op::mul, register1, register2, size_flag, lower_flag, mem_flag, abs_flag);
         break;
     }
     case 0x1F: // Divide register by register or immediate DIV (R-type or 4 byte I-type)
     {
-        execute_alu(alu_op::div, register1, register2, size_flag, lower_flag, mem_flag);
+        execute_alu(alu_op::div, register1, register2, size_flag, lower_flag, mem_flag, abs_flag);
         break;
     }
     default:
@@ -580,8 +660,9 @@ void decode_and_execute(uint16_t instruction)
 
 bool run_frame_instructions()
 {
+    emu_begin_frame();              // resume if the previous frame ended on a PRESENT yield
     int instruction_count = 0;
-    
+
     while (cpu_instance.running && instruction_count < 100000)
     {
         uint16_t instruction = read_word_le(cpu_instance.pc);

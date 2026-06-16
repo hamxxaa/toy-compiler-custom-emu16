@@ -1,0 +1,16 @@
+{
+    int f(int a, int b, int n) {
+        var int i;
+        var int acc;
+        i = 0;
+        acc = 0;
+        while i < n {
+            acc = acc + a * 8;
+            i = i + 1;
+        }
+        return acc + a + b + n;
+    }
+    int main() {
+        return f(1, 2, 3);
+    }
+}

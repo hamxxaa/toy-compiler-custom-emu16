@@ -1,0 +1,11 @@
+include "../lib/io.lib";
+
+{
+    int main() {
+        var byte msg[1];
+        msg[0] = 65;
+        fill(0);
+        draw_string(&msg, 1, 0, 0, 1);
+        return peek_byte(VRAM_START + 4);
+    }
+}

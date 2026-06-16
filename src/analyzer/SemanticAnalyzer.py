@@ -383,12 +383,55 @@ class SemanticAnalyzer:
             raise Exception(
                 f"Semantic Error: Array '{node.name}' size must be positive, got {node.size}."
             )
-        # All arrays live in the global data section regardless of declaration scope.
-        # This gives them static storage (like C's static locals) — safe for non-recursive code.
+        # Arrays physically live in the data section (static storage) regardless of declaration
+        # scope — the backend addresses them via _ensure_data_address. But the storage FIELD must
+        # match how index/assign nodes resolve the array (via scope lookup, which returns the
+        # declaring scope's storage), so that def_arr and every read/write build the SAME Var
+        # identity → the SAME data address. (Forcing "global" here while reads resolved "local"
+        # made an initialized array get baked at one address but read at another.)
         arr_type = node.elem_type + "[]"
         self.current_scope.define(node.name, arr_type)
-        node.storage = "global"         # always data-section
+        node.storage = self.current_scope.storage
         node.scope_id = self.current_scope.scope_id
+
+        # Array literal:  var T name[N] = { c0, c1, ... };  — each element must be a compile-time
+        # integer constant; at most N of them (the rest are zero-filled). Evaluated values are
+        # stashed on the node for the backend to bake into the ROM image.
+        node.init_values = None
+        if getattr(node, "initializer", None) is not None:
+            if len(node.initializer) > node.size:
+                raise Exception(
+                    f"Semantic Error: array '{node.name}' has {len(node.initializer)} "
+                    f"initializers but size {node.size}."
+                )
+            lo, hi, mask = ((0, 255, 0xFF) if node.elem_type == "byte"
+                            else (-32768, 65535, 0xFFFF))
+            values = []
+            for elem in node.initializer:
+                v = self._eval_const_int(elem, node.name)
+                if not (lo <= v <= hi):
+                    raise Exception(
+                        f"Semantic Error: {node.elem_type} array '{node.name}' initializer "
+                        f"{v} out of range {lo}..{hi}."
+                    )
+                values.append(v & mask)
+            node.init_values = values
+
+    def _eval_const_int(self, node, arr_name):
+        """Evaluate a compile-time-constant initializer element to an int (literals only)."""
+        if type(node).__name__ == "FactorNode" and not node.is_variable:
+            text = str(node.value).lower()
+            if text == "true":
+                return 1
+            if text == "false":
+                return 0
+            try:
+                return int(node.value, 0)   # handles decimal and 0x hex
+            except (ValueError, TypeError):
+                pass
+        raise Exception(
+            f"Semantic Error: array '{arr_name}' initializer elements must be integer literals."
+        )
 
     def visit_IndexNode(self, node):
         arr_type, storage, scope_id = self.current_scope.lookup(node.array_name)

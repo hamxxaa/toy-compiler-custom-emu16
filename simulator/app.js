@@ -22,6 +22,11 @@ class App {
         this.romLoaded = false;
         this.romData = null;
 
+        // M7d: in-memory ROM library (dropped ROMs accumulate here; the syscall handler lists them).
+        this.library = [];        // [{ name, bytes }]
+        this.menuIndex = -1;      // index of menu.rom, used by sys_reset()
+        this.currentIndex = -1;   // index of the ROM currently running
+
         // Performance tracking
         this.lastFrameTime = 0;
         this.fps = 0;
@@ -97,30 +102,38 @@ class App {
             return;
         }
 
-        // Store ROM data for reset
-        this.romData = romBytes;
+        // Accumulate into the library (the syscall handler lists ROMs by name). Re-dropping a
+        // same-named file updates its bytes rather than duplicating it.
+        let idx = this.library.findIndex(e => e.name === name);
+        if (idx < 0) { this.library.push({ name, bytes: romBytes }); idx = this.library.length - 1; }
+        else this.library[idx].bytes = romBytes;
+        if (name === 'menu.rom') this.menuIndex = idx;
 
-        // Reset core: zeroes memory, lays down default palette, clears VRAM/input (all in C).
-        this.cpu.initialize();
+        this._bootFromLibrary(idx);
+    }
 
-        // Load ROM into guest memory at address 0 (after init, which zeroes everything).
-        this.cpu.memory.set(romBytes, 0);
+    // Reset the core, push the current name list to the syscall handler, load a library ROM, run UI.
+    // Reused by the drop handler and by the halt-time hot-swap (LOAD_ROM / RESET).
+    _bootFromLibrary(index) {
+        const entry = this.library[index];
+        this.currentIndex = index;
+        this.romData = entry.bytes;
+
+        this.cpu.initialize();                                  // zero mem + default palette (C side)
+        this.cpu.setRomLibrary(this.library.map(e => e.name)); // feed names to the syscall handler
+        this.cpu.memory.set(entry.bytes, 0);                   // load ROM at address 0
 
         this.romLoaded = true;
-        this._showStatus(`Loaded: ${name} (${romBytes.length} bytes)`, 'success');
-        
-        // Update UI
+        this._showStatus(`Loaded: ${entry.name} (${entry.bytes.length} bytes)`, 'success');
         this.display.render(this.cpu.memory);
         this.debug.update(this.cpu);
 
-        // Update drop zone appearance
         const dropZone = document.getElementById('drop-zone');
         if (dropZone) {
             dropZone.classList.add('loaded');
-            dropZone.querySelector('.drop-text').textContent = `${name} (${romBytes.length}B)`;
+            dropZone.querySelector('.drop-text').textContent =
+                `${entry.name} (${this.library.length} in library)`;
         }
-
-        // Enable buttons
         document.querySelectorAll('.ctrl-btn').forEach(b => b.disabled = false);
     }
 
@@ -191,9 +204,7 @@ class App {
 
     reset() {
         this.pause();
-        if (this.romData) {
-            this._loadROM(this.romData, document.querySelector('.drop-text')?.textContent || 'ROM');
-        }
+        if (this.currentIndex >= 0) this._bootFromLibrary(this.currentIndex);
     }
 
     // --- Main loop ---
@@ -225,13 +236,20 @@ class App {
             if (fpsEl) fpsEl.textContent = `${this.fps} FPS`;
         }
 
-        // 5. Check if CPU halted
+        // 5. Check if CPU halted — a syscall may want to hot-swap the next ROM (M7d).
         if (!stillRunning) {
-            this.isRunning = false;
-            this.debug.update(this.cpu);
-            this._updateControlState();
-            this._showStatus('CPU halted', 'warning');
-            return;
+            const n = this.cpu.pendingRom();            // -1 none | >=0 game | -2 reset->menu
+            if (n >= 0) {
+                this._bootFromLibrary(n);               // LOAD_ROM
+            } else if (n === -2) {
+                this._bootFromLibrary(this.menuIndex >= 0 ? this.menuIndex : 0);   // RESET -> menu
+            } else {
+                this.isRunning = false;                 // genuine HLT
+                this.debug.update(this.cpu);
+                this._updateControlState();
+                this._showStatus('CPU halted', 'warning');
+                return;
+            }
         }
 
         // 6. Next frame

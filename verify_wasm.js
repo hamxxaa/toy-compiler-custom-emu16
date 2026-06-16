@@ -21,6 +21,10 @@ const TESTS = [
     ['test_bitand', 11], ['test_bitor', 255], ['test_bitxor', 240],
     ['test_bitnot', 255], ['test_shift', 36], ['test_logical', 3],
     ['test_else', 2], ['test_elseif', 30],
+    // Font rendering: proves the font ships in the ROM (no host load) and renders on WASM.
+    ['test_draw_char', 1], ['test_draw_string', 1],
+    // M7d: the browser syscall handler now implements echo (0x7F), so the interrupt path verifies on WASM.
+    ['test_syscall_echo', 42],
 ];
 
 (async () => {

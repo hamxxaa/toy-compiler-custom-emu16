@@ -1,0 +1,13 @@
+{
+    int f(int a, int b, int c) {
+        var int x;
+        var int p;
+        x = 0;
+        p = &x;
+        *p = 50;                  // store through pointer; must not clobber c (R3)
+        return *p + a + b + c;    // 50 + 1 + 2 + 3 = 56
+    }
+    int main() {
+        return f(1, 2, 3);
+    }
+}

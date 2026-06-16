@@ -218,13 +218,26 @@ class Parser:
         var_type = self.tokens.consume(expected_type="TYPE")[1]
         var_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
         if self.tokens.peek() and self.tokens.peek()[1] == "[":
-            # Array declaration: var type name[N];
+            # Array declaration: var type name[N];  or  var type name[N] = { c0, c1, ... };
             self.tokens.consume("[", "SYMBOL")
             size_tok = self.tokens.consume(expected_type="NUMBER")
             size = int(size_tok[1], 0)  # int(..., 0) handles 0x hex
             self.tokens.consume("]", "SYMBOL")
+            initializer = None
+            if self.tokens.peek() and self.tokens.peek()[1] == "=":
+                self.tokens.consume("=", "SYMBOL")
+                self.tokens.consume("{", "SYMBOL")
+                initializer = []
+                if not (self.tokens.peek() and self.tokens.peek()[1] == "}"):
+                    initializer.append(self.parse_expression())
+                    while self.tokens.peek() and self.tokens.peek()[1] == ",":
+                        self.tokens.consume(",", "SYMBOL")
+                        if self.tokens.peek() and self.tokens.peek()[1] == "}":
+                            break  # allow a trailing comma
+                        initializer.append(self.parse_expression())
+                self.tokens.consume("}", "SYMBOL")
             self.tokens.consume(";", "SYMBOL")
-            return ArrayDefinerNode(var_name, var_type, size)
+            return ArrayDefinerNode(var_name, var_type, size, initializer)
         value = None
         if self.tokens.peek() and self.tokens.peek()[1] == "=":
             self.tokens.consume("=", "SYMBOL")

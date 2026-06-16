@@ -1,0 +1,16 @@
+{
+    int f(int a, int b, int c) {
+        var int i;
+        var int sum;
+        i = 0;
+        sum = 0;
+        while i < 4 {
+            sum = sum + i + a + b + c;
+            i = i + 1;
+        }
+        return sum;
+    }
+    int main() {
+        return f(0, 0, 0);
+    }
+}

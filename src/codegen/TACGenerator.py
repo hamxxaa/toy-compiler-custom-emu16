@@ -1,9 +1,10 @@
 class TACInstruction:
-    def __init__(self, op, arg1=None, arg2=None, result=None):
+    def __init__(self, op, arg1=None, arg2=None, result=None, extra=None):
         self.op = op
         self.arg1 = arg1
         self.arg2 = arg2
         self.result = result
+        self.extra = extra      # opaque payload (e.g. array-literal init values for def_arr)
 
     def __str__(self):
         parts = [self.op]
@@ -109,8 +110,8 @@ class TACGenerator:
         self.label_count += 1
         return label_name
 
-    def create_instruction(self, op, arg1=None, arg2=None, result=None):
-        instruction = TACInstruction(op, arg1, arg2, result)
+    def create_instruction(self, op, arg1=None, arg2=None, result=None, extra=None):
+        instruction = TACInstruction(op, arg1, arg2, result, extra)
         self.instructions.append(instruction)
         return instruction
 
@@ -315,7 +316,8 @@ class TACGenerator:
         self.create_instruction("def_arr",
                                 arg1=node.elem_type,
                                 arg2=node.size,
-                                result=arr_var)
+                                result=arr_var,
+                                extra=getattr(node, "init_values", None))
 
     def visit_IndexNode(self, node):
         """arr[i] — compute address, emit load_ptr."""

@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <chrono>
 
 #include "emu.h"
 #include "definitions.h"
@@ -148,9 +149,99 @@ static std::string hex64(uint64_t value)
     return stream.str();
 }
 
+// ---- PC dev syscall handler (active when --menu is passed) ----
+static std::vector<fs::path> g_pc_rom_list;
+static std::string g_pc_pending_rom;
+static const auto g_pc_start_time = std::chrono::steady_clock::now();
+
+static void build_pc_rom_list(const fs::path &rom_dir)
+{
+    g_pc_rom_list.clear();
+    if (!fs::exists(rom_dir)) return;
+    for (const auto &entry : fs::directory_iterator(rom_dir))
+    {
+        if (entry.path().extension() == ".rom")
+            g_pc_rom_list.push_back(entry.path());
+    }
+    std::sort(g_pc_rom_list.begin(), g_pc_rom_list.end());
+}
+
+static void pc_syscall_handler(uint16_t num)
+{
+    uint16_t r1 = cpu_instance.registers[1].word;
+    uint16_t r2 = cpu_instance.registers[2].word;
+    switch (num)
+    {
+    case 1: // LIST_ROMS: R1=dest, R2=max -> R0=count; writes len-prefixed names
+    {
+        int max_roms = r2 ? static_cast<int>(r2) : static_cast<int>(g_pc_rom_list.size());
+        int count = 0;
+        uint16_t cursor = r1;
+        for (const auto &p : g_pc_rom_list)
+        {
+            if (count >= max_roms) break;
+            std::string name = p.filename().string();
+            uint8_t len = static_cast<uint8_t>(std::min(static_cast<int>(name.size()), 255));
+            cpu_instance.memory[cursor] = len;
+            for (int i = 0; i < len; ++i)
+                cpu_instance.memory[cursor + 1 + i] = static_cast<uint8_t>(name[i]);
+            cpu_instance.memory[cursor + 1 + len] = 0;
+            cursor += static_cast<uint16_t>(1 + len + 1);
+            ++count;
+        }
+        cpu_instance.registers[0].word = static_cast<uint16_t>(count);
+        break;
+    }
+    case 2: // GET_ROM_NAME: R1=index, R2=dest -> R0=length
+    {
+        if (r1 < static_cast<uint16_t>(g_pc_rom_list.size()))
+        {
+            std::string name = g_pc_rom_list[r1].filename().string();
+            uint8_t len = static_cast<uint8_t>(std::min(static_cast<int>(name.size()), 255));
+            for (int i = 0; i < len; ++i)
+                cpu_instance.memory[r2 + i] = static_cast<uint8_t>(name[i]);
+            cpu_instance.memory[r2 + len] = 0;
+            cpu_instance.registers[0].word = len;
+        }
+        else
+        {
+            cpu_instance.registers[0].word = 0;
+        }
+        break;
+    }
+    case 3: // LOAD_ROM: R1=index -> halt CPU, record pending
+    {
+        if (r1 < static_cast<uint16_t>(g_pc_rom_list.size()))
+            g_pc_pending_rom = g_pc_rom_list[r1].string();
+        cpu_instance.running = false;
+        break;
+    }
+    case 4: // RESET -> halt CPU
+    {
+        g_pc_pending_rom = "reset";
+        cpu_instance.running = false;
+        break;
+    }
+    case SYSCALL_TIME: // TIME: R0 = milliseconds since pc_emu start (low 16 bits)
+    {
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - g_pc_start_time).count();
+        cpu_instance.registers[0].word = static_cast<uint16_t>(ms & 0xFFFF);
+        break;
+    }
+    case 0x7F: // echo (test): R0 = R1 + R2 -- regression-tests the interrupt path
+    {
+        cpu_instance.registers[0].word = static_cast<uint16_t>(r1 + r2);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 static void print_usage(const char *program_name)
 {
-    std::cerr << "Usage: " << program_name << " --rom <path> [--output-dir <dir>] [--frames <count>]\n";
+    std::cerr << "Usage: " << program_name << " --rom <path> [--output-dir <dir>] [--frames <count>] [--menu]\n";
 }
 
 int main(int argc, char **argv)
@@ -158,6 +249,7 @@ int main(int argc, char **argv)
     fs::path rom_path;
     fs::path output_dir = fs::path("build") / "pc_emulator";
     int frame_limit = 1;
+    bool use_menu_handler = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -173,6 +265,10 @@ int main(int argc, char **argv)
         else if (argument == "--frames" && i + 1 < argc)
         {
             frame_limit = std::max(1, std::stoi(argv[++i]));
+        }
+        else if (argument == "--menu")
+        {
+            use_menu_handler = true;
         }
         else if (argument == "--help" || argument == "-h")
         {
@@ -212,12 +308,20 @@ int main(int argc, char **argv)
 
     initialize_cpu();
 
+    if (use_menu_handler)
+    {
+        build_pc_rom_list(fs::path("build") / "roms");
+        emu_set_syscall_handler(pc_syscall_handler);
+    }
+
     for (std::size_t i = 0; i < rom_bytes.size(); ++i)
     {
         cpu_instance.memory[i] = rom_bytes[i];
     }
 
     init_default_pram();
+    // Font is no longer host-loaded: it lives in the ROM's DATA (io.lib's font8x8 array), so it
+    // arrived with the ROM copy above. PRAM/VRAM/INPUT are above any ROM image, so they stay host-set.
     for (int i = 0; i < VRAM_SIZE; ++i)
     {
         cpu_instance.memory[VRAM_START_ADDRESS + i] = 0;
@@ -228,12 +332,14 @@ int main(int argc, char **argv)
     int completed_frames = 0;
     int instruction_batches = 0;
 
-    while (cpu_instance.running && completed_frames < frame_limit)
+    while (completed_frames < frame_limit)
     {
         run_frame_instructions();
         ++instruction_batches;
         build_framebuffer(framebuffer);
         ++completed_frames;
+        if (!cpu_instance.running && !emu_present_pending())
+            break;   // genuine HLT, not a frame yield
     }
 
     build_framebuffer(framebuffer);
@@ -245,6 +351,9 @@ int main(int argc, char **argv)
         std::cerr << "Failed to write framebuffer image: " << ppm_path.string() << "\n";
         return 1;
     }
+
+    if (!g_pc_pending_rom.empty())
+        std::cout << "SYSCALL LOAD_ROM: " << g_pc_pending_rom << '\n';
 
     uint64_t checksum = fnv1a64(framebuffer);
     uint16_t return_value = cpu_instance.registers[0].word;
@@ -266,6 +375,7 @@ int main(int argc, char **argv)
               << "return=" << return_value << ' '
               << "pc=" << hex16(cpu_instance.pc) << ' '
               << "flags=" << hex16(cpu_instance.flags) << ' '
+              << "instr=" << emu_instruction_count() << ' '
               << "checksum=" << hex64(checksum) << ' '
               << "frame=" << ppm_path.string() << '\n';
 
