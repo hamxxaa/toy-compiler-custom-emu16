@@ -1,0 +1,9 @@
+// Phase 5: the sys_set_fps wrapper links and the host handler doesn't fault. On the PC runner it's
+// a no-op (no real-time pacing); the call must still pass cleanly. Returns 42.
+include "../lib/sys.lib";
+{
+    int main() {
+        sys_set_fps(30);
+        return 42;
+    }
+}

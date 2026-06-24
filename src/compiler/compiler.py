@@ -9,6 +9,7 @@ from codegen import TAC, TACGenerator
 from optimization import Optimizer
 from backend import EmuBackend
 from analyzer import SemanticAnalyzer
+from analyzer.class_expander import expand_classes
 
 # `include "path";` directive (stripped before tokenizing; handled at the AST level).
 INCLUDE_RE = re.compile(r'include\s+"([^"]+)"\s*;')
@@ -78,7 +79,7 @@ def create_tokenizer():
 
     tokenizer.add_skip_pattern("( |\t|\n)+")
 
-    tokenizer.add_pattern("KEYWORD", "(while|print|var|if|else|return)", priority=5)
+    tokenizer.add_pattern("KEYWORD", "(while|print|var|if|else|return|const|break|continue|for|struct|class|new|self)", priority=5)
     tokenizer.add_pattern("TYPE", "(int|bool|void|byte)", priority=5)
     tokenizer.add_pattern("BOOLEAN", "(true|false)", priority=6)  # Add boolean literals
     tokenizer.add_pattern(
@@ -86,8 +87,8 @@ def create_tokenizer():
     )
     tokenizer.add_pattern("SIGNED_NUMBER", "-[0-9]+", priority=6)
     tokenizer.add_pattern("NUMBER", "(0x[0-9a-fA-F]+|[0-9]+)", priority=3)
-    tokenizer.add_pattern("SYMBOL", "(;|,|\\(|\\)|=|}|{|\\[|\\])", priority=2)
-    tokenizer.add_pattern("OPERATOR", "(\\+|-|\\*|/)", priority=1)
+    tokenizer.add_pattern("SYMBOL", "(;|,|\\(|\\)|=|}|{|\\[|\\]|.)", priority=2)
+    tokenizer.add_pattern("OPERATOR", "(\\+|-|\\*|/|%)", priority=1)
     tokenizer.add_pattern("CONDITIONAL_OPERATOR", "(<|>|==|<=|>=|!=)", priority=1)
     tokenizer.add_pattern("LOGICAL_OPERATOR", "(&&|\\|\\|)", priority=1)
     tokenizer.add_pattern("BITWISE_OPERATOR", "(&|\\||^|~)", priority=1)
@@ -134,6 +135,7 @@ def compile_program(
         for token in tokenize(stripped):
             print(token)
     ast = build_merged_program(input_file)
+    expand_classes(ast)              # classes -> mangled globals + functions (before semantic analysis)
     sa = SemanticAnalyzer()
     sa.analyze(ast)
     tacg = TACGenerator()

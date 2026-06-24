@@ -1,0 +1,171 @@
+// lib/anim.lib -- sprite/animation runtime v1 (clip registry + bump allocator + time-based blit).
+//
+// Layered on the asset pipeline: LibreSprite -> tools/image_import.py emits the clip REGISTRY
+// (NUM_CLIPS + clip_w/h/count/period/buf[], indexed by id) into sprites.gen.txt; INCLUDE THAT
+// BEFORE this lib. A "clip" is one animation's frames concatenated (w*h index bytes per frame,
+// index 0 = transparent). Stream a sheet into the shared pool with anim_load(), draw the current
+// frame with clip_blit() or the thin Animator class.
+//
+// Timing is TIME-BASED: frame = (elapsed_ms / period_ms) % count -- DIVISION, so render rate only
+// changes how coarsely the timeline is sampled, never the speed, and there is no int16 multiply
+// overflow (the old (elapsed*fps)/1000 broke after ~3 s). tick()/anim_advance rebase the start each
+// loop so elapsed stays small and positive.
+//
+// v1 (more in mind): bump allocator -- load a scene's clips, then anim_scene_reset() on transition;
+// no per-clip free yet (slot allocator is v2). Named entities use the Animator class; swarms use
+// struct-arrays + the shared free helpers (clip_blit / anim_advance) over the same registry.
+//
+// NOTE: the language allows comparisons only inside if/while conditions (not in a return/expression),
+// so the predicate helpers below compute 0/1 through an `if` rather than `return a >= b`.
+include "../lib/io.lib";
+include "../lib/sys.lib";
+{
+    // --- Shared sprite pool (bump allocator, v1) ------------------------------------------------
+    const ANIM_POOL_SIZE = 12288;         // 12 KB of DATA scratch for streamed sheets (tune to fit)
+    var byte sprite_pool[ANIM_POOL_SIZE];
+    var int  pool_top;                     // bytes used so far (the bump pointer)
+    var int  anim_bg_color;                // colour erase()/fill_rect paints to wipe an old box
+
+    // Forget every loaded sheet and reclaim the whole pool. Call on scene transitions.
+    void anim_scene_reset() {
+        var int i;
+        pool_top = 0;
+        i = 0;
+        while i < NUM_CLIPS {
+            clip_buf[i] = 0;
+            i = i + 1;
+        }
+    }
+
+    // Stream a clip's sheet into the pool once (idempotent). Returns its address, 0 on overflow.
+    int anim_load(int id) {
+        var int size;
+        var int addr;
+        if clip_buf[id] != 0 { return clip_buf[id]; }        // already resident
+        size = clip_w[id] * clip_h[id] * clip_count[id];
+        if pool_top + size > ANIM_POOL_SIZE { return 0; }    // pool full -> caller must reset scene
+        addr = &sprite_pool;
+        addr = addr + pool_top;
+        sys_asset_load(id, addr, size);                      // R1=id R2=dest R3=maxlen
+        clip_buf[id] = addr;
+        pool_top = pool_top + size;
+        return addr;
+    }
+
+    // --- Time-based frame math (division -> no int16 overflow) ----------------------------------
+    // Current frame index for clip `id` at elapsed `e` ms.
+    int clip_frame(int id, int e) {
+        return (e / clip_period[id]) % clip_count[id];
+    }
+
+    // Has the clip played through once? Returns 0/1. (count*period <= 65535, enforced by importer.)
+    int clip_done(int id, int e) {
+        var int done;
+        done = 0;
+        if e >= clip_count[id] * clip_period[id] { done = 1; }
+        return done;
+    }
+
+    // Keep elapsed small/positive across long loops: rebase `start` by whole loops elapsed.
+    // (e/loop)*loop <= e < 65536, so no overflow. Call once per frame per looping entity.
+    int anim_advance(int start, int id) {
+        var int e;
+        var int loop;
+        e = sys_time() - start;
+        loop = clip_count[id] * clip_period[id];
+        if e >= loop { return start + (e / loop) * loop; }
+        return start;
+    }
+
+    // --- Blit -----------------------------------------------------------------------------------
+    // Draw clip `id`'s frame for elapsed `e` at (x,y). facing: 0 = as drawn, 1 = mirrored (free).
+    void clip_blit(int id, int e, int x, int y, int facing) {
+        var int w;
+        var int h;
+        var int f;
+        var int base;
+        w = clip_w[id];
+        h = clip_h[id];
+        f = (e / clip_period[id]) % clip_count[id];
+        base = clip_buf[id] + f * (w * h);
+        if facing == 1 {
+            draw_sprite_color_flipx(base, w, h, x, y);
+        } else {
+            draw_sprite_color(base, w, h, x, y);
+        }
+    }
+
+    // --- Animator: thin per-entity timing + lock (selection stays hand-written in the game) -----
+    class Animator {
+        var int clip = 0;         // current clip id
+        var int start = 0;        // sys_time() at (re)start
+        var int locked = 0;       // 1 while a one-shot owns the animator
+        var int lx = 0;           // last box this animator painted (for erase): pos, size, flag
+        var int ly = 0;
+        var int lw = 0;
+        var int lh = 0;
+        var int painted = 0;
+
+        // Loop a clip. Re-calling with the SAME clip is a no-op, so a declarative selector can call
+        // play() every frame without resetting the cycle.
+        void play(int c) {
+            if self.clip != c {
+                self.clip = c;
+                self.start = sys_time();
+            }
+        }
+
+        // Fire a one-shot (attack/hurt): always restart and lock until it finishes.
+        void play_once(int c) {
+            self.clip = c;
+            self.start = sys_time();
+            self.locked = 1;
+        }
+
+        // Once per frame BEFORE draw: release finished one-shots, rebase looping clips.
+        void tick() {
+            var int e;
+            var int loop;
+            e = sys_time() - self.start;
+            loop = clip_count[self.clip] * clip_period[self.clip];
+            if loop == 0 { return; }            // default/uninitialised clip -> no-op (avoids /0)
+            if self.locked == 1 {
+                if e >= loop { self.locked = 0; }
+            } else {
+                if e >= loop { self.start = self.start + (e / loop) * loop; }
+            }
+        }
+
+        // 0/1 -- is a one-shot still playing? (Game selectors gate play() on this.)
+        int is_locked() {
+            var int r;
+            r = 0;
+            if self.locked == 1 { r = 1; }
+            return r;
+        }
+
+        // Draw the animated current frame at (x,y) and remember the box (so erase() can wipe it).
+        void draw(int x, int y, int facing) {
+            clip_blit(self.clip, sys_time() - self.start, x, y, facing);
+            self.lx = x; self.ly = y;
+            self.lw = clip_w[self.clip]; self.lh = clip_h[self.clip];
+            self.painted = 1;
+        }
+
+        // Draw a static frame 0 (idle pose) and remember the box.
+        void draw_static(int x, int y, int facing) {
+            clip_blit(self.clip, 0, x, y, facing);
+            self.lx = x; self.ly = y;
+            self.lw = clip_w[self.clip]; self.lh = clip_h[self.clip];
+            self.painted = 1;
+        }
+
+        // Restore the background under the last box this animator painted. Run in the ERASE pass for
+        // ALL entities BEFORE the DRAW pass, so overlapping sprites repaint cleanly.
+        void erase() {
+            if self.painted == 1 {
+                fill_rect(self.lx, self.ly, self.lw, self.lh, anim_bg_color);
+            }
+        }
+    }
+}

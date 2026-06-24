@@ -1,0 +1,13 @@
+// Piece D6: a scalar struct with int + byte fields. sizeof(Point)=5 (x@0, y@2, hp@4).
+// 100 + 250 + 7 = 357. Expected return: 357.
+{
+    struct Point { int x; int y; byte hp; }
+    var Point p;
+
+    int main() {
+        p.x = 100;
+        p.y = 250;
+        p.hp = 7;
+        return p.x + p.y + p.hp;
+    }
+}

@@ -1,0 +1,23 @@
+// Classes v1: composition. Sprite contains an Anim sub-instance; self.anim.next()/cur() chain into it.
+// step() x3 -> x=3, anim.frame=3; report = x*100 + anim.cur() = 303. Expected return: 303.
+{
+    class Anim {
+        var int frame = 0;
+        void next() { self.frame = self.frame + 1; }
+        int  cur()  { return self.frame; }
+    }
+    class Sprite {
+        var int x = 0;
+        var Anim anim;
+        void step()  { self.x = self.x + 1; self.anim.next(); }
+        int  report() { return self.x * 100 + self.anim.cur(); }
+    }
+    new Sprite player;
+
+    int main() {
+        player.step();
+        player.step();
+        player.step();
+        return player.report();
+    }
+}

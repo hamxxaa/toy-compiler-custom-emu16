@@ -46,16 +46,19 @@ from .core.function_frame import FunctionFrame
 class EmuBackend:
     # Memory layout:
     #   0x0000-0x0007  Bootstrap (LDI sp + JMP code_start)
-    #   0x0008-0x0FFF  Data section (globals + arrays, incl. the ROM-shipped font; up from 0x0008)
-    #   0x1000-0xADFB  Code section (functions, grows up from 0x1000)
+    #   0x0008-0x3FFF  Data section (globals + arrays incl. the ROM-shipped font, AND streamed
+    #                  sprite sheets — the sprite pool lives here; 16 KB as of the sprite library)
+    #   0x4000-0xADFB  Code section (functions, grows up from 0x4000)
     #   0xADFC         Stack base (grows DOWN from here)
     #   0xADFE         SYSCALL_PORT (write-triggered host call)
     #   0xADFF         INPUT (hardware mapped)
     #   0xAE00-0xAFFF  PRAM (hardware mapped, 512 bytes)
     #   0xB000-0xFFFF  VRAM (hardware mapped, 20480 bytes)
-    CODE_START_ADDRESS = 0x1000
+    # NOTE: the DATA/CODE boundary lives only in the ROM bootstrap's `JMP CODE_START`; the
+    # emulators load the flat image and execute it, so moving it is a compiler-only change.
+    CODE_START_ADDRESS = 0x4000
     DATA_START_ADDRESS = 0x0008
-    DATA_END_ADDRESS   = 0x1000   # data grows up to code start (the old FONT region is reclaimed)
+    DATA_END_ADDRESS   = 0x4000   # data grows up to code start (16 KB for globals + streamed sheets)
     STACK_START_ADDRESS = 0xADFC
     SYSCALL_PORT = 0xADFE
     INPUT_ADDRESS = 0xADFF
@@ -549,7 +552,7 @@ class EmuBackend:
             if address + size_bytes > self.DATA_END_ADDRESS:
                 raise RuntimeError(
                     f"Data section overflow: need {size_bytes} B at 0x{address:04X} "
-                    f"but data ceiling is 0x{self.DATA_END_ADDRESS:04X} (FONT region starts there)"
+                    f"but data ceiling is 0x{self.DATA_END_ADDRESS:04X} (code starts there)"
                 )
             self.operand_addresses[operand] = address
             self.next_data_address += size_bytes
@@ -961,7 +964,12 @@ class EmuBackend:
         if op == "store_ptr":
             # mem[arg2] = arg1.  Use the pointer's register directly as the base when it has one.
             frame = self.function_frames.get(self.current_function)
-            width = getattr(instruction.arg1, "type", "int")
+            # Prefer the explicit destination element type (set for arr[i]=val by the TAC
+            # generator) over the value's type. Array element stores must match the array's
+            # element width; a byte array element must be a 1-byte store even when the value
+            # is an int-typed constant/expression. Falls back to the value type for
+            # untyped pointer stores (*ptr = val), which intentionally default to word width.
+            width = instruction.extra if instruction.extra else getattr(instruction.arg1, "type", "int")
             sf, lf = (1, 1) if width == "byte" else (0, 0)
             p_reg = self._home_reg(instruction.arg2, frame)   # pointer
             v_reg = self._home_reg(instruction.arg1, frame)   # value

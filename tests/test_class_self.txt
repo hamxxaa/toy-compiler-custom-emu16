@@ -1,0 +1,17 @@
+// Classes v1: a method calling a SIBLING method via self.add(), and a method param.
+// add(5)=5; add_twice(10) = add(10)+add(10) = +20 -> 25. Expected return: 25.
+{
+    class Acc {
+        var int total = 0;
+        void add(int v)       { self.total = self.total + v; }
+        void add_twice(int v) { self.add(v); self.add(v); }
+        int  get()            { return self.total; }
+    }
+    new Acc acc;
+
+    int main() {
+        acc.add(5);
+        acc.add_twice(10);
+        return acc.get();
+    }
+}

@@ -131,6 +131,51 @@
         }
     }
 
+    // Fill `count` consecutive pixels from `addr` with `color` (low byte). Word-stores two pixels at
+    // a time (like fill), with a one-pixel tail for odd counts. Naked helper for fill_rect.
+    void fill_row(int addr, int count, int color) {
+        asm {
+            MOV R0, R3          // R0 = color
+            SHL R0, 8
+            OR  R0, R3          // R0 = (color<<8)|color -> both bytes = color
+        frow_w:
+            LDI R3, 2
+            CMP R2, R3          // count - 2
+            JS  frow_tail       // count < 2 -> tail
+            STR R0, [R1]        // write 2 px (word)
+            ADD R1, R3          // addr += 2
+            SUB R2, R3          // count -= 2
+            JMP frow_w
+        frow_tail:
+            CMP R2, 0
+            JZ  frow_done
+            STR R0, [R1], byte  // odd last pixel
+        frow_done:
+            RET
+        }
+    }
+
+    // Fill a w x h rectangle at (x, y) with `color`. Clipped to the screen, so off-edge boxes are
+    // safe. This is the cheap "erase one sprite" primitive: clearing a 16x16 box touches 256 px
+    // instead of fill()'s 20480, so a frame need not repaint the whole screen.
+    void fill_rect(int x, int y, int w, int h, int color) {
+        var int rowaddr;
+        var int row;
+        if x < 0 { w = w + x; x = 0; }                       // clip left
+        if y < 0 { h = h + y; y = 0; }                       // clip top
+        if x + w > SCREEN_WIDTH  { w = SCREEN_WIDTH  - x; }  // clip right
+        if y + h > SCREEN_HEIGHT { h = SCREEN_HEIGHT - y; }  // clip bottom
+        if w <= 0 { return; }
+        if h <= 0 { return; }
+        rowaddr = VRAM_START + y * SCREEN_WIDTH + x;
+        row = 0;
+        while row < h {
+            fill_row(rowaddr, w, color);
+            rowaddr = rowaddr + SCREEN_WIDTH;
+            row = row + 1;
+        }
+    }
+
     // PRAM[i] = color   (i=R1 palette index, color=R2 RGB565)
     void set_palette(int i, int color) {
         asm {
@@ -252,6 +297,175 @@
             }
             rowaddr = rowaddr + SCREEN_WIDTH;
             rowbytes = rowbytes + bpr;
+            row = row + 1;
+        }
+    }
+
+    // ---- Buttons ----
+    // Bit masks for read_input() / button() -- one bit per console button.
+    var int BTN_LEFT  = 0x01;
+    var int BTN_UP    = 0x02;
+    var int BTN_RIGHT = 0x04;
+    var int BTN_DOWN  = 0x08;
+    var int BTN_A     = 0x10;
+    var int BTN_B     = 0x20;
+    var int BTN_X     = 0x40;
+    var int BTN_Y     = 0x80;
+
+    // true if the given button (a BTN_* mask) is currently held, else false.
+    // e.g.  if button(BTN_A) { ... }
+    bool button(int mask) {
+        if (read_input() & mask) != 0 {
+            return true;
+        }
+        return false;
+    }
+
+    // Previous frame's button state, for edge detection. Snapshotted by buttons_update().
+    var int btn_prev = 0;
+
+    // true ONLY on the frame `mask` goes from up to down (a fresh press). Use for one-shot
+    // actions: move/rotate a piece, jump, fire. Requires buttons_update() once per frame.
+    bool button_pressed(int mask) {
+        if (read_input() & mask) != 0 {
+            if (btn_prev & mask) == 0 {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // true ONLY on the frame `mask` goes from down to up (a release).
+    bool button_released(int mask) {
+        if (read_input() & mask) == 0 {
+            if (btn_prev & mask) != 0 {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Snapshot the current buttons as "previous". Call ONCE per frame, AFTER all your
+    // button_pressed()/button_released() checks (and before sys_present()).
+    void buttons_update() {
+        btn_prev = read_input();
+    }
+
+    // ---- Color sprites + palette (byte-per-pixel; index 0 = transparent) -------
+
+    // Copy `count` index bytes src->dst, skipping zeros (transparent). R1=src R2=dst R3=count.
+    void draw_row_color(int src, int dst, int count) {
+        asm {
+          drc_loop:
+            CMP R3, 0
+            JZ  drc_done
+            LDR R0, [R1], byte
+            AND R0, 0xFF
+            CMP R0, 0
+            JZ  drc_skip
+            STR R0, [R2], byte
+          drc_skip:
+            ADD R1, 1
+            ADD R2, 1
+            SUB R3, 1
+            JMP drc_loop
+          drc_done:
+            RET
+        }
+    }
+
+    // Blit a byte-per-pixel sprite (index 0 = transparent). No clipping: keep it fully on-screen.
+    void draw_sprite_color(int addr, int w, int h, int x, int y) {
+        var int rowsrc;
+        var int rowdst;
+        var int row;
+        rowsrc = addr;
+        rowdst = VRAM_START + y * SCREEN_WIDTH + x;
+        row = 0;
+        while row < h {
+            draw_row_color(rowsrc, rowdst, w);
+            rowsrc = rowsrc + w;
+            rowdst = rowdst + SCREEN_WIDTH;
+            row = row + 1;
+        }
+    }
+
+    // Copy a full 512-byte RGB565 palette from src into PRAM (0xAE00..0xAFFF) -- whole-palette swap.
+    void load_palette(int src) {
+        asm {
+            LDI R2, 0xAE00
+            LDI R3, 0xB000
+          lp_loop:
+            LDR R0, [R1]
+            STR R0, [R2]
+            ADD R1, 2
+            ADD R2, 2
+            CMP R2, R3
+            JNZ lp_loop
+            RET
+        }
+    }
+
+    // Set palette entries [start .. start+count) all to one RGB565 color (hit-flash building block).
+    void palette_fill(int start, int count, int color) {
+        var int i;
+        i = 0;
+        while i < count {
+            set_palette(start + i, color);
+            i = i + 1;
+        }
+    }
+
+    // Rotate palette entries [start..end] up by one (entry[end] wraps to [start]); start < end.
+    // Animates water/lava/sparkle ramps with zero VRAM writes.
+    void palette_cycle(int start, int end) {
+        var int saved;
+        var int i;
+        saved = peek(PRAM + end * 2);
+        i = end;
+        while i > start {
+            poke(PRAM + i * 2, peek(PRAM + (i - 1) * 2));
+            i = i - 1;
+        }
+        poke(PRAM + start * 2, saved);
+    }
+
+    // ---- Horizontal-mirror sprite blit (face the other way; reuses transparent index 0) ----
+
+    // Like draw_row_color but the destination moves LEFT as the source advances, mirroring the row.
+    // `dst` must point at the row's RIGHTMOST pixel. R1=src R2=dst(right) R3=count.
+    void draw_row_color_flip(int src, int dst, int count) {
+        asm {
+          drcf_loop:
+            CMP R3, 0
+            JZ  drcf_done
+            LDR R0, [R1], byte
+            AND R0, 0xFF
+            CMP R0, 0
+            JZ  drcf_skip
+            STR R0, [R2], byte
+          drcf_skip:
+            ADD R1, 1
+            SUB R2, 1
+            SUB R3, 1
+            JMP drcf_loop
+          drcf_done:
+            RET
+        }
+    }
+
+    // draw_sprite_color mirrored left<->right. Same byte-per-pixel format, index 0 = transparent.
+    void draw_sprite_color_flipx(int addr, int w, int h, int x, int y) {
+        var int rowsrc;
+        var int rowdst;
+        var int row;
+        rowsrc = addr;
+        rowdst = VRAM_START + y * SCREEN_WIDTH + x + w - 1;   // rightmost pixel of this row
+        row = 0;
+        while row < h {
+            draw_row_color_flip(rowsrc, rowdst, w);
+            rowsrc = rowsrc + w;
+            rowdst = rowdst + SCREEN_WIDTH;
             row = row + 1;
         }
     }

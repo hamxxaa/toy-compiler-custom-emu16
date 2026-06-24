@@ -70,4 +70,64 @@
               STR R0, [R3], byte
               RET }
     }
+
+    // num 7 = SAVE: src->R1, len->R2, slot->R3  =>  R0 = bytes written (0 = fail). 3 args fill
+    // R1-R3, so the port address can't sit in R3 like the 2-arg wrappers above; borrow R4
+    // (callee-saved) and restore it so the caller's R4 survives the call.
+    int sys_save(int src, int len, int slot) {
+        asm { LDI R0, 7
+              PSH R4
+              LDI R4, 0xADFE
+              STR R0, [R4], byte
+              POP R4
+              RET }
+    }
+
+    // num 8 = LOAD: dest->R1, maxlen->R2, slot->R3  =>  R0 = bytes read (0 = no save in that slot)
+    int sys_load(int dest, int maxlen, int slot) {
+        asm { LDI R0, 8
+              PSH R4
+              LDI R4, 0xADFE
+              STR R0, [R4], byte
+              POP R4
+              RET }
+    }
+
+    // num 9 = SAVE_EXISTS: slot->R1  =>  R0 = 1 if a save exists in that slot, else 0
+    int sys_save_exists(int slot) {
+        asm { LDI R0, 9
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 10 = ASSET_INFO: id->R1, dest->R2  =>  R0 = length (0 = bad id). Writes a 6-byte header
+    // [type, w, h, reserved, len_lo, len_hi] at dest so the game can size a buffer before loading.
+    int sys_asset_info(int id, int dest) {
+        asm { LDI R0, 10
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 11 = ASSET_LOAD: id->R1, dest->R2, maxlen->R3  =>  R0 = bytes copied (0 = bad id / too
+    // big for maxlen). Copies the asset blob from the pack on storage into guest memory at dest.
+    int sys_asset_load(int id, int dest, int maxlen) {
+        asm { LDI R0, 11
+              PSH R4
+              LDI R4, 0xADFE
+              STR R0, [R4], byte
+              POP R4
+              RET }
+    }
+
+    // num 12 = SET_FPS: fps->R1 (0 = default 60). The host paces frames to ~1000/fps ms, which also
+    // sizes the per-frame instruction budget (30 fps -> ~2x the headroom of 60). Honoured by the
+    // firmware and (best-effort) the browser; a no-op on the one-shot PC runner.
+    void sys_set_fps(int fps) {
+        asm { LDI R0, 12
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
 }

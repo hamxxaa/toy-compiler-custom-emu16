@@ -88,6 +88,14 @@ class EqualizeNode:
         self.scope_id = None
 
 
+class ConstDefNode:
+    """const NAME = <const-expr>;  — compile-time integer constant. Resolved to a literal by the
+    semantic analyzer (phase 0) and then stripped, so codegen never sees it."""
+    def __init__(self, name, value):
+        self.name = name
+        self.value = value   # expression node, evaluated at compile time
+
+
 class IfNode:
     def __init__(self, condition, scope, else_body=None):
         self.condition = condition
@@ -99,6 +107,27 @@ class WhileNode:
     def __init__(self, condition, scope):
         self.condition = condition
         self.scope = scope
+
+
+class ForNode:
+    """for ( <init> ; <condition> ; <post> ) <scope>  — init/post may be None (empty clauses)."""
+    def __init__(self, init, condition, post, scope):
+        self.init = init
+        self.condition = condition
+        self.post = post
+        self.scope = scope
+
+
+class BreakNode:
+    """break;  — exit the nearest enclosing loop."""
+    def __init__(self):
+        self.type = None
+
+
+class ContinueNode:
+    """continue;  — jump to the nearest enclosing loop's next iteration (the for-post / while-cond)."""
+    def __init__(self):
+        self.type = None
 
 
 class PrintNode:
@@ -205,6 +234,13 @@ class BitNotNode:
         self.type = None
 
 
+class NegNode:
+    """-expr  — unary minus (lowered to 0 - expr in TAC)."""
+    def __init__(self, inner):
+        self.inner = inner
+        self.type = None
+
+
 class DerefAssignNode:
     """*ptr = expr;  — dereference and write (statement-level)."""
     def __init__(self, ptr_expr, value):
@@ -222,3 +258,102 @@ class FactorNode:
 
     def __repr__(self):
         return f"FactorNode(value={self.value}, is_variable={self.is_variable})"
+
+
+# ── D6: Structs (data-only, byte-packed; member access via `.`) ───────────────
+
+class StructDefNode:
+    """struct Name { <type> <field>; ... }  — collected + stripped by the analyzer (phase 0)."""
+    def __init__(self, name, fields):
+        self.name = name
+        self.fields = fields   # list of (field_type, field_name)
+
+
+class StructVarNode:
+    """var <Struct> name;   or   var <Struct> name[N];  — reserves sizeof(Struct)*count bytes."""
+    def __init__(self, name, struct_name, count, is_array):
+        self.name = name
+        self.struct_name = struct_name
+        self.count = count          # int element count, or a const-name str (resolved by analyzer)
+        self.is_array = is_array
+        self.storage = None
+        self.scope_id = None
+        self.size_bytes = None      # sizeof(struct) * count, set by analyzer
+
+
+class MemberAccessNode:
+    """rvalue:  v.field   or   arr[i].field"""
+    def __init__(self, name, index, field):
+        self.name = name
+        self.index = index          # None (scalar struct) or an expression (array element)
+        self.field = field
+        self.type = None
+        # resolved by the analyzer:
+        self.struct_name = None
+        self.field_offset = None
+        self.field_type = None
+        self.stride = None
+        self.storage = None
+        self.scope_id = None
+        self.decl_type = None       # the declared Var type, for addrof identity
+
+
+class MemberAssignNode:
+    """lvalue:  v.field = expr;   or   arr[i].field = expr;"""
+    def __init__(self, name, index, field, value):
+        self.name = name
+        self.index = index
+        self.field = field
+        self.value = value
+        self.struct_name = None
+        self.field_offset = None
+        self.field_type = None
+        self.stride = None
+        self.storage = None
+        self.scope_id = None
+        self.decl_type = None
+
+
+# ── Classes (compile-time objects: clone + name-mangle; see class_expander) ────
+
+class ClassDefNode:
+    """class Name { <field decls> <method defs> }  — a template; collected + stripped by the expander."""
+    def __init__(self, name, fields, methods):
+        self.name = name
+        self.fields = fields      # DefinerNode / ArrayDefinerNode / StructVarNode (field declarations)
+        self.methods = methods    # FunctionDefNode list
+
+
+class NewInstanceNode:
+    """new Class inst;  — stamp out a uniquely-named copy of the class's fields + methods."""
+    def __init__(self, class_name, inst_name):
+        self.class_name = class_name
+        self.inst_name = inst_name
+
+
+class MethodCallNode:
+    """obj.method(args)  or  self.sub.method(args)  — rewritten to a mangled function call."""
+    def __init__(self, root, index, parts, args):
+        self.root = root          # base identifier or 'self'
+        self.index = index        # optional [index] on the root (usually None)
+        self.parts = parts        # ['method'] or ['anim','update'] ...
+        self.args = args
+        self.type = None
+
+
+class ChainAccessNode:
+    """rvalue:  obj.a.b  (2+ levels) — rewritten to a mangled global read."""
+    def __init__(self, root, index, parts):
+        self.root = root
+        self.index = index
+        self.parts = parts
+        self.type = None
+
+
+class ChainAssignNode:
+    """lvalue:  obj.a.b = value;  (2+ levels) — rewritten to a mangled global write."""
+    def __init__(self, root, index, parts, value):
+        self.root = root
+        self.index = index
+        self.parts = parts
+        self.value = value

@@ -1,0 +1,11 @@
+// Piece D3: modulus `%` (desugars to a - (a/b)*b). 17 % 5 = 2. Expected return: 2.
+// Uses variables so it exercises the runtime path, not just const folding.
+{
+    int main() {
+        var int a;
+        var int b;
+        a = 17;
+        b = 5;
+        return a % b;
+    }
+}

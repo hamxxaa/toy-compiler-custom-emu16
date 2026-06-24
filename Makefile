@@ -38,7 +38,7 @@ RM_BUILD = rm -rf build/roms
 RM_PCEMU = rm -rf build/pc_emulator
 RM_PIO   = rm -rf firmware/.pio
 
-.PHONY: all pc_emu wasm test verify flash uploadfs clean
+.PHONY: all pc_emu wasm test verify flash uploadfs clean clean-roms
 
 all: pc_emu wasm
 
@@ -79,8 +79,13 @@ verify: $(WASM_OUT)
 
 # ── Clean ────────────────────────────────────────────────────────────────────
 
+# `clean` deliberately KEEPS build/roms (compiled ROMs + .pak asset packs): regenerating assets is a
+# multi-step pipeline (art -> image_import -> pack_assets), so wiping them on every clean is painful.
+# Use `make clean-roms` to remove them explicitly.
 clean:
 	$(RM_FILES)
-	$(RM_BUILD)
 	$(RM_PCEMU)
 	$(RM_PIO)
+
+clean-roms:
+	$(RM_BUILD)

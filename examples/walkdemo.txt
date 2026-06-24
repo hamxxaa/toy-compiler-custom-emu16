@@ -1,0 +1,67 @@
+// walkdemo -- move a character with the arrow keys. Exercises the whole sprite/animation library v1:
+//   streamed palette + sheet, the clip REGISTRY, the bump allocator (anim_load), time-based blitting,
+//   and the thin compile-time Animator class composed into the player. The sheet is no longer a
+//   global -- it streams into anim.lib's shared pool. Build the assets first:
+//     python examples/walkdemo_art.py
+//     python tools/image_import.py examples/walkdemo_src/sprites.list build/walkdemo
+//     python tools/pack_assets.py build/walkdemo/assets.manifest build/roms/walkdemo
+//     cp build/walkdemo/sprites.gen.txt examples/walkdemo_assets.gen.txt
+//   then compile this; ship build/roms/walkdemo.rom + walkdemo.pak together.
+include "walkdemo_assets.gen.txt";        // clip registry: PAL_MASTER, ANIM_CHAR_WALK_ID, clip_* tables
+include "../lib/anim.lib";                 // pulls in io.lib + sys.lib; reads the registry above
+
+{
+    class Sprite {
+        var int x = 0;
+        var int y = 0;
+        var int facing = 0;               // 0 = right (as drawn), 1 = left (mirrored)
+        var Animator anim;                // thin per-entity timing + lock (composed)
+
+        // Declarative selector: each frame, recompute the desired clip from current state. With one
+        // walk clip this is just "walk while moving"; play() is a no-op when the clip is unchanged.
+        void update(int moving) {
+            self.anim.tick();
+            if moving == 1 { self.anim.play(ANIM_CHAR_WALK_ID); }
+        }
+
+        void draw(int moving) {
+            if moving == 1 {
+                self.anim.draw(self.x, self.y, self.facing);
+            } else {
+                clip_blit(ANIM_CHAR_WALK_ID, 0, self.x, self.y, self.facing);   // idle = frame 0
+            }
+        }
+    }
+    new Sprite player;
+
+    int main() {
+        var int moving;
+
+        sys_asset_load(PAL_MASTER, PRAM, 512);          // palette straight into PRAM
+        anim_scene_reset();                             // start the pool clean
+        anim_load(ANIM_CHAR_WALK_ID);                   // stream the walk sheet into the pool
+
+        player.x = 74;
+        player.y = 58;
+        player.anim.play(ANIM_CHAR_WALK_ID);            // give the animator a valid clip up front
+
+        while (true) {
+            moving = 0;
+            if button(BTN_LEFT)  { player.x = player.x - 1; moving = 1; player.facing = 1; }
+            if button(BTN_RIGHT) { player.x = player.x + 1; moving = 1; player.facing = 0; }
+            if button(BTN_UP)    { player.y = player.y - 1; moving = 1; }
+            if button(BTN_DOWN)  { player.y = player.y + 1; moving = 1; }
+            if player.x < 0   { player.x = 0; }
+            if player.x > 144 { player.x = 144; }       // 160 - 16
+            if player.y < 0   { player.y = 0; }
+            if player.y > 112 { player.y = 112; }       // 128 - 16
+
+            fill(1);                                     // dark-blue background
+            player.update(moving);
+            player.draw(moving);
+            buttons_update();
+            sys_present();
+        }
+        return 0;
+    }
+}

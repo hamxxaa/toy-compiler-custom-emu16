@@ -1,0 +1,17 @@
+// Piece D4: break + continue inside a while. Adds 1,2,4,5,6 (skips 3 via continue, stops after 6
+// via break) = 18. Expected return: 18.
+{
+    int main() {
+        var int i;
+        var int sum;
+        i = 0;
+        sum = 0;
+        while i < 100 {
+            i = i + 1;
+            if i == 3 { continue; }
+            if i > 6 { break; }
+            sum = sum + i;
+        }
+        return sum;
+    }
+}

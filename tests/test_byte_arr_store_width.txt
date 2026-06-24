@@ -1,0 +1,16 @@
+{
+    // Regression: storing an int-typed value (a constant) into a byte array element
+    // must emit a 1-byte store, not a 2-byte word store. A word store to the last
+    // element of `a` would spill into the next global (`b`) and corrupt it.
+    int main() {
+        var byte a[4];
+        var byte b[1] = { 99 };
+        var int i;
+        i = 0;
+        while i < 4 {
+            a[i] = 0;        // int constant -> byte array element
+            i = i + 1;
+        }
+        return b[0];          // must still be 99 (not clobbered to 0)
+    }
+}

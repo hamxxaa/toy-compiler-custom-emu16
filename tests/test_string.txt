@@ -1,0 +1,9 @@
+// Piece C1: a string literal becomes a NUL-terminated byte array; the expression is its address.
+// "Hi" = bytes {72,105,0}; *p reads the little-endian word of {72,105} = 72 + 105*256 = 26952.
+{
+    int main() {
+        var int p;
+        p = "Hi";
+        return *p;
+    }
+}

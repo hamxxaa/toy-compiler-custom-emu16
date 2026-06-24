@@ -1,0 +1,48 @@
+// lib/game.lib — small helpers for writing games: a PRNG and AABB box collision.
+//
+// Depends on sys.lib (for sys_time, used by srand_time). Including sys.lib yourself AND
+// game.lib in the same program is fine: the compiler includes each file at most once
+// (it dedups by path), so sys.lib's functions are never defined twice.
+include "sys.lib";
+{
+    var int rng_state = 12345;   // PRNG state; nonzero so rand() works even before srand()
+
+    // Seed the generator with any value (0 is remapped, since xorshift can't start at 0).
+    void srand(int seed) {
+        if seed == 0 { seed = 12345; }
+        rng_state = seed;
+    }
+
+    // Seed from the clock so each run differs. Call once at startup.
+    void srand_time() {
+        srand(sys_time());
+    }
+
+    // 16-bit xorshift -> next pseudo-random value (full 16-bit range, may be negative).
+    int rand() {
+        var int x;
+        x = rng_state;
+        x = x ^ (x << 7);
+        x = x ^ (x >> 9);
+        x = x ^ (x << 8);
+        rng_state = x;
+        return x;
+    }
+
+    // Pseudo-random int in [0, n) for n > 0. (There's no % operator, so it's done by hand:
+    // take the low 15 bits to stay positive, then subtract off the whole multiples of n.)
+    int rand_range(int n) {
+        var int r;
+        r = rand() & 0x7FFF;
+        return r - (r / n) * n;
+    }
+
+    // 1 if box A(ax,ay,aw,ah) overlaps box B(bx,by,bw,bh), else 0. Integer AABB overlap.
+    int aabb(int ax, int ay, int aw, int ah, int bx, int by, int bw, int bh) {
+        if (ax + aw <= bx) { return 0; }   // A fully left of B
+        if (bx + bw <= ax) { return 0; }   // A fully right of B
+        if (ay + ah <= by) { return 0; }   // A fully above B
+        if (by + bh <= ay) { return 0; }   // A fully below B
+        return 1;
+    }
+}

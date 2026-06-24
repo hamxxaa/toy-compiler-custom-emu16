@@ -1,0 +1,164 @@
+// arena -- a tiny action demo on the sprite/animation library v1.
+//   * HERO: you control it. Arrows move (4-direction: up/down clips, left/right via flip). Press A to
+//     attack -- a one-shot animation that locks the animator until it finishes, then control resumes.
+//   * ENEMY: wanders on its own (picks a random direction, walks a while, bounces off the edges).
+//   Both are compile-time class instances composing a thin Animator; both pull frames from the shared
+//   clip registry + bump-allocated pool. No real combat -- the attack is animation only.
+//
+//   Build the assets first (hero.png carries the shared master palette):
+//     python tools/image_import.py assets/sprites.list build/arena
+//     python tools/pack_assets.py build/arena/assets.manifest build/roms/arena
+//     cp build/arena/sprites.gen.txt examples/arena_assets.gen.txt
+//   then compile this; ship build/roms/arena.rom + arena.pak together.
+include "arena_assets.gen.txt";       // PAL_MASTER, ANIM_HERO_*, ANIM_ENEMY_*, clip registry
+include "../lib/anim.lib";             // pulls in io.lib + sys.lib; reads the registry above
+include "../lib/game.lib";             // rand_range / srand_time for the enemy's wander
+
+{
+    const DIR_SIDE = 0;                // facing-flip clip (walk), left/right
+    const DIR_UP   = 1;
+    const DIR_DOWN = 2;
+
+    // ---- Hero: player-controlled, 4-direction walk + a one-shot attack -------------------------
+    class Hero {
+        var int x = 0;
+        var int y = 0;
+        var int facing = 0;            // 0 = right (as drawn), 1 = left (mirrored)
+        var int dir = 0;              // DIR_SIDE / DIR_UP / DIR_DOWN -> which walk clip
+        var int cur = 0;             // current directional walk clip (held frame 0 when idle)
+        var Animator anim;
+
+        // Declarative selector: recompute the desired clip from current state every frame. The attack
+        // is a one-shot that locks the animator; we don't re-select until it releases (is_locked == 0).
+        void update(int attack) {
+            var int locked;
+            self.anim.tick();
+            locked = self.anim.is_locked();
+            if locked == 0 {
+                if attack == 1 {
+                    self.anim.play_once(ANIM_HERO_ATTACK_ID);
+                } else if self.dir == DIR_UP {
+                    self.cur = ANIM_HERO_WALK_UP_ID;
+                    self.anim.play(self.cur);
+                } else if self.dir == DIR_DOWN {
+                    self.cur = ANIM_HERO_WALK_DOWN_ID;
+                    self.anim.play(self.cur);
+                } else {
+                    self.cur = ANIM_HERO_WALK_ID;
+                    self.anim.play(self.cur);
+                }
+            }
+        }
+
+        void draw(int moving) {
+            var int locked;
+            locked = self.anim.is_locked();
+            if locked == 1 {
+                self.anim.draw(self.x, self.y, self.facing);          // mid-attack
+            } else if moving == 1 {
+                self.anim.draw(self.x, self.y, self.facing);          // walking
+            } else {
+                self.anim.draw_static(self.x, self.y, self.facing);   // idle: hold frame 0
+            }
+        }
+
+        void erase() {
+            self.anim.erase();
+        }
+    }
+    new Hero hero;
+
+    // ---- Enemy: autonomous wander, 4-direction walk (no attack) ---------------------------------
+    class Enemy {
+        var int x = 0;
+        var int y = 0;
+        var int facing = 0;
+        var int dir = 0;              // 0 right, 1 left, 2 up, 3 down
+        var int timer = 0;          // frames until the next random re-direction
+        var Animator anim;
+
+        void update() {
+            self.anim.tick();
+            self.timer = self.timer - 1;
+            if self.timer <= 0 {
+                self.dir = rand_range(4);
+                self.timer = 40 + rand_range(60);
+            }
+            if self.dir == 0 {
+                self.x = self.x + 1; self.facing = 0; self.anim.play(ANIM_ENEMY_WALK_ID);
+            } else if self.dir == 1 {
+                self.x = self.x - 1; self.facing = 1; self.anim.play(ANIM_ENEMY_WALK_ID);
+            } else if self.dir == 2 {
+                self.y = self.y - 1; self.facing = 0; self.anim.play(ANIM_ENEMY_WALK_UP_ID);
+            } else {
+                self.y = self.y + 1; self.facing = 0; self.anim.play(ANIM_ENEMY_WALK_DOWN_ID);
+            }
+            if self.x < 0   { self.x = 0;   self.dir = 0; }   // bounce off the edges
+            if self.x > 144 { self.x = 144; self.dir = 1; }
+            if self.y < 0   { self.y = 0;   self.dir = 3; }
+            if self.y > 112 { self.y = 112; self.dir = 2; }
+        }
+
+        void draw() {
+            self.anim.draw(self.x, self.y, self.facing);
+        }
+
+        void erase() {
+            self.anim.erase();
+        }
+    }
+    new Enemy enemy;
+
+    int main() {
+        var int moving;
+        var int attack;
+
+        sys_asset_load(PAL_MASTER, PRAM, 512);             // shared palette into PRAM
+        anim_scene_reset();
+        anim_load(ANIM_HERO_WALK_ID);                      // stream every clip we'll use into the pool
+        anim_load(ANIM_HERO_ATTACK_ID);
+        anim_load(ANIM_HERO_WALK_UP_ID);
+        anim_load(ANIM_HERO_WALK_DOWN_ID);
+        anim_load(ANIM_ENEMY_WALK_ID);
+        anim_load(ANIM_ENEMY_WALK_UP_ID);
+        anim_load(ANIM_ENEMY_WALK_DOWN_ID);
+
+        srand_time();                                      // seed the wander
+
+        hero.x = 40; hero.y = 56;
+        hero.cur = ANIM_HERO_WALK_ID;
+        hero.anim.play(ANIM_HERO_WALK_ID);                 // give the animator a valid clip
+
+        enemy.x = 110; enemy.y = 56;
+        enemy.dir = 1; enemy.timer = 50;
+        enemy.anim.play(ANIM_ENEMY_WALK_ID);
+
+        anim_bg_color = 15;                                // colour erase() restores
+        fill(15);                                          // paint the background ONCE up front
+
+        while (true) {
+            moving = 0;
+            attack = 0;
+            if button(BTN_LEFT)  { hero.x = hero.x - 1; moving = 1; hero.facing = 1; hero.dir = DIR_SIDE; }
+            if button(BTN_RIGHT) { hero.x = hero.x + 1; moving = 1; hero.facing = 0; hero.dir = DIR_SIDE; }
+            if button(BTN_UP)    { hero.y = hero.y - 1; moving = 1; hero.dir = DIR_UP; }
+            if button(BTN_DOWN)  { hero.y = hero.y + 1; moving = 1; hero.dir = DIR_DOWN; }
+            if button(BTN_A)     { attack = 1; }
+            if hero.x < 0   { hero.x = 0; }
+            if hero.x > 144 { hero.x = 144; }
+            if hero.y < 0   { hero.y = 0; }
+            if hero.y > 112 { hero.y = 112; }
+
+            enemy.update();
+            hero.update(attack);
+
+            enemy.erase();                                  // erase pass: restore bg under OLD boxes
+            hero.erase();
+            enemy.draw();                                   // draw pass: enemy behind, hero in front
+            hero.draw(moving);
+            buttons_update();
+            sys_present();
+        }
+        return 0;
+    }
+}

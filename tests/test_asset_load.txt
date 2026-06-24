@@ -1,0 +1,39 @@
+// Regression test for ASSET_INFO (10) / ASSET_LOAD (11).
+// The companion test_asset_load.manifest packs one 4x4 "sprite" (bytes 0..15) into
+// build/roms/test_asset_load.pak. Here we read its header, stream the blob in, and verify.
+// Returns 200 only if: info reports type=1,w=4,h=4,len=16; load copies 16 bytes; and every
+// byte equals its index (sum 0..15 = 120, plus 80 of header checks = 200).
+include "../lib/sys.lib";
+{
+    var byte info[6];
+    var byte buf[16];
+
+    int main() {
+        var int n;
+        var int got;
+        var int i;
+        var int sum;
+
+        got = sys_asset_info(0, &info);            // R0 = length, info[] = [type,w,h,_,len_lo,len_hi]
+        if got != 16 { return 1; }
+        if info[0] != 1 { return 2; }              // type = sprite
+        if info[1] != 4 { return 3; }              // width
+        if info[2] != 4 { return 4; }              // height
+        if info[4] != 16 { return 5; }             // len low byte
+
+        i = 0;
+        while i < 16 { buf[i] = 0; i = i + 1; }     // wipe destination
+
+        n = sys_asset_load(0, &buf, 16);            // stream the blob in
+        if n != 16 { return 6; }
+
+        sum = 0;
+        i = 0;
+        while i < 16 {
+            if buf[i] == i { sum = sum + buf[i]; }
+            i = i + 1;
+        }
+        // sum of 0..15 = 120; add 80 so a fully-correct run is an unambiguous 200
+        return sum + 80;
+    }
+}

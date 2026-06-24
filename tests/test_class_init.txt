@@ -1,0 +1,17 @@
+// Classes v1: a manual init() doing runtime work (calling a function) that a field initializer can't.
+// init() sets v = compute()+1 = 43; get() returns it. Expected return: 43.
+{
+    int compute() { return 42; }
+
+    class Thing {
+        var int v = 0;
+        void init() { self.v = compute() + 1; }
+        int  get()  { return self.v; }
+    }
+    new Thing t;
+
+    int main() {
+        t.init();
+        return t.get();
+    }
+}

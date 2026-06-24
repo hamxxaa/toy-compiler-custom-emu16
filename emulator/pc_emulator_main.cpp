@@ -8,6 +8,7 @@
 #include <vector>
 #include <filesystem>
 #include <chrono>
+#include <cstring>
 
 #include "emu.h"
 #include "definitions.h"
@@ -154,6 +155,54 @@ static std::vector<fs::path> g_pc_rom_list;
 static std::string g_pc_pending_rom;
 static const auto g_pc_start_time = std::chrono::steady_clock::now();
 
+// Basename (no extension) of the loaded ROM + the dir it came from. Used to namespace saves
+// (saves/<rom>.<slot>) and to find the asset pack (<rom-dir>/<rom>.pak), mirroring the firmware's
+// per-ROM LittleFS files.
+static std::string g_pc_current_rom;
+static fs::path    g_pc_rom_dir;
+
+static std::string pc_save_path(uint16_t slot)
+{
+    return "saves/" + g_pc_current_rom + "." + std::to_string(slot);
+}
+
+// ---- asset pack (Piece B): lazily load <rom-dir>/<rom>.pak and cache its TOC ----
+static const int HEADER_LEN = 8;   // EPAK header size, mirrors tools/pack_assets.py
+struct PcPakEntry { uint8_t type, w, h; uint32_t offset, length; };
+static std::vector<uint8_t> g_pc_pak;
+static std::vector<PcPakEntry> g_pc_toc;
+static bool g_pc_pak_loaded = false;
+
+static void pc_load_pak_if_needed()
+{
+    if (g_pc_pak_loaded) return;
+    g_pc_pak_loaded = true;
+    fs::path pak = g_pc_rom_dir / (g_pc_current_rom + ".pak");
+    if (!load_file(pak, g_pc_pak)) return;                  // no pack -> TOC stays empty
+    if (g_pc_pak.size() < HEADER_LEN || std::memcmp(g_pc_pak.data(), "EPAK", 4) != 0)
+    {
+        g_pc_pak.clear();
+        return;
+    }
+    uint16_t count = static_cast<uint16_t>(g_pc_pak[6] | (g_pc_pak[7] << 8));
+    if (g_pc_pak.size() < static_cast<size_t>(HEADER_LEN + 12 * count))
+    {
+        g_pc_pak.clear();
+        return;
+    }
+    for (uint16_t i = 0; i < count; ++i)
+    {
+        const uint8_t *e = &g_pc_pak[HEADER_LEN + 12 * i];
+        PcPakEntry pe;
+        pe.type   = e[0];
+        pe.w      = e[1];
+        pe.h      = e[2];
+        pe.offset = static_cast<uint32_t>(e[4]) | (e[5] << 8) | (e[6] << 16) | (static_cast<uint32_t>(e[7]) << 24);
+        pe.length = static_cast<uint32_t>(e[8]) | (e[9] << 8) | (e[10] << 16) | (static_cast<uint32_t>(e[11]) << 24);
+        g_pc_toc.push_back(pe);
+    }
+}
+
 static void build_pc_rom_list(const fs::path &rom_dir)
 {
     g_pc_rom_list.clear();
@@ -170,6 +219,7 @@ static void pc_syscall_handler(uint16_t num)
 {
     uint16_t r1 = cpu_instance.registers[1].word;
     uint16_t r2 = cpu_instance.registers[2].word;
+    uint16_t r3 = cpu_instance.registers[3].word;
     switch (num)
     {
     case 1: // LIST_ROMS: R1=dest, R2=max -> R0=count; writes len-prefixed names
@@ -234,6 +284,59 @@ static void pc_syscall_handler(uint16_t num)
         cpu_instance.registers[0].word = static_cast<uint16_t>(r1 + r2);
         break;
     }
+    case SYSCALL_SAVE: // 7: R1=src R2=len R3=slot -> R0 = bytes written (0 = fail)
+    {
+        uint32_t len = std::min<uint32_t>(r2, 65536u - r1);
+        fs::create_directories("saves");
+        std::ofstream f(pc_save_path(r3), std::ios::binary | std::ios::trunc);
+        if (f)
+            f.write(reinterpret_cast<const char *>(&cpu_instance.memory[r1]), len);
+        cpu_instance.registers[0].word = f ? static_cast<uint16_t>(len) : 0;
+        break;
+    }
+    case SYSCALL_LOAD: // 8: R1=dest R2=maxlen R3=slot -> R0 = bytes read (0 = none)
+    {
+        uint32_t maxlen = std::min<uint32_t>(r2, 65536u - r1);
+        std::ifstream f(pc_save_path(r3), std::ios::binary);
+        if (f)
+            f.read(reinterpret_cast<char *>(&cpu_instance.memory[r1]), maxlen);
+        cpu_instance.registers[0].word = f ? static_cast<uint16_t>(f.gcount()) : 0;
+        break;
+    }
+    case SYSCALL_SAVE_EXISTS: // 9: R1=slot -> R0 = 1/0
+        cpu_instance.registers[0].word = fs::exists(pc_save_path(r1)) ? 1 : 0;
+        break;
+    case SYSCALL_ASSET_INFO: // 10: R1=id R2=dest -> R0=length; writes 6-byte header at dest
+    {
+        pc_load_pak_if_needed();
+        if (r1 >= g_pc_toc.size()) { cpu_instance.registers[0].word = 0; break; }
+        const PcPakEntry &e = g_pc_toc[r1];
+        cpu_instance.memory[r2 + 0] = e.type;
+        cpu_instance.memory[r2 + 1] = e.w;
+        cpu_instance.memory[r2 + 2] = e.h;
+        cpu_instance.memory[r2 + 3] = 0;
+        cpu_instance.memory[r2 + 4] = static_cast<uint8_t>(e.length & 0xFF);
+        cpu_instance.memory[r2 + 5] = static_cast<uint8_t>((e.length >> 8) & 0xFF);
+        cpu_instance.registers[0].word = static_cast<uint16_t>(e.length);
+        break;
+    }
+    case SYSCALL_ASSET_LOAD: // 11: R1=id R2=dest R3=maxlen -> R0 = bytes copied (0 = fail/too big)
+    {
+        pc_load_pak_if_needed();
+        if (r1 >= g_pc_toc.size()) { cpu_instance.registers[0].word = 0; break; }
+        const PcPakEntry &e = g_pc_toc[r1];
+        if (e.length > r3 || static_cast<uint32_t>(r2) + e.length > 65536u ||
+            e.offset + e.length > g_pc_pak.size())
+        {
+            cpu_instance.registers[0].word = 0;
+            break;
+        }
+        std::memcpy(&cpu_instance.memory[r2], &g_pc_pak[e.offset], e.length);
+        cpu_instance.registers[0].word = static_cast<uint16_t>(e.length);
+        break;
+    }
+    case SYSCALL_SET_FPS: // 12: no-op on the one-shot PC runner (it runs N frames, no real-time pacing)
+        break;
     default:
         break;
     }
@@ -308,11 +411,15 @@ int main(int argc, char **argv)
 
     initialize_cpu();
 
+    // Per-ROM namespacing for saves + asset pack (mirrors firmware's LittleFS files).
+    g_pc_current_rom = rom_path.stem().string();
+    g_pc_rom_dir = rom_path.has_parent_path() ? rom_path.parent_path() : fs::path(".");
+
     if (use_menu_handler)
-    {
         build_pc_rom_list(fs::path("build") / "roms");
-        emu_set_syscall_handler(pc_syscall_handler);
-    }
+    // Register the handler unconditionally so save/load/asset syscalls work in headless tests;
+    // the ROM-list cases (1-3) simply return empty when --menu wasn't passed.
+    emu_set_syscall_handler(pc_syscall_handler);
 
     for (std::size_t i = 0; i < rom_bytes.size(); ++i)
     {

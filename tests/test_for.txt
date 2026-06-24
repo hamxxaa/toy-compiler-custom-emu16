@@ -1,0 +1,13 @@
+// Piece D5: for loop with a `var` init scoped to the loop, and continue that still runs the post.
+// sum(0..9) = 45, minus 4 (skipped via continue) = 41. Expected return: 41.
+{
+    int main() {
+        var int sum;
+        sum = 0;
+        for (var int i = 0; i < 10; i = i + 1) {
+            if i == 4 { continue; }
+            sum = sum + i;
+        }
+        return sum;
+    }
+}

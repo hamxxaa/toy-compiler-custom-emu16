@@ -1,0 +1,18 @@
+// Piece E: draw_sprite_color with transparency (index 0). A 2x2 sprite {5,0,0,9} over a fill(2):
+//   (10,20)=5 opaque · (11,20)=0 transparent->2 · (10,21)=0->2 · (11,21)=9 opaque
+//   5 + 2*10 + 2*100 + 9*1000 = 9225. Expected return: 9225.
+include "../lib/io.lib";
+{
+    var byte spr[4] = { 5, 0, 0, 9 };
+
+    int main() {
+        var int v;
+        fill(2);
+        draw_sprite_color(&spr, 2, 2, 10, 20);
+        v = peek_byte(VRAM_START + 20 * 160 + 10);
+        v = v + peek_byte(VRAM_START + 20 * 160 + 11) * 10;
+        v = v + peek_byte(VRAM_START + 21 * 160 + 10) * 100;
+        v = v + peek_byte(VRAM_START + 21 * 160 + 11) * 1000;
+        return v;
+    }
+}

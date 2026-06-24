@@ -95,6 +95,7 @@ class TACGenerator:
         self.temp_count = 0
         self.label_count = 0
         self.current_function = None
+        self.loops = []   # stack of (continue_label, break_label) for break/continue
 
     def generate_tac(self, ast):
         self.generate(ast)
@@ -130,7 +131,7 @@ class TACGenerator:
 
         for declaration in top_level_declarations:
             node_name = type(declaration).__name__
-            if node_name in ("DefinerNode", "ArrayDefinerNode"):
+            if node_name in ("DefinerNode", "ArrayDefinerNode", "StructVarNode"):
                 global_definitions.append(declaration)
             elif node_name == "FunctionDefNode":
                 function_definitions.append(declaration)
@@ -209,8 +210,12 @@ class TACGenerator:
 
     def visit_EqualizeNode(self, node):
         value = self.generate(node.value)
+        # Use the variable's DECLARED type (set by the analyzer), not the RHS expression's type, so
+        # this Var is identical to every other reference to the same variable. Mismatched types make
+        # the allocator treat them as distinct vars (e.g. `int w = byteArr[i]` -> w:byte vs w:int),
+        # splitting them across registers so the value never propagates.
         self.create_instruction(
-            "eq", arg1=value, result=Var(node.name, type=value.type, storage=node.storage, scope_id=node.scope_id)
+            "eq", arg1=value, result=Var(node.name, type=node.type, storage=node.storage, scope_id=node.scope_id)
         )
 
     def visit_IfNode(self, node):
@@ -243,9 +248,42 @@ class TACGenerator:
         self.create_instruction("if", arg1=condition, result=mid_label)
         self.create_instruction("goto", result=end_label)
         self.create_instruction("label", result=mid_label)
+        self.loops.append((start_label, end_label))   # continue -> re-test, break -> exit
         self.generate(node.scope)
+        self.loops.pop()
         self.create_instruction("goto", result=start_label)
         self.create_instruction("label", result=end_label)
+
+    def visit_ForNode(self, node):
+        if node.init is not None:
+            self.generate(node.init)
+        start_label = self.new_label()
+        mid_label = self.new_label()
+        post_label = self.new_label()
+        end_label = self.new_label()
+        self.create_instruction("label", result=start_label)
+        condition = self.generate(node.condition)
+        self.create_instruction("if", arg1=condition, result=mid_label)
+        self.create_instruction("goto", result=end_label)
+        self.create_instruction("label", result=mid_label)
+        self.loops.append((post_label, end_label))     # continue -> post-update, break -> exit
+        self.generate(node.scope)
+        self.loops.pop()
+        self.create_instruction("label", result=post_label)
+        if node.post is not None:
+            self.generate(node.post)
+        self.create_instruction("goto", result=start_label)
+        self.create_instruction("label", result=end_label)
+
+    def visit_BreakNode(self, node):
+        if not self.loops:
+            raise Exception("Codegen Error: 'break' outside a loop.")
+        self.create_instruction("goto", result=self.loops[-1][1])
+
+    def visit_ContinueNode(self, node):
+        if not self.loops:
+            raise Exception("Codegen Error: 'continue' outside a loop.")
+        self.create_instruction("goto", result=self.loops[-1][0])
 
     def visit_PrintNode(self, node):
         expression_result = self.generate(node.expression)
@@ -280,9 +318,25 @@ class TACGenerator:
         self.create_instruction("^", arg1=inner, arg2=Const(0xFFFF, "int"), result=temp)
         return temp
 
+    def visit_NegNode(self, node):
+        # -x  ==  0 - x   (reuses the subtract op; no unary-negate opcode needed)
+        inner = self.generate(node.inner)
+        temp = self.new_temp(type=node.type)
+        self.create_instruction("-", arg1=Const(0, "int"), arg2=inner, result=temp)
+        return temp
+
     def visit_TermNode(self, node):
         left = self.generate(node.left)
         right = self.generate(node.right)
+        if node.operator == "%":
+            # a % b  ==  a - (a / b) * b   (truncated; no MOD opcode, signed div/mul/sub exist)
+            q = self.new_temp("int")
+            self.create_instruction("/", arg1=left, arg2=right, result=q)
+            m = self.new_temp("int")
+            self.create_instruction("*", arg1=q, arg2=right, result=m)
+            temp = self.new_temp(type=node.type)
+            self.create_instruction("-", arg1=left, arg2=m, result=temp)
+            return temp
         temp = self.new_temp(type=node.type)
         self.create_instruction(node.operator, arg1=left, arg2=right, result=temp)
         return temp
@@ -318,6 +372,42 @@ class TACGenerator:
                                 arg2=node.size,
                                 result=arr_var,
                                 extra=getattr(node, "init_values", None))
+
+    # ── D6: Structs ───────────────────────────────────────────────────────────
+    def visit_StructVarNode(self, node):
+        """Reserve sizeof(struct)*count bytes in the data section (no runtime code)."""
+        decl_type = node.struct_name + ("[]" if node.is_array else "")
+        var = Var(node.name, type=decl_type, storage=node.storage, scope_id=node.scope_id)
+        self.create_instruction("def_arr", arg1="byte", arg2=node.size_bytes, result=var)
+
+    def _member_address(self, node):
+        """Temp holding the address of node's field: addrof(base) [+ index*stride] [+ field_offset]."""
+        var = Var(node.name, type=node.decl_type, storage=node.storage, scope_id=node.scope_id)
+        addr = self.new_temp("int")
+        self.create_instruction("addrof", arg1=var, result=addr)
+        if node.index is not None:
+            idx = self.generate(node.index)
+            off = self.new_temp("int")
+            self.create_instruction("*", arg1=idx, arg2=Const(node.stride, "int"), result=off)
+            ea = self.new_temp("int")
+            self.create_instruction("+", arg1=addr, arg2=off, result=ea)
+            addr = ea
+        if node.field_offset != 0:
+            fa = self.new_temp("int")
+            self.create_instruction("+", arg1=addr, arg2=Const(node.field_offset, "int"), result=fa)
+            addr = fa
+        return addr
+
+    def visit_MemberAccessNode(self, node):
+        addr = self._member_address(node)
+        result = self.new_temp(node.field_type)   # byte field -> byte load
+        self.create_instruction("load_ptr", arg1=addr, result=result)
+        return result
+
+    def visit_MemberAssignNode(self, node):
+        addr = self._member_address(node)
+        val = self.generate(node.value)
+        self.create_instruction("store_ptr", arg1=val, arg2=addr, extra=node.field_type)
 
     def visit_IndexNode(self, node):
         """arr[i] — compute address, emit load_ptr."""
@@ -368,7 +458,12 @@ class TACGenerator:
             self.create_instruction("+", arg1=base_temp, arg2=idx_temp, result=addr_temp)
 
         val_temp = self.generate(node.value)
-        self.create_instruction("store_ptr", arg1=val_temp, arg2=addr_temp)
+        # Carry the destination element type so the backend emits a byte-wide store for
+        # byte arrays (mirrors load_ptr, which keys off the loaded element type). Without
+        # this, storing an int-typed value (e.g. a constant) into a byte array does a
+        # 2-byte word store and clobbers the adjacent byte / next global.
+        self.create_instruction("store_ptr", arg1=val_temp, arg2=addr_temp,
+                                 extra=node.elem_type)
 
     # ── M2: Pointers ─────────────────────────────────────────────────────────
     def visit_AddrOfNode(self, node):

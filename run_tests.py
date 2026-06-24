@@ -58,8 +58,42 @@ TESTS = [
     ("tests/test_arr_lit_int.txt",    "test_arr_lit_int",  8738),
     ("tests/test_arr_lit_partial.txt","test_arr_lit_partial", 9),
     ("tests/test_arr_lit_global.txt", "test_arr_lit_global", 13),
+    ("tests/test_byte_arr_store_width.txt", "test_byte_arr_store_width", 99),
+    ("tests/test_byte_local.txt",     "test_byte_local",     5300),  # byte-array elem -> int local
     # ── M7: host syscall / interrupt regression (needs --menu so the dev handler is live) ──
     ("tests/test_syscall_echo.txt",   "test_syscall_echo",   42, ["--menu"]),
+    # ── Piece A/B: save-load + asset-streaming syscalls (handler is always registered now) ──
+    ("tests/test_save_load.txt",      "test_save_load",      396),
+    ("tests/test_asset_load.txt",     "test_asset_load",     200),  # auto-packs tests/test_asset_load.manifest
+    # ── Pieces C/D: language features (const, unary minus, %, break/continue, for, strings, structs) ──
+    ("tests/test_const.txt",          "test_const",          35),
+    ("tests/test_neg.txt",            "test_neg",            3),
+    ("tests/test_mod.txt",            "test_mod",            2),
+    ("tests/test_break.txt",          "test_break",          18),
+    ("tests/test_for.txt",            "test_for",            41),
+    ("tests/test_string.txt",         "test_string",         26952),
+    ("tests/test_struct.txt",         "test_struct",         357),
+    ("tests/test_struct_arr.txt",     "test_struct_arr",     35),
+    ("tests/test_text.txt",           "test_text",           505),
+    # ── Classes (compile-time objects via clone + name-mangling) ──
+    ("tests/test_class_counter.txt",  "test_class_counter",  3),
+    ("tests/test_class_self.txt",     "test_class_self",     25),
+    ("tests/test_class_compose.txt",  "test_class_compose",  303),
+    ("tests/test_class_init.txt",     "test_class_init",     43),
+    # ── Piece E: sprites + palette + animation ──
+    ("tests/test_sprite_color.txt",   "test_sprite_color",   9225),
+    ("tests/test_sprite_color_flip.txt", "test_sprite_color_flip", 2952),
+    ("tests/test_pal_load.txt",       "test_pal_load",       4665),
+    ("tests/test_anim.txt",           "test_anim",           13210),
+    ("tests/test_anim_draw.txt",      "test_anim_draw",      4321),  # auto-packs test_anim_draw.manifest
+    # ── sprite-lib Phase 5: per-game frame-rate cap syscall ──
+    ("tests/test_set_fps.txt",        "test_set_fps",        42),
+]
+
+# Pure-Python tool tests (no ROM): run as subprocesses, must exit 0.
+TOOL_TESTS = [
+    "tests/test_png.py",
+    "tests/test_image_import.py",
 ]
 
 
@@ -71,6 +105,22 @@ def compile_test(src, rom_name):
     if result.returncode != 0:
         raise RuntimeError(
             f"Compiler error for {src}:\n{result.stdout}\n{result.stderr}"
+        )
+
+
+def pack_if_manifest(rom_name):
+    """If tests/<rom_name>.manifest exists, pack it into build/roms/<rom_name>.pak so the
+    emulator's ASSET_* syscalls can stream it (Piece B asset pipeline)."""
+    manifest = os.path.join(ROOT, "tests", rom_name + ".manifest")
+    if not os.path.exists(manifest):
+        return
+    result = subprocess.run(
+        [sys.executable, "tools/pack_assets.py", manifest, os.path.join(ROM_DIR, rom_name)],
+        capture_output=True, text=True, cwd=ROOT
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Asset packer failed for {rom_name}:\n{result.stdout}\n{result.stderr}"
         )
 
 
@@ -99,10 +149,24 @@ def run_test(rom_name, emu_args=()):
     )
 
 
+def run_tool_tests():
+    """Run the stdlib-only tool tests (PNG reader, asset importer). Returns True if all pass."""
+    ok = True
+    for path in TOOL_TESTS:
+        result = subprocess.run([sys.executable, path], capture_output=True, text=True, cwd=ROOT)
+        status = "PASS" if result.returncode == 0 else "FAIL"
+        print(f"{os.path.basename(path):<22} {'tool':>8}  {status:>8}")
+        if result.returncode != 0:
+            ok = False
+            print(result.stdout)
+            print(result.stderr)
+    return ok
+
+
 def main():
     print(f"{'Test':<22} {'expect':>8}  {'got':>8}  {'bytes':>6}  {'instr':>8}  {'':>6}")
     print("-" * 66)
-    all_pass = True
+    all_pass = run_tool_tests()
     total_bytes = 0
     total_instr = 0
     for entry in TESTS:
@@ -110,6 +174,7 @@ def main():
         emu_args = entry[3] if len(entry) > 3 else []
         try:
             compile_test(src, rom_name)
+            pack_if_manifest(rom_name)
             got, instr, rom_bytes = run_test(rom_name, emu_args)
             status = "PASS" if got == expected else "FAIL"
             if got != expected:

@@ -112,6 +112,36 @@ class Tokenizer:
                     i = k + 1
                     continue
 
+            # String literal: capture "..." (with escapes) as one STRING token whose value is the
+            # decoded text. The parser hoists it to an anonymous NUL-terminated byte array.
+            if input_str[i] == '"':
+                j = i + 1
+                chars = []
+                escapes = {"n": "\n", "t": "\t", "r": "\r", "0": "\0", "\\": "\\", '"': '"'}
+                while j < len(input_str) and input_str[j] != '"':
+                    c = input_str[j]
+                    if c == "\n":
+                        raise SyntaxError(f"Unterminated string at row {row}, col {col}")
+                    if c == "\\" and j + 1 < len(input_str):
+                        chars.append(escapes.get(input_str[j + 1], input_str[j + 1]))
+                        j += 2
+                        continue
+                    chars.append(c)
+                    j += 1
+                if j >= len(input_str):
+                    raise SyntaxError(f"Unterminated string at row {row}, col {col}")
+                tokens.append(("STRING", "".join(chars), row, col))
+                for ch in input_str[i : j + 1]:
+                    if ch == "\n":
+                        row += 1
+                        col = 1
+                    elif ch == "\t":
+                        col += 4
+                    else:
+                        col += 1
+                i = j + 1
+                continue
+
             token_type, matched, length = self.matcher.match(input_str[i:])
 
             if token_type:

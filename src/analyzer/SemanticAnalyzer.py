@@ -30,6 +30,12 @@ class SemanticAnalyzer:
         # Set of (var_name, scope_id) for variables whose address is taken (&x).
         # The allocator uses this to force them onto the stack so &x is valid.
         self.address_taken = set()
+        # const NAME -> folded int value (resolved in phase 0, then stripped before codegen).
+        self.consts = {}
+        # depth of enclosing while/for loops, for break/continue validation.
+        self.loop_depth = 0
+        # struct Name -> {"fields": {fname: (ftype, offset)}, "order": [...], "size": bytes}
+        self.structs = {}
 
     def analyze(self, ast):
         self.visit(ast)
@@ -48,6 +54,10 @@ class SemanticAnalyzer:
         # 3) analyze function bodies.
         self.current_scope = SymbolTable(parent=None)
 
+        # Phase 0: fold compile-time constants + collect struct layouts, then strip both.
+        self._collect_consts(node)
+        self._collect_structs(node)
+
         declarations = node.scope.statements
 
         for declaration in declarations:
@@ -58,7 +68,7 @@ class SemanticAnalyzer:
 
         for declaration in declarations:
             decl_name = type(declaration).__name__
-            if decl_name in ("DefinerNode", "ArrayDefinerNode"):
+            if decl_name in ("DefinerNode", "ArrayDefinerNode", "StructVarNode"):
                 self.visit(declaration)
             elif decl_name != "FunctionDefNode":
                 raise Exception(
@@ -178,6 +188,12 @@ class SemanticAnalyzer:
         var_type, storage, scope_id = self.current_scope.lookup(node.name)
         node.storage = storage
         node.scope_id = scope_id
+        # Carry the variable's DECLARED type so codegen builds a Var identical to every other
+        # reference to it. Using the RHS value's type instead (e.g. `int w = byteArr[i]`) would
+        # make `w:byte` != `w:int` -- the allocator would split them into two registers and the
+        # assigned value would never reach later uses. Var identity must be (name, type, storage,
+        # scope), so the type here must be the variable's, not the expression's.
+        node.type = var_type
         if var_type is None:
             raise Exception(f"Semantic Error: Variable '{node.name}' not defined.")
         value_type = self.visit(node.value)
@@ -254,11 +270,20 @@ class SemanticAnalyzer:
         node.type = "int"
         return "int"
 
+    def visit_NegNode(self, node):
+        inner_type = self.visit(node.inner)
+        if not self._is_numeric(inner_type):
+            raise Exception(
+                f"Type Error: Unary '-' requires an int/byte operand, got '{inner_type}'."
+            )
+        node.type = "int"
+        return "int"
+
     def visit_TermNode(self, node):
         left_type = self.visit(node.left)
         right_type = self.visit(node.right)
 
-        if node.operator in ("*", "/"):
+        if node.operator in ("*", "/", "%"):
             if self._is_numeric(left_type) and self._is_numeric(right_type):
                 node.type = "int"
                 return "int"
@@ -270,6 +295,12 @@ class SemanticAnalyzer:
             raise Exception(f"Unknown operator '{node.operator}' in term.")
 
     def visit_FactorNode(self, node):
+        # A bare identifier that names a const folds to its literal value (Piece D1).
+        if node.is_variable and node.value in self.consts:
+            node.is_variable = False
+            node.value = str(self.consts[node.value])
+            node.type = "int"
+            return "int"
         if node.is_variable:
             var_type, storage, scope_id = self.current_scope.lookup(node.value)
             if var_type is None:
@@ -344,7 +375,37 @@ class SemanticAnalyzer:
             raise Exception(
                 f"Type Error: While condition must be of type 'bool', got '{condition_type}'."
             )
+        self.loop_depth += 1
         self.visit(node.scope)
+        self.loop_depth -= 1
+
+    def visit_ForNode(self, node):
+        # init (and any var it declares) live in a fresh scope wrapping the loop body.
+        parent_scope = self.current_scope
+        self.current_scope = SymbolTable(parent=parent_scope)
+        if node.init is not None:
+            self.visit(node.init)
+        condition_type = self.visit(node.condition)
+        if condition_type != "bool":
+            raise Exception(
+                f"Type Error: For condition must be of type 'bool', got '{condition_type}'."
+            )
+        if node.post is not None:
+            self.visit(node.post)
+        self.loop_depth += 1
+        self.visit(node.scope)
+        self.loop_depth -= 1
+        self.current_scope = parent_scope
+
+    def visit_BreakNode(self, node):
+        if self.loop_depth == 0:
+            raise Exception("Semantic Error: 'break' used outside of a loop.")
+        node.type = "void"
+
+    def visit_ContinueNode(self, node):
+        if self.loop_depth == 0:
+            raise Exception("Semantic Error: 'continue' used outside of a loop.")
+        node.type = "void"
 
     def _register_function(self, node):
         if node.name in self.functions:
@@ -418,20 +479,161 @@ class SemanticAnalyzer:
             node.init_values = values
 
     def _eval_const_int(self, node, arr_name):
-        """Evaluate a compile-time-constant initializer element to an int (literals only)."""
-        if type(node).__name__ == "FactorNode" and not node.is_variable:
-            text = str(node.value).lower()
-            if text == "true":
+        """Evaluate a compile-time-constant initializer element to an int (literals, consts, and
+        constant arithmetic over them)."""
+        try:
+            return self._eval_const_expr(node, arr_name)
+        except Exception:
+            raise Exception(
+                f"Semantic Error: array '{arr_name}' initializer elements must be constant integer expressions."
+            )
+
+    # ── const folding (Piece D1) ─────────────────────────────────────────────
+    def _collect_consts(self, program):
+        """Fold every `const NAME = expr;` to an int, strip the ConstDefNodes, and resolve any
+        const-named array sizes. Consts may live in included libs, so this runs on the merged AST.
+        Consts must be defined before use (declaration order)."""
+        kept = []
+        for decl in program.scope.statements:
+            if type(decl).__name__ == "ConstDefNode":
+                if decl.name in self.consts:
+                    raise Exception(f"Semantic Error: const '{decl.name}' already defined.")
+                self.consts[decl.name] = self._eval_const_expr(decl.value, decl.name)
+            else:
+                kept.append(decl)
+        program.scope.statements = kept
+        for decl in kept:
+            if type(decl).__name__ == "ArrayDefinerNode" and isinstance(decl.size, str):
+                if decl.size not in self.consts:
+                    raise Exception(
+                        f"Semantic Error: array '{decl.name}' size '{decl.size}' is not a known const."
+                    )
+                decl.size = self.consts[decl.size]
+
+    def _eval_const_expr(self, node, ctx=""):
+        nm = type(node).__name__
+        if nm == "FactorNode":
+            if node.is_variable:
+                if node.value in self.consts:
+                    return self.consts[node.value]
+                raise Exception(f"Semantic Error: const '{ctx}' references unknown name '{node.value}'.")
+            t = str(node.value).lower()
+            if t == "true":
                 return 1
-            if text == "false":
+            if t == "false":
                 return 0
-            try:
-                return int(node.value, 0)   # handles decimal and 0x hex
-            except (ValueError, TypeError):
-                pass
-        raise Exception(
-            f"Semantic Error: array '{arr_name}' initializer elements must be integer literals."
-        )
+            return int(node.value, 0)
+        if nm == "NegNode":
+            return -self._eval_const_expr(node.inner, ctx)
+        if nm == "BitNotNode":
+            return ~self._eval_const_expr(node.inner, ctx)
+        if nm in ("ExpressionNode", "TermNode"):
+            a = self._eval_const_expr(node.left, ctx)
+            b = self._eval_const_expr(node.right, ctx)
+            op = node.operator
+            if op == "+":  return a + b
+            if op == "-":  return a - b
+            if op == "*":  return a * b
+            if op == "/":  return self._trunc_div(a, b)
+            if op == "%":  return a - self._trunc_div(a, b) * b
+            if op == "&":  return a & b
+            if op == "|":  return a | b
+            if op == "^":  return a ^ b
+            if op == "<<": return a << b
+            if op == ">>": return a >> b
+        raise Exception(f"Semantic Error: const '{ctx}' initializer is not a compile-time constant.")
+
+    @staticmethod
+    def _trunc_div(a, b):
+        if b == 0:
+            raise Exception("Semantic Error: division by zero in a const expression.")
+        q = abs(a) // abs(b)
+        return -q if (a < 0) != (b < 0) else q
+
+    # ── structs (Piece D6) ───────────────────────────────────────────────────
+    def _collect_structs(self, program):
+        """Compute byte-packed field offsets + sizeof for each struct, then strip the defs."""
+        kept = []
+        for decl in program.scope.statements:
+            if type(decl).__name__ == "StructDefNode":
+                if decl.name in self.structs:
+                    raise Exception(f"Semantic Error: struct '{decl.name}' already defined.")
+                fields, order, offset = {}, [], 0
+                for (ftype, fname) in decl.fields:
+                    if ftype not in ("int", "byte", "bool"):
+                        raise Exception(
+                            f"Semantic Error: struct '{decl.name}' field '{fname}' must be int/byte/bool "
+                            f"(got '{ftype}'); nested structs are not supported yet."
+                        )
+                    if fname in fields:
+                        raise Exception(f"Semantic Error: struct '{decl.name}' has duplicate field '{fname}'.")
+                    fields[fname] = (ftype, offset)
+                    order.append(fname)
+                    offset += 1 if ftype == "byte" else 2
+                self.structs[decl.name] = {"fields": fields, "order": order, "size": offset}
+            else:
+                kept.append(decl)
+        program.scope.statements = kept
+
+    def visit_StructVarNode(self, node):
+        if node.struct_name not in self.structs:
+            raise Exception(f"Semantic Error: '{node.struct_name}' is not a defined struct type.")
+        count = node.count
+        if isinstance(count, str):
+            if count not in self.consts:
+                raise Exception(f"Semantic Error: struct array '{node.name}' size '{count}' is not a known const.")
+            count = self.consts[count]
+        if count <= 0:
+            raise Exception(f"Semantic Error: struct '{node.name}' count must be positive, got {count}.")
+        node.count = count
+        node.size_bytes = self.structs[node.struct_name]["size"] * count
+        decl_type = node.struct_name + ("[]" if node.is_array else "")
+        self.current_scope.define(node.name, decl_type)
+        node.storage = self.current_scope.storage
+        node.scope_id = self.current_scope.scope_id
+
+    def _resolve_member(self, node):
+        var_type, storage, scope_id = self.current_scope.lookup(node.name)
+        if var_type is None:
+            raise Exception(f"Semantic Error: '{node.name}' is not defined.")
+        is_array = var_type.endswith("[]")
+        struct_name = var_type[:-2] if is_array else var_type
+        if struct_name not in self.structs:
+            raise Exception(f"Type Error: '{node.name}' (type '{var_type}') is not a struct.")
+        if node.index is not None and not is_array:
+            raise Exception(f"Type Error: '{node.name}' is a single struct, not an array.")
+        if node.index is None and is_array:
+            raise Exception(
+                f"Type Error: struct array '{node.name}' needs an index, e.g. {node.name}[i].{node.field}."
+            )
+        sinfo = self.structs[struct_name]
+        if node.field not in sinfo["fields"]:
+            raise Exception(f"Type Error: struct '{struct_name}' has no field '{node.field}'.")
+        if node.index is not None:
+            idx_type = self.visit(node.index)
+            if not self._is_numeric(idx_type):
+                raise Exception(f"Type Error: struct array index must be numeric, got '{idx_type}'.")
+        ftype, foff = sinfo["fields"][node.field]
+        node.struct_name = struct_name
+        node.field_offset = foff
+        node.field_type = ftype
+        node.stride = sinfo["size"]
+        node.storage = storage
+        node.scope_id = scope_id
+        node.decl_type = var_type
+        return ftype
+
+    def visit_MemberAccessNode(self, node):
+        node.type = self._resolve_member(node)
+        return node.type
+
+    def visit_MemberAssignNode(self, node):
+        ftype = self._resolve_member(node)
+        val_type = self.visit(node.value)
+        if not self._assignable(ftype, val_type):
+            raise Exception(
+                f"Type Error: cannot assign '{val_type}' to field '{node.field}' of type '{ftype}'."
+            )
 
     def visit_IndexNode(self, node):
         arr_type, storage, scope_id = self.current_scope.lookup(node.array_name)

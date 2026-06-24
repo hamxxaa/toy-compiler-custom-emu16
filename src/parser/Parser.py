@@ -63,8 +63,12 @@ from .parserNodes import (
     ReturnNode,
     DefinerNode,
     EqualizeNode,
+    ConstDefNode,
     IfNode,
     WhileNode,
+    ForNode,
+    BreakNode,
+    ContinueNode,
     PrintNode,
     ConditionNode,
     ExpressionNode,
@@ -79,6 +83,16 @@ from .parserNodes import (
     DerefNode,
     DerefAssignNode,
     BitNotNode,
+    NegNode,
+    StructDefNode,
+    StructVarNode,
+    MemberAccessNode,
+    MemberAssignNode,
+    ClassDefNode,
+    NewInstanceNode,
+    MethodCallNode,
+    ChainAccessNode,
+    ChainAssignNode,
 )
 
 conditional_operators = {"<", ">", "==", "<=", ">=", "!="}
@@ -120,8 +134,11 @@ class TokenHelper:
 
 class Parser:
 
+    _string_counter = 0   # class-level so hoisted "__strN" names are unique across all units
+
     def __init__(self, tokens):
         self.tokens = TokenHelper(tokens)
+        self.string_arrays = []   # anonymous byte arrays hoisted from string literals in this unit
 
     def parse_program(self):
         # <program> ::= "{" <declaration>* "}"
@@ -130,7 +147,19 @@ class Parser:
         while self.tokens.peek() and self.tokens.peek()[1] != "}":
             declarations.append(self.parse_declaration())
         self.tokens.consume("}", "SYMBOL")
-        return ProgramNode(ScopeNode(declarations))
+        # String literals seen anywhere in this unit become top-level anonymous byte arrays.
+        return ProgramNode(ScopeNode(self.string_arrays + declarations))
+
+    def _hoist_string(self):
+        # "..."  ->  a NUL-terminated global `var byte __strN[len+1] = { bytes..., 0 };`, and the
+        # expression evaluates to its address (&__strN), reusing array-literal baking + addrof.
+        text = self.tokens.consume(expected_type="STRING")[1]
+        name = f"__str{Parser._string_counter}"
+        Parser._string_counter += 1
+        init = [FactorNode(str(ord(c) & 0xFF), is_variable=False) for c in text]
+        init.append(FactorNode("0", is_variable=False))   # NUL terminator
+        self.string_arrays.append(ArrayDefinerNode(name, "byte", len(text) + 1, init))
+        return AddrOfNode(name)
 
     def parse_declaration(self):
         # <declaration> ::= <global_definer> | <function_def>
@@ -139,9 +168,83 @@ class Parser:
             return self.parse_function_def()
         if token[1] == "var":
             return self.parse_definer()
+        if token[1] == "const":
+            return self.parse_const_def()
+        if token[1] == "struct":
+            return self.parse_struct_def()
+        if token[1] == "class":
+            return self.parse_class_def()
+        if token[1] == "new":
+            return self.parse_new_instance()
         raise SyntaxError(
             f"Error, expected a declaration but found '{token[1]}' at row {token[2]}, column {token[3]}"
         )
+
+    def parse_class_def(self):
+        # <class_def> ::= "class" <Name> "{" (<field_decl> | <method_def>)* "}"
+        #   field_decl = a `var ...` declaration; method_def = an ordinary function def.
+        self.tokens.consume("class", "KEYWORD")
+        name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+        self.tokens.consume("{", "SYMBOL")
+        fields = []
+        methods = []
+        while self.tokens.peek() and self.tokens.peek()[1] != "}":
+            tok = self.tokens.peek()
+            if tok[1] == "var":
+                fields.append(self.parse_definer())
+            elif tok[0] == "TYPE":
+                methods.append(self.parse_function_def())
+            else:
+                raise SyntaxError(
+                    f"Error in class '{name}': expected a `var` field or a method, found "
+                    f"'{tok[1]}' at row {tok[2]}, column {tok[3]}"
+                )
+        self.tokens.consume("}", "SYMBOL")
+        return ClassDefNode(name, fields, methods)
+
+    def parse_new_instance(self):
+        # <new_instance> ::= "new" <Class> <name> ";"
+        self.tokens.consume("new", "KEYWORD")
+        class_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+        inst_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+        self.tokens.consume(";", "SYMBOL")
+        return NewInstanceNode(class_name, inst_name)
+
+    def _parse_args(self):
+        # "(" (<expression> ("," <expression>)*)? ")"
+        self.tokens.consume("(", "SYMBOL")
+        args = []
+        if self.tokens.peek() and self.tokens.peek()[1] != ")":
+            args = self.parse_arg_list()
+        self.tokens.consume(")", "SYMBOL")
+        return args
+
+    def _is_member_root(self, tok):
+        # A dotted-access / method-call root: an identifier or the `self` keyword.
+        return tok is not None and (tok[0] == "IDENTIFIER" or (tok[0] == "KEYWORD" and tok[1] == "self"))
+
+    def parse_struct_def(self):
+        # <struct_def> ::= "struct" <Name> "{" (<type> <field> ";")* "}"
+        self.tokens.consume("struct", "KEYWORD")
+        name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+        self.tokens.consume("{", "SYMBOL")
+        fields = []
+        while self.tokens.peek() and self.tokens.peek()[1] != "}":
+            ftype = self.tokens.consume(expected_type="TYPE")[1]
+            fname = self.tokens.consume(expected_type="IDENTIFIER")[1]
+            self.tokens.consume(";", "SYMBOL")
+            fields.append((ftype, fname))
+        self.tokens.consume("}", "SYMBOL")
+        return StructDefNode(name, fields)
+
+    def parse_const_def(self):
+        # <const_def> ::= "const" <var> "=" <expression> ";"   (compile-time integer constant)
+        self.tokens.consume("const", "KEYWORD")
+        name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+        self.tokens.consume("=", "SYMBOL")
+        value = self.parse_expression()
+        self.tokens.consume(";", "SYMBOL")
+        return ConstDefNode(name, value)
 
     def parse_function_def(self):
         # <function_def> ::= <ret_type> <var> "(" <param_list_opt> ")" <scope>
@@ -196,6 +299,16 @@ class Parser:
             return self.parse_if_structure()
         elif token[1] == "while":
             return self.parse_while_structure()
+        elif token[1] == "for":
+            return self.parse_for_structure()
+        elif token[1] == "break":
+            self.tokens.consume("break", "KEYWORD")
+            self.tokens.consume(";", "SYMBOL")
+            return BreakNode()
+        elif token[1] == "continue":
+            self.tokens.consume("continue", "KEYWORD")
+            self.tokens.consume(";", "SYMBOL")
+            return ContinueNode()
         elif token[1] == "print":
             return self.parse_print()
         elif token[1] == "return":
@@ -208,20 +321,29 @@ class Parser:
             # Pointer deref assign:  *ptr = expr;
             return self.parse_deref_assign()
         else:
-            return self.parse_equalize()
+            return self.parse_id_statement()
 
     def parse_definer(self):
         # <definer>::= ( "var" <type> <var> ";" )
         #            | ( "var" <type> <var> "=" <expression> ";" )
         #            | ( "var" <type> <var> "[" <number> "]" ";" )   # array
         self.tokens.consume("var", "KEYWORD")
+        type_tok = self.tokens.peek()
+        if type_tok and type_tok[0] == "IDENTIFIER":
+            # struct variable:  var <Struct> name;  or  var <Struct> name[N];
+            return self._parse_struct_var()
         var_type = self.tokens.consume(expected_type="TYPE")[1]
         var_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
         if self.tokens.peek() and self.tokens.peek()[1] == "[":
             # Array declaration: var type name[N];  or  var type name[N] = { c0, c1, ... };
             self.tokens.consume("[", "SYMBOL")
-            size_tok = self.tokens.consume(expected_type="NUMBER")
-            size = int(size_tok[1], 0)  # int(..., 0) handles 0x hex
+            size_peek = self.tokens.peek()
+            if size_peek and size_peek[0] == "IDENTIFIER":
+                # const-named size:  var int a[MAXBALLS];  — resolved to an int by the analyzer.
+                size = self.tokens.consume(expected_type="IDENTIFIER")[1]
+            else:
+                size_tok = self.tokens.consume(expected_type="NUMBER")
+                size = int(size_tok[1], 0)  # int(..., 0) handles 0x hex
             self.tokens.consume("]", "SYMBOL")
             initializer = None
             if self.tokens.peek() and self.tokens.peek()[1] == "=":
@@ -245,15 +367,43 @@ class Parser:
         self.tokens.consume(";", "SYMBOL")
         return DefinerNode(var_name, value, var_type)
 
+    def _parse_struct_var(self):
+        # var <Struct> name;  |  var <Struct> name[N];   (N is a NUMBER or a const name)
+        struct_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+        var_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+        is_array = False
+        count = 1
+        if self.tokens.peek() and self.tokens.peek()[1] == "[":
+            is_array = True
+            self.tokens.consume("[", "SYMBOL")
+            sp = self.tokens.peek()
+            if sp and sp[0] == "IDENTIFIER":
+                count = self.tokens.consume(expected_type="IDENTIFIER")[1]
+            else:
+                count = int(self.tokens.consume(expected_type="NUMBER")[1], 0)
+            self.tokens.consume("]", "SYMBOL")
+        self.tokens.consume(";", "SYMBOL")
+        return StructVarNode(var_name, struct_name, count, is_array)
+
     def parse_equalize(self):
         # <equalize> ::= <var> "=" <expression> ";"
         #              | <var> "[" <expression> "]" "=" <expression> ";"   (array write)
         var_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+        index = None
         if self.tokens.peek() and self.tokens.peek()[1] == "[":
-            # Array element assignment: arr[i] = expr;
             self.tokens.consume("[", "SYMBOL")
             index = self.parse_expression()
             self.tokens.consume("]", "SYMBOL")
+        if self.tokens.peek() and self.tokens.peek()[1] == ".":
+            # Struct member assignment:  v.field = expr;  or  arr[i].field = expr;
+            self.tokens.consume(".", "SYMBOL")
+            field = self.tokens.consume(expected_type="IDENTIFIER")[1]
+            self.tokens.consume("=", "SYMBOL")
+            value = self.parse_expression()
+            self.tokens.consume(";", "SYMBOL")
+            return MemberAssignNode(var_name, index, field, value)
+        if index is not None:
+            # Array element assignment: arr[i] = expr;
             self.tokens.consume("=", "SYMBOL")
             value = self.parse_expression()
             self.tokens.consume(";", "SYMBOL")
@@ -262,6 +412,41 @@ class Parser:
         value = self.parse_expression()
         self.tokens.consume(";", "SYMBOL")
         return EqualizeNode(var_name, value)
+
+    def parse_id_statement(self):
+        # A statement rooted at an identifier or `self`: an assignment (plain / array / member / chain)
+        # or a method-call statement.  Subsumes the old parse_equalize and adds class method calls.
+        if not self._is_member_root(self.tokens.peek()):
+            tok = self.tokens.peek()
+            raise SyntaxError(
+                f"Error, unexpected '{tok[1]}' at row {tok[2]}, column {tok[3]}"
+            )
+        root = self.tokens.consume()[1]              # IDENTIFIER or 'self'
+        index = None
+        if self.tokens.peek() and self.tokens.peek()[1] == "[":
+            self.tokens.consume("[", "SYMBOL")
+            index = self.parse_expression()
+            self.tokens.consume("]", "SYMBOL")
+        parts = []
+        while self.tokens.peek() and self.tokens.peek()[1] == ".":
+            self.tokens.consume(".", "SYMBOL")
+            parts.append(self.tokens.consume(expected_type="IDENTIFIER")[1])
+        if self.tokens.peek() and self.tokens.peek()[1] == "(":
+            # method-call statement:  obj.m(args);  /  self.sub.m(args);
+            args = self._parse_args()
+            self.tokens.consume(";", "SYMBOL")
+            return MethodCallNode(root, index, parts, args)
+        # assignment
+        self.tokens.consume("=", "SYMBOL")
+        value = self.parse_expression()
+        self.tokens.consume(";", "SYMBOL")
+        if len(parts) >= 2:
+            return ChainAssignNode(root, index, parts, value)
+        if len(parts) == 1:
+            return MemberAssignNode(root, index, parts[0], value)
+        if index is not None:
+            return IndexAssignNode(root, index, value)
+        return EqualizeNode(root, value)
 
     def parse_deref_assign(self):
         # *ptr = expr;
@@ -325,6 +510,45 @@ class Parser:
         condition = self.parse_condition()
         scope = self.parse_scope()
         return WhileNode(condition, scope)
+
+    def parse_for_structure(self):
+        # <for> ::= "for" "(" <init>? ";" <condition> ";" <post>? ")" <scope>
+        self.tokens.consume("for", "KEYWORD")
+        self.tokens.consume("(", "SYMBOL")
+        init = self._parse_for_clause()
+        self.tokens.consume(";", "SYMBOL")
+        condition = self.parse_condition()
+        self.tokens.consume(";", "SYMBOL")
+        post = self._parse_for_clause()
+        self.tokens.consume(")", "SYMBOL")
+        scope = self.parse_scope()
+        return ForNode(init, condition, post, scope)
+
+    def _parse_for_clause(self):
+        # An init/post clause WITHOUT a trailing ';': a var-definer, an assignment, or empty.
+        tok = self.tokens.peek()
+        if tok and tok[1] in (";", ")"):
+            return None
+        if tok[1] == "var":
+            self.tokens.consume("var", "KEYWORD")
+            var_type = self.tokens.consume(expected_type="TYPE")[1]
+            var_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+            value = None
+            if self.tokens.peek() and self.tokens.peek()[1] == "=":
+                self.tokens.consume("=", "SYMBOL")
+                value = self.parse_expression()
+            return DefinerNode(var_name, value, var_type)
+        var_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
+        if self.tokens.peek() and self.tokens.peek()[1] == "[":
+            self.tokens.consume("[", "SYMBOL")
+            index = self.parse_expression()
+            self.tokens.consume("]", "SYMBOL")
+            self.tokens.consume("=", "SYMBOL")
+            value = self.parse_expression()
+            return IndexAssignNode(var_name, index, value)
+        self.tokens.consume("=", "SYMBOL")
+        value = self.parse_expression()
+        return EqualizeNode(var_name, value)
 
     def parse_print(self):
         # <print> ::= "print" "(" <expression> ")" ";"
@@ -392,9 +616,9 @@ class Parser:
         return node
 
     def parse_term(self):
-        # <term> ::= <factor> (("*" | "/") <factor>)*
+        # <term> ::= <factor> (("*" | "/" | "%") <factor>)*
         node = self.parse_factor()
-        while self.tokens.peek() and self.tokens.peek()[1] in ("*", "/"):
+        while self.tokens.peek() and self.tokens.peek()[1] in ("*", "/", "%"):
             operator = self.tokens.consume(expected_type="OPERATOR")[1]
             right = self.parse_factor()
             node = TermNode(node, operator, right)
@@ -426,23 +650,41 @@ class Parser:
             self.tokens.consume(expected_type="OPERATOR")
             inner = self.parse_factor()
             return DerefNode(inner)
+        elif token[0] == "OPERATOR" and token[1] == "-":
+            # Unary minus:  -expr   (`-5` literals already lex as SIGNED_NUMBER; this is `-x`, `-(e)`, ...)
+            self.tokens.consume(expected_type="OPERATOR")
+            inner = self.parse_factor()
+            return NegNode(inner)
         elif token[0] == "IDENTIFIER" and self.tokens.peek_next() and self.tokens.peek_next()[1] == "(":
             return self.parse_function_call()
-        elif token[0] == "IDENTIFIER":
-            var_name = self.tokens.consume(expected_type="IDENTIFIER")[1]
-            # Array index:  arr[i]
-            if self.tokens.peek() and self.tokens.peek()[1] == "[":
+        elif self._is_member_root(token):
+            root = self.tokens.consume()[1]          # IDENTIFIER or 'self'
+            index = None
+            if self.tokens.peek() and self.tokens.peek()[1] == "[":      # arr[i]
                 self.tokens.consume("[", "SYMBOL")
                 index = self.parse_expression()
                 self.tokens.consume("]", "SYMBOL")
-                return IndexNode(var_name, index)
-            return FactorNode(var_name, is_variable=True)
+            parts = []                                                    # .field chain
+            while self.tokens.peek() and self.tokens.peek()[1] == ".":
+                self.tokens.consume(".", "SYMBOL")
+                parts.append(self.tokens.consume(expected_type="IDENTIFIER")[1])
+            if self.tokens.peek() and self.tokens.peek()[1] == "(":       # method call rvalue
+                return MethodCallNode(root, index, parts, self._parse_args())
+            if len(parts) >= 2:                                           # class chain a.b.c
+                return ChainAccessNode(root, index, parts)
+            if len(parts) == 1:                                           # struct field or class field
+                return MemberAccessNode(root, index, parts[0])
+            if index is not None:
+                return IndexNode(root, index)
+            return FactorNode(root, is_variable=True)
         elif token[0] in ("NUMBER", "SIGNED_NUMBER"):
             number = self.tokens.consume(expected_type=token[0])[1]
             return FactorNode(number, is_variable=False)
         elif token[0] == "BOOLEAN":
             boolean = self.tokens.consume(expected_type="BOOLEAN")[1]
             return FactorNode(boolean, is_variable=False)
+        elif token[0] == "STRING":
+            return self._hoist_string()
         else:
             raise SyntaxError(
                 f"Error, expected '(', 'IDENTIFIER', 'NUMBER', 'SIGNED_NUMBER', or 'BOOLEAN' but found '{token[1]}' at row {token[2]}, column {token[3]}"

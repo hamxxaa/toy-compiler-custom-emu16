@@ -1,0 +1,17 @@
+// Classes v1: two independent instances of a Counter, with method calls + self.field.
+// a.inc() x2 -> a.n=2; b.inc() x1 -> b.n=1; a.get()+b.get() = 3. Expected return: 3.
+{
+    class Counter {
+        var int n = 0;
+        void inc() { self.n = self.n + 1; }
+        int  get() { return self.n; }
+    }
+    new Counter a;
+    new Counter b;
+
+    int main() {
+        a.inc(); a.inc();
+        b.inc();
+        return a.get() + b.get();
+    }
+}

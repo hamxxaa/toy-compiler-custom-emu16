@@ -1,0 +1,18 @@
+// Piece E: draw_sprite_color_flipx (horizontal mirror). Same 2x2 {5,0,0,9} over fill(2), but flipped:
+//   row {5,0}->{0,5}, row {0,9}->{9,0}. (10,20)=2 (11,20)=5 (10,21)=9 (11,21)=2.
+//   2 + 5*10 + 9*100 + 2*1000 = 2952. Expected return: 2952 (vs 9225 un-flipped).
+include "../lib/io.lib";
+{
+    var byte spr[4] = { 5, 0, 0, 9 };
+
+    int main() {
+        var int v;
+        fill(2);
+        draw_sprite_color_flipx(&spr, 2, 2, 10, 20);
+        v = peek_byte(VRAM_START + 20 * 160 + 10);
+        v = v + peek_byte(VRAM_START + 20 * 160 + 11) * 10;
+        v = v + peek_byte(VRAM_START + 21 * 160 + 10) * 100;
+        v = v + peek_byte(VRAM_START + 21 * 160 + 11) * 1000;
+        return v;
+    }
+}

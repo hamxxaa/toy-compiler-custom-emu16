@@ -6,7 +6,7 @@ hardware, in the terminal, or in a browser tab.
 
 | Layer | What it is |
 |---|---|
-| **Language** | C-like: types, arrays, pointers, bitwise/shift, `if`/`else`, `while`, inline asm |
+| **Language** | C-like: types, **structs**, **classes**, arrays, pointers, strings, bitwise/shift, `if`/`else`, `while`/`for`, `const`, inline asm |
 | **Compiler** | Hand-written: regex-NFA lexer → recursive-descent parser → TAC IR → linear-scan allocator → `.rom` |
 | **CPU** | Custom 16-bit, 8 registers (R6 = FP, R7 = SP), 64 KB little-endian address space |
 | **Targets** | ESP32-S3 handheld · desktop emulator (`pc_emu`) · browser WebAssembly sim |
@@ -21,8 +21,8 @@ make flash && make uploadfs                        # flash the handheld
 
 | Region | Range | Purpose |
 |---|---|---|
-| Data | `0x0008`–`0x0FFF` | globals, arrays, and the bitmap font (baked into the ROM) |
-| Code | `0x1000`–`0xADFB` | compiled program |
+| Data | `0x0008`–`0x3FFF` | globals, arrays, the bitmap font (baked into the ROM), and streamed sprite sheets |
+| Code | `0x4000`–`0xADFB` | compiled program |
 | Stack | `0xADFC` down | call stack (pre-decrement) |
 | SYSCALL_PORT | `0xADFE` | write-triggered host call (see [Syscalls](#syscalls)) |
 | INPUT | `0xADFF` | button state (read-only) |
@@ -55,9 +55,23 @@ include "lib/io.lib";
 }
 ```
 
-- Types: `int` (16-bit), `byte` (1 byte in arrays), `bool`, `void`. Hex literals (`0xB000`) are fine.
-- Operators: `+ - * /`, `& | ^ ~`, `<< >>`, comparisons, `&&`/`||` (parenthesize each side). Precedence
-  loosest→tightest: bitwise < shift < `+ -` < `* /`; comparisons bind loosest. There is no `!`.
+- Types: `int` (16-bit), `byte` (1 byte in arrays), `bool`, `void`, and **`struct`** (below). Hex
+  literals (`0xB000`) are fine; string literals (`"hi\n"`) are NUL-terminated byte arrays whose value is
+  the address (escapes `\n \t \\ \" \0`).
+- Operators: `+ - * / %`, unary `-`, `& | ^ ~`, `<< >>`, comparisons, `&&`/`||` (parenthesize each side).
+  Precedence loosest→tightest: bitwise < shift < `+ -` < `* / %`; comparisons bind loosest. There is no `!`.
+- Control flow: `if`/`else`, `while`, `for (init; cond; post)`, `break`, `continue`.
+- `const NAME = <expr>;` — compile-time integer constants; they fold to literals and may be used as
+  array sizes (`const N = 64; var int a[N];`).
+- `struct Name { int a; byte b; }` then `var Name s;` or `var Name arr[N];`; read/write with `s.a` /
+  `arr[i].b`. Data-only and byte-packed. Pass entities via a global array + an index — struct
+  pointers/params aren't supported yet.
+- `class Name { … }` — compile-time **objects**: `new Name obj;` stamps out a uniquely-named copy of the
+  class's fields + methods (monomorphization); call them with `obj.method()`, access fields inside a
+  method via `self.field`. Supports composition (`var Other sub;` → `self.sub.method()`) and a manual
+  `init()`. v1 limits: static/global named instances; fields must be primitive or a composed class
+  (big buffers stay global); no inheritance; no runtime-indexed object arrays — use struct-arrays for
+  swarms. (Desugars to plain globals + functions before analysis, so it's pure front-end sugar.)
 - A function whose whole body is one `asm { }` block is **naked**: no prologue, args in R1–R3, return
   in R0, you write `RET`. The IO and syscall libraries are built this way.
 - `include "path";` splices a library's source into the program — there is no separate linker.
@@ -67,11 +81,35 @@ see `src/parser/Parser.py`; for real programs see `examples/` and `lib/`.
 
 ## Libraries (`lib/`)
 
-- **`io.lib`** — graphics, written in the language itself: `plot`, `fill`, `set_palette`, `read_input`,
-  `peek_byte`/`poke_byte`, `draw_sprite`, `draw_char`/`draw_string` (text rides on `draw_sprite`). The
-  8×8 font is a baked-in array, so it ships inside every ROM that includes the library. Turn ASCII art
-  into sprite byte arrays with `tools/sprite.py`.
+- **`io.lib`** — graphics, written in the language itself: `plot`, `fill`, `fill_rect` (clipped box
+  fill — the dirty-rectangle erase primitive), `set_palette`, `read_input`, `peek_byte`/`poke_byte`,
+  `draw_sprite`, `draw_char`/`draw_string` (text rides on `draw_sprite`). The 8×8 font is a baked-in
+  array, so it ships inside every ROM that includes the library. Turn ASCII art into sprite byte
+  arrays with `tools/sprite.py`.
 - **`sys.lib`** — wrappers for the host syscalls below.
+- **`game.lib`** — game helpers: `rand`/`srand`/`rand_range` (xorshift PRNG) and `aabb` box collision.
+  Pulls in `sys.lib` for `srand_time()`.
+- **`text.lib`** — text + dialog on top of `io.lib`: `strlen`, `draw_text` (NUL-terminated strings),
+  `int_to_str`/`draw_number`, `draw_text_box`, `draw_wrapped` (word-wrap), `draw_text_reveal` (typewriter).
+- **`anim.lib`** — the sprite/animation runtime (v1). A **clip registry** (`clip_w/h/count/period/buf[]`,
+  generated into `sprites.gen.txt` by the importer and indexed by asset id) + a **bump allocator**
+  (`anim_load` streams a sheet into a shared pool, `anim_scene_reset` reclaims it) + **time-based**
+  blitting (`clip_blit`, `clip_frame` — `frame = (elapsed/period) % count`, so animation speed is
+  render-rate-independent) + a thin compile-time **`Animator`** class (`play`/`play_once`/`tick`/`draw`,
+  holds only the current clip + start tick + a one-shot lock). Selection stays hand-written per
+  character; swarms use struct-arrays over the same registry. The `Animator` also does
+  **dirty-rectangle erase**: it remembers the box it last drew, and `erase()` restores the
+  background under it (via `fill_rect`) so a frame only repaints what moved — run `erase()` for every
+  entity, then `draw()` for every entity (the draw order is the z-order). Built on `io.lib`'s
+  `draw_sprite_color`.
+
+`io.lib` also has the **color sprite + palette** layer: `draw_sprite_color` / `draw_sprite_color_flipx`
+(byte-per-pixel, index 0 = transparent, free horizontal mirror), `load_palette` (bulk swap),
+`palette_fill`/`palette_cycle` (flash, color-cycling effects).
+
+**Sprite pipeline:** draw in [LibreSprite](https://libresprite.github.io/) (indexed mode), export an
+indexed PNG + JSON, then `tools/image_import.py` (stdlib-only PNG reader in `tools/png.py`) slices it
+into a pack manifest + `const` ids, and `tools/pack_assets.py` builds the `.pak`. See [FORMATS.md](FORMATS.md).
 
 ## Syscalls
 
@@ -86,12 +124,28 @@ byte store; a word write would also hit INPUT at `0xADFF`. Each host registers i
 | 3 / 4 | `sys_load_rom` · `sys_reset` | launch a game · return to the menu |
 | 5 | `sys_present()` | display the finished frame, pace to ~60 Hz, then resume — a vblank |
 | 6 | `sys_time()` | milliseconds since boot (low 16 bits) |
+| 7 / 8 / 9 | `sys_save` · `sys_load` · `sys_save_exists` | persist/restore a per-game save slot |
+| 10 / 11 | `sys_asset_info` · `sys_asset_load` | stream sprites/data from the game's `.pak` by id |
+| 12 | `sys_set_fps(n)` | request a frame-rate cap (0 = default 60); paces the frame and sizes its instruction budget |
 
 For games, `sys_present()` is the one to know: call it once per frame after drawing and the loop runs
 exactly once per displayed frame — no flicker, frame-paced movement.
 
 `examples/menu.txt` is the home screen: an ordinary ROM that lists games through these syscalls. The
 firmware boots `/menu.rom`; drop a `.rom` into `firmware/data/`, `make uploadfs`, and it shows up.
+
+## File formats
+
+Three on-disk formats — the program, its assets, and saves:
+
+- **`.rom`** — the compiled program: a flat image of `0x0000…code_end` loaded verbatim at address 0
+  (bootstrap → DATA → CODE). Carries no art and no save state.
+- **`.pak`** — the asset pack (EPAK): sprites/palettes/text/data bundled by `tools/pack_assets.py`, kept
+  in storage and streamed by id via `sys_asset_load` (so a multi-MB pack works on a 64 KB machine). One
+  per ROM — `game.pak` beside `game.rom`.
+- **saves** — opaque per-game, per-slot blobs written/read via `sys_save`/`sys_load`.
+
+Full byte layouts, the load/stream path, and the per-platform storage map are in **[FORMATS.md](FORMATS.md)**.
 
 ## Building & running
 
@@ -130,10 +184,10 @@ src/         compiler: lexer · parser · analyzer · codegen · optimization ·
 emulator/    emu.cpp (the one CPU core) + definitions.h, the PC harness, the WASM bridge
 firmware/    ESP32-S3 PlatformIO project (main.cpp, hw_pins.h, data/ ROMs)
 simulator/   browser sim — HTML/JS over the WASM core
-lib/         io.lib, sys.lib
-tools/       sprite.py — ASCII art -> sprite byte array
-examples/    sample programs (incl. menu.txt, walking.txt)
-tests/       regression sources      main.py · run_tests.py · Makefile
+lib/         io.lib, sys.lib, game.lib, text.lib, anim.lib
+tools/       sprite.py (ASCII->array) · png.py + image_import.py (LibreSprite->assets) · pack_assets.py (.pak)
+examples/    sample programs (menu.txt, block_blast.txt; walkdemo.txt + arena.txt show the sprite library)
+tests/       regression sources      main.py · run_tests.py · Makefile · FORMATS.md
 ```
 
 ## Requirements

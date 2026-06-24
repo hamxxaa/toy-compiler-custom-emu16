@@ -88,6 +88,21 @@ class App {
         const reader = new FileReader();
         reader.onload = (e) => {
             const bytes = new Uint8Array(e.target.result);
+            // A .pak is an asset pack for the same-named ROM, not a ROM itself: stash it by basename
+            // so the next boot of that ROM feeds it to the core (Piece B asset streaming).
+            if (file.name.toLowerCase().endsWith('.pak')) {
+                this.assetPacks = this.assetPacks || {};
+                const base = file.name.replace(/\.pak$/i, '');
+                this.assetPacks[base] = bytes;
+                this._showStatus(`Asset pack ready: ${file.name} (${bytes.length} bytes)`, 'success');
+                // If this pack belongs to the ROM that's already loaded, re-boot it so the game's
+                // sys_asset_load calls pick it up (drop order then doesn't matter).
+                if (this.currentIndex >= 0 &&
+                    this.library[this.currentIndex].name.replace(/\.rom$/i, '') === base) {
+                    this._bootFromLibrary(this.currentIndex);
+                }
+                return;
+            }
             this._loadROM(bytes, file.name);
         };
         reader.readAsArrayBuffer(file);
@@ -122,6 +137,12 @@ class App {
         this.cpu.initialize();                                  // zero mem + default palette (C side)
         this.cpu.setRomLibrary(this.library.map(e => e.name)); // feed names to the syscall handler
         this.cpu.memory.set(entry.bytes, 0);                   // load ROM at address 0
+
+        // Pieces A/B: namespace saves to this game, and feed its asset pack if one was dropped.
+        const base = entry.name.replace(/\.rom$/i, '');
+        this.cpu.setCurrentRom(base);
+        this.assetPacks = this.assetPacks || {};
+        if (this.assetPacks[base]) this.cpu.setAssetPack(this.assetPacks[base]);
 
         this.romLoaded = true;
         this._showStatus(`Loaded: ${entry.name} (${entry.bytes.length} bytes)`, 'success');
@@ -213,6 +234,17 @@ class App {
         if (!this.isRunning) return;
 
         const now = performance.now();
+
+        // 0. Best-effort frame-rate cap: a ROM can request a target via sys_set_fps. RAF still fires
+        //    ~60 Hz; we just skip stepping the emu until the target interval has elapsed, so a game
+        //    that asks for 30 runs at ~30. (Firmware paces precisely; the browser is best-effort.)
+        const targetFps = this.cpu.targetFps ? this.cpu.targetFps() : 60;
+        if (targetFps > 0 && this._lastStep !== undefined &&
+            (now - this._lastStep) < (1000 / targetFps) - 1) {
+            this.animFrameId = requestAnimationFrame(() => this._frame());
+            return;
+        }
+        this._lastStep = now;
 
         // 1. Write input state to memory
         const { INPUT_ADDRESS } = window.EMU_CONSTANTS;

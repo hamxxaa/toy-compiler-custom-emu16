@@ -1,0 +1,26 @@
+// Piece D1: compile-time `const` — as an array size, in expressions, referencing another const,
+// and inside an array initializer. Expected return: 35.
+//   sum(a[0..4]) = 0+1+2+3+4 = 10;  M = 10;  b[0]=N=5;  b[1]=M=10  ->  10+10+5+10 = 35.
+{
+    const N = 5;
+    const M = N * 2;            // const referencing an earlier const
+    var int a[N];               // const-sized array
+    var byte b[M] = { N, M };   // const in an initializer
+
+    int main() {
+        var int i;
+        var int sum;
+        i = 0;
+        while i < N {
+            a[i] = i;
+            i = i + 1;
+        }
+        sum = 0;
+        i = 0;
+        while i < N {
+            sum = sum + a[i];
+            i = i + 1;
+        }
+        return sum + M + b[0] + b[1];
+    }
+}

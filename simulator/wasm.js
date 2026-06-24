@@ -37,6 +37,12 @@ class EmuCore {
         this._setRomCount = module.cwrap('emu_set_rom_count', null,     ['number']);
         this._romNamesPtr = module.cwrap('emu_rom_names',     'number', []);
         this._pendingRom  = module.cwrap('emu_pending_rom',   'number', []);
+        this._targetFps   = module.cwrap('emu_target_fps',    'number', []);
+        // Pieces A/B: save namespacing + asset pack
+        this._setCurrentRom = module.cwrap('emu_set_current_rom',   null,     ['string']);
+        this._assetBuf      = module.cwrap('emu_asset_buf',         'number', []);
+        this._assetCap      = module.cwrap('emu_asset_capacity',    'number', []);
+        this._commitAsset   = module.cwrap('emu_commit_asset_pack', null,     ['number']);
 
         this.memPtr = 0;
         this.instructionCount = 0;
@@ -73,6 +79,9 @@ class EmuCore {
     // --- ROM-library bridge for the M7d syscall handler ---
     pendingRom() { return this._pendingRom(); }
 
+    // Target frame rate a ROM requested via sys_set_fps (default 60). The app loop paces to it.
+    targetFps() { return this._targetFps(); }
+
     setRomLibrary(names) {
         const base = this._romNamesPtr();
         const STRIDE = 64;
@@ -83,6 +92,20 @@ class EmuCore {
             this.m.HEAPU8[base + i * STRIDE + b.length] = 0;   // NUL
         }
         this._setRomCount(n);
+    }
+
+    // Namespace saves to this game (localStorage key "emu16:<rom>.<slot>"). Call on each ROM boot.
+    setCurrentRom(name) {
+        this._setCurrentRom(name);
+    }
+
+    // Hand the game's asset pack (a Uint8Array of <rom>.pak bytes) to the core for ASSET_* syscalls.
+    setAssetPack(bytes) {
+        const buf = this._assetBuf();
+        const cap = this._assetCap();
+        const n = Math.min(bytes.length, cap);
+        this.m.HEAPU8.set(bytes.subarray(0, n), buf);
+        this._commitAsset(n);
     }
 }
 

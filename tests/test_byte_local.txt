@@ -1,0 +1,19 @@
+// Regression: assigning a global BYTE-array element to a local int var must propagate the value.
+// Was broken -- the assignment's Var took the RHS element type (byte) instead of the declared type
+// (int), so `w:byte` (the eq) and `w:int` (later use) were treated as distinct vars and split
+// across registers, leaving the read as 0. A preceding call adds register pressure to surface it.
+// vals[0]=5, vals[2]=2, side()=100 -> 5*1000 + 2*100 + 100 = 5300. Expected return: 5300.
+include "../lib/io.lib";
+{
+    var byte vals[3] = {5, 9, 2};
+    int side() { return 100; }
+    int main() {
+        var int r;
+        var int a;
+        var int b;
+        r = side();
+        a = vals[0];
+        b = vals[2];
+        return a * 1000 + b * 100 + r;
+    }
+}

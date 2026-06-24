@@ -1,0 +1,11 @@
+// Piece D2: unary minus on variables / expressions (the lexer already handles `-5` literals).
+// y = -x = -10; -y = 10; 10 - 7 = 3. Expected return: 3.
+{
+    int main() {
+        var int x;
+        var int y;
+        x = 10;
+        y = -x;
+        return -y - 7;
+    }
+}
