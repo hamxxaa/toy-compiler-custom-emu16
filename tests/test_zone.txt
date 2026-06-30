@@ -1,0 +1,42 @@
+// scene.lib zones: edge-triggered entry. A fake object 0 (8x8 collider) is moved relative to one
+// zone; zone_entered must fire only on the frame it crosses in. All correct -> 1+2+4+8+16 = 31.
+include "../lib/scene.lib";
+{
+    // minimal clip registry (scene.lib -> anim.lib needs it declared; this test never blits)
+    const NUM_CLIPS = 1;
+    var byte clip_w[NUM_CLIPS]      = { 8 };
+    var byte clip_h[NUM_CLIPS]      = { 8 };
+    var byte clip_count[NUM_CLIPS]  = { 1 };
+    var int  clip_period[NUM_CLIPS] = { 1 };
+    var int  clip_buf[NUM_CLIPS];
+
+    int main() {
+        var int sum;
+        var int z;
+        sum = 0;
+        // fake object 0: an 8x8 collider at its top-left (no clip/sprite needed for overlap)
+        objs[0].cox = 0; objs[0].coy = 0; objs[0].cw = 8; objs[0].ch = 8; objs[0].active = 1;
+        zones_reset();
+        add_zone(100, 100, 20, 20);                   // zone 0: world box (100,100)-(120,120)
+
+        objs[0].wx = 0; objs[0].wy = 0;               // start outside
+        z = zone_entered(0);
+        if z == 0 - 1 { sum = sum + 1; }              // outside -> no entry
+
+        objs[0].wx = 105; objs[0].wy = 105;           // move inside
+        z = zone_entered(0);
+        if z == 0 { sum = sum + 2; }                  // crossed in -> returns zone 0
+
+        z = zone_entered(0);                          // still inside
+        if z == 0 - 1 { sum = sum + 4; }              // no re-fire while inside
+
+        objs[0].wx = 0; objs[0].wy = 0;               // leave
+        z = zone_entered(0);
+        if z == 0 - 1 { sum = sum + 8; }              // leaving doesn't fire
+
+        objs[0].wx = 110; objs[0].wy = 110;           // re-enter
+        z = zone_entered(0);
+        if z == 0 { sum = sum + 16; }                 // fires again on re-entry
+        return sum;
+    }
+}

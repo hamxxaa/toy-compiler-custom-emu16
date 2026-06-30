@@ -97,6 +97,14 @@ The host storage backend is isolated in [`firmware/src/storage.h`](firmware/src/
 
 These are inputs/intermediates of the build, not runtime formats:
 
+- **`sprites.list`** — the importer's asset list (`<name> <src> <json|-> <fps|->` per line). The row
+  whose json is `-` names the **master palette source**: a `.gpl` (GIMP/LibreSprite palette — the
+  editable, git-friendly source of truth) or an indexed PNG (its embedded PLTE). It becomes a 512-byte
+  (256-entry RGB565) palette asset → **PRAM**, loaded once at startup. Every sprite is byte-per-pixel
+  *indices* into this one shared palette, so the color at each index is fixed across every sheet —
+  **append** colors to the master (line order = index = PRAM order), never reorder or insert, and
+  keep index 0 as the transparent slot. The importer reads `.gpl` as plain text (header/comments/
+  `Name:`/`Columns:` skipped; first three ints per line = R G B).
 - **manifest** (`name type w h source` per line) — tells `pack_assets.py` what to bundle.
 - **generated `const` include** (`*_assets.txt` / `sprites.gen.txt`) — asset & animation ids; it's
   `include`d by the game source and **compiled into the `.rom`**, so the ids end up as plain literals.

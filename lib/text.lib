@@ -103,7 +103,7 @@ include "../lib/io.lib";
 
     // Word-wrapped multi-line text in an 8px grid. max_cols chars per line; wraps on spaces
     // (and honors '\n'); over-long words are hard-wrapped.
-    void draw_wrapped(int s, int x, int y, int max_cols, int color) {
+    void draw_wrapped(int s, int x, int y, int max_cols, int max_rows, int color) {
         var int col;
         var int row;
         var int i;
@@ -115,6 +115,7 @@ include "../lib/io.lib";
         i = 0;
         c = peek_byte(s);
         while c != 0 {
+            if row >= max_rows { return; }       // past the last box row -> clip the rest
             if c == 10 {
                 col = 0;
                 row = row + 1;

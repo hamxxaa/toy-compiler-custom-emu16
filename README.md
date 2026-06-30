@@ -6,7 +6,7 @@ hardware, in the terminal, or in a browser tab.
 
 | Layer | What it is |
 |---|---|
-| **Language** | C-like: types, **structs**, **classes**, arrays, pointers, strings, bitwise/shift, `if`/`else`, `while`/`for`, `const`, inline asm |
+| **Language** | C-like: types, **structs**, **classes**, arrays, pointers, strings, bitwise/shift, `if`/`else`, `while`/`for`, **`switch`** (O(1) jump table), `const`, inline asm |
 | **Compiler** | Hand-written: regex-NFA lexer → recursive-descent parser → TAC IR → linear-scan allocator → `.rom` |
 | **CPU** | Custom 16-bit, 8 registers (R6 = FP, R7 = SP), 64 KB little-endian address space |
 | **Targets** | ESP32-S3 handheld · desktop emulator (`pc_emu`) · browser WebAssembly sim |
@@ -60,7 +60,8 @@ include "lib/io.lib";
   the address (escapes `\n \t \\ \" \0`).
 - Operators: `+ - * / %`, unary `-`, `& | ^ ~`, `<< >>`, comparisons, `&&`/`||` (parenthesize each side).
   Precedence loosest→tightest: bitwise < shift < `+ -` < `* / %`; comparisons bind loosest. There is no `!`.
-- Control flow: `if`/`else`, `while`, `for (init; cond; post)`, `break`, `continue`.
+- Control flow: `if`/`else`, `while`, `for (init; cond; post)`, `break`, `continue`, and `switch`
+  (over compile-time-constant `case`s, auto-break/no fallthrough; compiles to an **O(1) jump table**).
 - `const NAME = <expr>;` — compile-time integer constants; they fold to literals and may be used as
   array sizes (`const N = 64; var int a[N];`).
 - `struct Name { int a; byte b; }` then `var Name s;` or `var Name arr[N];`; read/write with `s.a` /
@@ -102,14 +103,50 @@ see `src/parser/Parser.py`; for real programs see `examples/` and `lib/`.
   background under it (via `fill_rect`) so a frame only repaints what moved — run `erase()` for every
   entity, then `draw()` for every entity (the draw order is the z-order). Built on `io.lib`'s
   `draw_sprite_color`.
+- **`scene.lib`** — the top-down **scene engine** for worlds larger than the screen. Owns a
+  world-space **object cast** (`struct Obj`/`objs[]`, filled via `spawn_obj`), a **dead-zone follow
+  camera** (`camera_follow`, clamped to the world), and a per-frame **render pipeline**
+  (`scene_render`) that culls, dirty-rect-erases to a solid ground colour, **Y-sorts by the feet**,
+  and clipped-blits. Because struct v1 has no struct pointers, the lib declares the cast/camera
+  globals and the game fills them — one cast + one camera per program. It also has **collision v1**:
+  per-object **footprint colliders** + a `solid` flag, `move_obj(i, dx, dy)` (axis-separated
+  move-and-test → blocking **and** free wall-sliding, world-clamped), and `obj_overlap` (touch). Brute
+  force over movers × solids — cheap at this scale; a spatial grid is a noted future. And **combat v1**:
+  `hp`/`active`/`blink` on `Obj`, `obj_overlap_box` (collider vs an arbitrary box — attack hitboxes /
+  triggers), and `despawn` (lifecycle; render + collision skip inactive). `examples/arena.txt` is the
+  reference game (roam + landmarks + solid trees + enemies with HP, an attack hitbox, death/respawn,
+  player i-frames, and blink/knockback/flash hit feedback), plus a **talking NPC** — the hasta-ninja
+  (press B to interact → a flag-gated one-time line, then a repeatable one) — that exercises the event
+  foundation end-to-end. Solid ground only; a tilemap is a future additive layer that would only change
+  the erase's background-restore. It also hosts the **event
+  triggers** over the cast: `interact_front(i, dir, facing, reach)` ("what am I facing" → the object
+  in front, or -1), edge-triggered **zones** (`add_zone` / `zone_entered` — fire once on entry, for
+  warps/encounters/tripwires), and `scene_refresh` (full repaint after a UI overlay closes or a map
+  loads).
+- **`event.lib`** — the **event foundation** (state + UI; scene-independent, depends on `text.lib` +
+  `sys.lib`): bit-packed **flags** (`flag_get/set/clear`, 256 bits, `flags_save`/`flags_load`) — the
+  spine of save state and the gate for one-time events / branching dialog — and a blocking **dialog
+  box** (`dialog_open`/`dialog_update`/`dialog_active`, styled via `dialog_style`) built on
+  `draw_text_box` + `draw_wrapped`. Events themselves are **game functions dispatched by a `switch`**
+  (the O(1) jump table) on the object/zone id; `tests/test_events.txt` shows the full pattern
+  (interact/zones → switch → flags + dialog).
 
 `io.lib` also has the **color sprite + palette** layer: `draw_sprite_color` / `draw_sprite_color_flipx`
-(byte-per-pixel, index 0 = transparent, free horizontal mirror), `load_palette` (bulk swap),
-`palette_fill`/`palette_cycle` (flash, color-cycling effects).
+(byte-per-pixel, index 0 = transparent, free horizontal mirror), `draw_sprite_color_clipped[_flipx]`
+(screen-clamped, for scrolling worlds), `load_palette` (bulk swap), `palette_fill`/`palette_cycle`
+(flash, color-cycling effects).
 
 **Sprite pipeline:** draw in [LibreSprite](https://libresprite.github.io/) (indexed mode), export an
-indexed PNG + JSON, then `tools/image_import.py` (stdlib-only PNG reader in `tools/png.py`) slices it
-into a pack manifest + `const` ids, and `tools/pack_assets.py` builds the `.pak`. See [FORMATS.md](FORMATS.md).
+indexed PNG + JSON, and list your assets in a `sprites.list`. `tools/image_import.py` (stdlib-only PNG
+reader in `tools/png.py`) slices each tagged sheet into the pack manifest + `const` ids + the clip
+registry, and `tools/pack_assets.py` builds the `.pak`.
+
+One `sprites.list` row is the **master palette** — a `.gpl` (GIMP/LibreSprite palette, the editable
+source of truth) or an indexed PNG (its embedded palette) — which becomes the 256-entry **PRAM**,
+loaded once at startup via `sys_asset_load(PAL_MASTER, PRAM, 512)`. Every sprite is byte-per-pixel
+**indices into that one shared palette**, so the color at each index is fixed across all sheets:
+**append** new colors to the master (line order = index = PRAM order), never reorder or insert. Load
+the same `.gpl` into every sprite in the editor so they stay in sync. See [FORMATS.md](FORMATS.md).
 
 ## Syscalls
 
@@ -184,9 +221,9 @@ src/         compiler: lexer · parser · analyzer · codegen · optimization ·
 emulator/    emu.cpp (the one CPU core) + definitions.h, the PC harness, the WASM bridge
 firmware/    ESP32-S3 PlatformIO project (main.cpp, hw_pins.h, data/ ROMs)
 simulator/   browser sim — HTML/JS over the WASM core
-lib/         io.lib, sys.lib, game.lib, text.lib, anim.lib
+lib/         io.lib, sys.lib, game.lib, text.lib, anim.lib, scene.lib (world/camera engine), event.lib (flags + dialog)
 tools/       sprite.py (ASCII->array) · png.py + image_import.py (LibreSprite->assets) · pack_assets.py (.pak)
-examples/    sample programs (menu.txt, block_blast.txt; walkdemo.txt + arena.txt show the sprite library)
+examples/    sample programs (menu.txt, block_blast.txt; walkdemo.txt shows the sprite library; arena.txt is the scene-engine reference: roam + collision + combat + a talking NPC on the event foundation)
 tests/       regression sources      main.py · run_tests.py · Makefile · FORMATS.md
 ```
 

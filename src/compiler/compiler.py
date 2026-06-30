@@ -79,7 +79,7 @@ def create_tokenizer():
 
     tokenizer.add_skip_pattern("( |\t|\n)+")
 
-    tokenizer.add_pattern("KEYWORD", "(while|print|var|if|else|return|const|break|continue|for|struct|class|new|self)", priority=5)
+    tokenizer.add_pattern("KEYWORD", "(while|print|var|if|else|return|const|break|continue|for|struct|class|new|self|switch|case|default)", priority=5)
     tokenizer.add_pattern("TYPE", "(int|bool|void|byte)", priority=5)
     tokenizer.add_pattern("BOOLEAN", "(true|false)", priority=6)  # Add boolean literals
     tokenizer.add_pattern(
@@ -87,7 +87,7 @@ def create_tokenizer():
     )
     tokenizer.add_pattern("SIGNED_NUMBER", "-[0-9]+", priority=6)
     tokenizer.add_pattern("NUMBER", "(0x[0-9a-fA-F]+|[0-9]+)", priority=3)
-    tokenizer.add_pattern("SYMBOL", "(;|,|\\(|\\)|=|}|{|\\[|\\]|.)", priority=2)
+    tokenizer.add_pattern("SYMBOL", "(;|,|\\(|\\)|=|}|{|\\[|\\]|:|.)", priority=2)
     tokenizer.add_pattern("OPERATOR", "(\\+|-|\\*|/|%)", priority=1)
     tokenizer.add_pattern("CONDITIONAL_OPERATOR", "(<|>|==|<=|>=|!=)", priority=1)
     tokenizer.add_pattern("LOGICAL_OPERATOR", "(&&|\\|\\|)", priority=1)

@@ -4,10 +4,12 @@
 Usage:
     python tools/image_import.py <project_list> <out_dir>
 
-project_list lines (whitespace-separated, '#' = comment):  <name> <png> <json|-> <fps_default|->
-  - a row whose json is '-' is the MASTER PALETTE source: its PLTE becomes a 512-byte palette asset.
-  - every other row is a sprite sheet; each animation tag (or the whole sheet if untagged) becomes one
-    concatenated sheet asset (all its frames' index bytes back to back).
+project_list lines (whitespace-separated, '#' = comment):  <name> <src> <json|-> <fps_default|->
+  - a row whose json is '-' is the MASTER PALETTE source: its colours become a 512-byte palette asset.
+    <src> may be a `.gpl` (GIMP/LibreSprite palette -- the editable, git-friendly source of truth) or
+    an indexed PNG (its embedded PLTE is used). Line/index order == PRAM order: APPEND, never reorder.
+  - every other row is a sprite sheet PNG; each animation tag (or the whole sheet if untagged) becomes
+    one concatenated sheet asset (all its frames' index bytes back to back).
 
 Emits into <out_dir>:
   *.bin              one blob per asset (palette = 512 B RGB565; sheet = w*h*count index bytes)
@@ -35,6 +37,31 @@ def palette_bytes(palette):
         out.append(w & 0xFF)
         out.append((w >> 8) & 0xFF)
     return bytes(out)
+
+
+def read_gpl(path):
+    """Parse a GIMP palette (.gpl) -> list of (r,g,b) in index order. LibreSprite/Aseprite, GIMP,
+    and most editors export this. Line order == palette index == PRAM order, so APPEND new colors
+    (never reorder) to keep existing sprites valid. Skips the header, '#' comments, and the
+    Name:/Columns: metadata lines; takes the first three ints of each colour line as R G B."""
+    pal = []
+    with open(path, encoding="utf-8") as f:
+        if "GIMP Palette" not in f.readline():
+            raise SystemExit(f"{path}: not a GIMP palette (.gpl) -- missing 'GIMP Palette' header")
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or line.lower().startswith(("name:", "columns:")):
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                pal.append((int(parts[0]), int(parts[1]), int(parts[2])))
+            except ValueError:
+                continue
+    if len(pal) > 256:
+        raise SystemExit(f"{path}: {len(pal)} colours exceeds the 256-entry PRAM")
+    return pal
 
 
 def frame_list(meta):
@@ -71,20 +98,24 @@ def main():
                 continue
             parts = line.split()
             if len(parts) != 4:
-                raise SystemExit(f"{list_path}:{lineno}: expected '<name> <png> <json|-> <fps|->'")
-            name, png_rel, json_rel, fps_default = parts
-            img = png.read(os.path.join(base_dir, png_rel))
+                raise SystemExit(f"{list_path}:{lineno}: expected '<name> <src> <json|-> <fps|->'")
+            name, src_rel, json_rel, fps_default = parts
 
             if json_rel == "-":                                  # master palette source
                 binname = f"{name}.bin"
+                if src_rel.lower().endswith(".gpl"):
+                    pal = read_gpl(os.path.join(base_dir, src_rel))      # editable source of truth
+                else:
+                    pal = png.read(os.path.join(base_dir, src_rel)).palette   # PNG's embedded PLTE
                 with open(os.path.join(out_dir, binname), "wb") as bf:
-                    bf.write(palette_bytes(img.palette))
+                    bf.write(palette_bytes(pal))
                 consts.append(f"const PAL_{name.upper()} = {len(manifest)};")
                 manifest.append((name, "palette", 0, 0, binname))
                 reg_count.append(0)
                 reg_period.append(0)
                 continue
 
+            img = png.read(os.path.join(base_dir, src_rel))      # sprite sheet (indexed PNG)
             with open(os.path.join(base_dir, json_rel), encoding="utf-8") as jf:
                 meta = json.load(jf)
             frames = frame_list(meta)
@@ -111,7 +142,9 @@ def main():
                 if count * period > 0xFFFF:
                     raise SystemExit(f"{name}/{tag['name']}: clip duration {count*period} ms "
                                      f"exceeds 65535 (count {count} * period {period}); split the clip")
-                aname = f"{name}_{tag['name']}"
+                # Untagged single-clip sheet (auto-tag name == asset name) -> ANIM_<NAME>_ID, not the
+                # doubled ANIM_<NAME>_<NAME>_ID. Tagged sheets stay <name>_<tag>.
+                aname = name if tag["name"] == name else f"{name}_{tag['name']}"
                 binname = f"{aname}.bin"
                 with open(os.path.join(out_dir, binname), "wb") as bf:
                     bf.write(bytes(blob))

@@ -1,0 +1,73 @@
+// Event foundation INTEGRATION: the intended usage pattern end-to-end -- interact + zones (scene.lib)
+// feed object/zone ids into switch dispatchers (the O(1) jump table) that drive flags + dialog
+// (event.lib). Proves the four pillars compose. Every link firing -> 1+2+...+128 = 255. Expected: 255.
+include "../lib/event.lib";
+include "../lib/scene.lib";
+{
+    const NUM_CLIPS = 1;
+    var byte clip_w[NUM_CLIPS]      = { 8 };
+    var byte clip_h[NUM_CLIPS]      = { 8 };
+    var byte clip_count[NUM_CLIPS]  = { 1 };
+    var int  clip_period[NUM_CLIPS] = { 1 };
+    var int  clip_buf[NUM_CLIPS];
+
+    const NPC = 1; const SIGN = 2;              // object indices double as event ids here
+    const F_MET = 0; const F_READ = 1; const F_ZONE = 2;
+    var int meet_count;
+
+    // Events are GAME functions dispatched by a switch (compiles to the jump table).
+    void dispatch_interact(int obj) {
+        switch (obj) {
+            case NPC:
+                if flag_get(F_MET) == 0 { flag_set(F_MET); dialog_open("Hello, traveler!"); }
+                meet_count = meet_count + 1;     // runs every talk; the flag-gated greeting fires once
+            case SIGN:
+                flag_set(F_READ);
+                dialog_open("This way to town.");
+            default: { }
+        }
+    }
+    void dispatch_zone(int z) {
+        switch (z) {
+            case 0:
+                if flag_get(F_ZONE) == 0 { flag_set(F_ZONE); }
+            default: { }
+        }
+    }
+
+    int main() {
+        var int sum; var int t; var int z;
+        sum = 0;
+        flags_reset();
+        meet_count = 0;
+        nobj = 3;
+        objs[0].wx = 50; objs[0].wy = 50; objs[0].cox = 0; objs[0].coy = 0; objs[0].cw = 16; objs[0].ch = 16; objs[0].active = 1;
+        objs[1].wx = 70; objs[1].wy = 50; objs[1].cox = 0; objs[1].coy = 0; objs[1].cw = 16; objs[1].ch = 16; objs[1].active = 1;  // NPC to the right
+        objs[2].wx = 50; objs[2].wy = 30; objs[2].cox = 0; objs[2].coy = 0; objs[2].cw = 16; objs[2].ch = 16; objs[2].active = 1;  // SIGN above
+        zones_reset();
+        add_zone(200, 200, 20, 20);
+
+        t = interact_front(0, FACE_SIDE, 0, 8);     // face right -> the NPC
+        if t == NPC { sum = sum + 1; }
+        dispatch_interact(t);
+        if dialog_active() == 1 { sum = sum + 2; }  // greeting opened the box
+
+        t = interact_front(0, FACE_SIDE, 0, 8);     // talk again
+        dispatch_interact(t);
+        if meet_count == 2 { sum = sum + 4; }       // dispatch ran twice; greeting was flag-gated
+
+        t = interact_front(0, FACE_UP, 0, 8);       // face up -> the SIGN
+        if t == SIGN { sum = sum + 8; }
+        dispatch_interact(t);
+        if flag_get(F_READ) == 1 { sum = sum + 16; }
+
+        objs[0].wx = 205; objs[0].wy = 205;         // step into the zone
+        z = zone_entered(0);
+        if z == 0 { sum = sum + 32; }
+        dispatch_zone(z);
+        if flag_get(F_ZONE) == 1 { sum = sum + 64; }
+
+        if flag_get(F_MET) == 1 { sum = sum + 128; }
+        return sum;                                 // 255 iff every link in the chain fired
+    }
+}

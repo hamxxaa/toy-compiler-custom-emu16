@@ -566,10 +566,21 @@ void decode_and_execute(uint16_t instruction)
         }
         break;
     }
-    case 0x17: // Unconditional jump to address JMP (4 byte I-type)
+    case 0x17: // JMP — immediate (label) when lower_flag=0, register (indirect) when lower_flag=1.
     {
-        uint16_t full_immediate = read_immediate16_i4();
-        cpu_instance.pc = full_immediate; // Jump to the address specified by the immediate value
+        // The 5-bit opcode space is full (0x00-0x1F all used), so the register/indirect jump reuses
+        // JMP with the lower_flag bit (bit 3) — mirroring the ALU R-type-vs-I-type convention. Every
+        // existing ROM emits JMP with lower_flag=0, so this is backward-compatible; the jump-table
+        // codegen sets the bit to jump to a computed target in a register (O(1) switch dispatch).
+        if (lower_flag) // register mode (2-byte R-type): pc = R[reg1]
+        {
+            cpu_instance.pc = cpu_instance.registers[register1].word;
+        }
+        else            // immediate mode (4-byte I-type): pc = imm16
+        {
+            uint16_t full_immediate = read_immediate16_i4();
+            cpu_instance.pc = full_immediate;
+        }
         break;
     }
     case 0x18: // push register to stack PSH (R-type)

@@ -285,15 +285,26 @@
         var int rowbytes;   // address of this row's bitmap bytes
         var int row;
         var int b;
+        var int sy;         // this row's screen y
         bpr = (w + 7) >> 3;
+        // Screen clamp (the floor that makes an off-screen blit safe -- an address past 0xFFFF wraps
+        // into low memory and corrupts the font/sprites). Skip if off the left/right; draw only the
+        // on-screen rows. On-screen sprites (text + game sprites) are unaffected.
+        if x < 0 { return; }
+        if x >= SCREEN_WIDTH { return; }
         rowaddr = VRAM_START + y * SCREEN_WIDTH + x;   // one multiply; incremented per row
         rowbytes = addr;
         row = 0;
         while row < h {
-            b = 0;
-            while b < bpr {
-                draw_row8(rowaddr + (b << 3), peek_byte(rowbytes + b), color);
-                b = b + 1;
+            sy = y + row;
+            if sy >= 0 {
+                if sy < SCREEN_HEIGHT {
+                    b = 0;
+                    while b < bpr {
+                        draw_row8(rowaddr + (b << 3), peek_byte(rowbytes + b), color);
+                        b = b + 1;
+                    }
+                }
             }
             rowaddr = rowaddr + SCREEN_WIDTH;
             rowbytes = rowbytes + bpr;
@@ -467,6 +478,58 @@
             rowsrc = rowsrc + w;
             rowdst = rowdst + SCREEN_WIDTH;
             row = row + 1;
+        }
+    }
+
+    // ---- Clipped color blits (for scrolling worlds: x/y may be off any edge) ------------------
+
+    // draw_sprite_color clamped to the screen. Skips off-top/left source rows/cols, trims off-
+    // right/bottom, so a sprite half past an edge is safe (no out-of-VRAM writes).
+    void draw_sprite_color_clipped(int addr, int w, int h, int x, int y) {
+        var int vx0; var int vx1; var int cols; var int srccol;
+        var int row0; var int rows; var int rowsrc; var int rowdst; var int r;
+        vx0 = x;     if vx0 < 0 { vx0 = 0; }
+        vx1 = x + w; if vx1 > SCREEN_WIDTH { vx1 = SCREEN_WIDTH; }
+        cols = vx1 - vx0;
+        if cols <= 0 { return; }
+        row0 = 0; rows = h;
+        if y < 0 { row0 = 0 - y; rows = h + y; y = 0; }
+        if y + rows > SCREEN_HEIGHT { rows = SCREEN_HEIGHT - y; }
+        if rows <= 0 { return; }
+        srccol = vx0 - x;                                  // columns skipped on the left
+        rowsrc = addr + row0 * w + srccol;
+        rowdst = VRAM_START + y * SCREEN_WIDTH + vx0;
+        r = 0;
+        while r < rows {
+            draw_row_color(rowsrc, rowdst, cols);
+            rowsrc = rowsrc + w;
+            rowdst = rowdst + SCREEN_WIDTH;
+            r = r + 1;
+        }
+    }
+
+    // draw_sprite_color_flipx clamped to the screen. The flip reads the source forward while the dst
+    // walks left, so the visible run starts at the RIGHTMOST visible column.
+    void draw_sprite_color_clipped_flipx(int addr, int w, int h, int x, int y) {
+        var int vx0; var int vx1; var int cols; var int srccol;
+        var int row0; var int rows; var int rowsrc; var int rowdst; var int r;
+        vx0 = x;     if vx0 < 0 { vx0 = 0; }
+        vx1 = x + w; if vx1 > SCREEN_WIDTH { vx1 = SCREEN_WIDTH; }
+        cols = vx1 - vx0;
+        if cols <= 0 { return; }
+        row0 = 0; rows = h;
+        if y < 0 { row0 = 0 - y; rows = h + y; y = 0; }
+        if y + rows > SCREEN_HEIGHT { rows = SCREEN_HEIGHT - y; }
+        if rows <= 0 { return; }
+        srccol = x + w - vx1;                              // sprite col feeding the rightmost visible px
+        rowsrc = addr + row0 * w + srccol;
+        rowdst = VRAM_START + y * SCREEN_WIDTH + (vx1 - 1);
+        r = 0;
+        while r < rows {
+            draw_row_color_flip(rowsrc, rowdst, cols);
+            rowsrc = rowsrc + w;
+            rowdst = rowdst + SCREEN_WIDTH;
+            r = r + 1;
         }
     }
 }

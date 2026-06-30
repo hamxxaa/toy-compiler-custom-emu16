@@ -18,7 +18,7 @@ uint16_t g_palette[256];         // cached RGB565 palette (rebuilt only when PRA
 
 // Development toggles.
 constexpr bool ENABLE_FRAMEBUFFER_TEST = false; // true = solid-color panel self-test (skips the emulator)
-constexpr bool ENABLE_DEBUG_LOGS = false;
+constexpr bool ENABLE_DEBUG_LOGS = true;
 
 uint8_t input_state = 0;
 

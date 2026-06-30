@@ -397,6 +397,25 @@ class SemanticAnalyzer:
         self.loop_depth -= 1
         self.current_scope = parent_scope
 
+    def visit_SwitchNode(self, node):
+        expr_type = self.visit(node.expr)
+        if expr_type not in ("int", "byte"):
+            raise Exception(
+                f"Type Error: switch expression must be 'int' or 'byte', got '{expr_type}'."
+            )
+        # Fold each case value to a compile-time int and check uniqueness; analyze each body.
+        node.case_values = []
+        seen = set()
+        for (value_expr, body) in node.cases:
+            value = self._eval_const_expr(value_expr, "switch case")
+            if value in seen:
+                raise Exception(f"Semantic Error: duplicate switch case value '{value}'.")
+            seen.add(value)
+            node.case_values.append(value)
+            self.visit(body)
+        if node.default is not None:
+            self.visit(node.default)
+
     def visit_BreakNode(self, node):
         if self.loop_depth == 0:
             raise Exception("Semantic Error: 'break' used outside of a loop.")

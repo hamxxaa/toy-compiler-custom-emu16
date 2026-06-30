@@ -9,11 +9,16 @@
     const ANIM_ENEMY_WALK_DOWN_ID = 5;
     const ANIM_ENEMY_WALK_UP_ID = 6;
     const ANIM_ENEMY_WALK_ID = 7;
+    const ANIM_TREE1_ID = 8;
+    const ANIM_TREE2_ID = 9;
+    const ANIM_TREE3_ID = 10;
+    const ANIM_TREE4_ID = 11;
+    const ANIM_NINJA_ID = 12;
 
-    const NUM_CLIPS = 8;
-    var byte clip_w[NUM_CLIPS]      = { 0, 16, 16, 16, 16, 16, 16, 16 };
-    var byte clip_h[NUM_CLIPS]      = { 0, 16, 16, 16, 16, 16, 16, 16 };
-    var byte clip_count[NUM_CLIPS]  = { 0, 4, 4, 4, 4, 5, 5, 5 };
-    var int  clip_period[NUM_CLIPS] = { 0, 200, 200, 200, 200, 200, 200, 200 };
+    const NUM_CLIPS = 13;
+    var byte clip_w[NUM_CLIPS]      = { 0, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 };
+    var byte clip_h[NUM_CLIPS]      = { 0, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 };
+    var byte clip_count[NUM_CLIPS]  = { 0, 4, 4, 4, 4, 5, 5, 5, 1, 1, 1, 1, 1 };
+    var int  clip_period[NUM_CLIPS] = { 0, 200, 200, 200, 200, 200, 200, 200, 100, 100, 100, 100, 100 };
     var int  clip_buf[NUM_CLIPS];
 }

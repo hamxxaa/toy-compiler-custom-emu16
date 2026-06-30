@@ -118,6 +118,18 @@ class ForNode:
         self.scope = scope
 
 
+class SwitchNode:
+    """switch (<expr>) { case C: <stmts> ... default: <stmts> }
+
+    Compiles to an O(1) jump table (not an if-else chain). Case values must be compile-time
+    constants; the analyzer folds them into `case_values`. Cases auto-break (no C fallthrough)."""
+    def __init__(self, expr, cases, default=None):
+        self.expr = expr            # the switched expression
+        self.cases = cases          # list of (value_expr_node, body ScopeNode)
+        self.default = default      # ScopeNode or None
+        self.case_values = None     # list[int] aligned with `cases`, filled by the analyzer
+
+
 class BreakNode:
     """break;  — exit the nearest enclosing loop."""
     def __init__(self):

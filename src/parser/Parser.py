@@ -67,6 +67,7 @@ from .parserNodes import (
     IfNode,
     WhileNode,
     ForNode,
+    SwitchNode,
     BreakNode,
     ContinueNode,
     PrintNode,
@@ -301,6 +302,8 @@ class Parser:
             return self.parse_while_structure()
         elif token[1] == "for":
             return self.parse_for_structure()
+        elif token[1] == "switch":
+            return self.parse_switch_structure()
         elif token[1] == "break":
             self.tokens.consume("break", "KEYWORD")
             self.tokens.consume(";", "SYMBOL")
@@ -549,6 +552,50 @@ class Parser:
         self.tokens.consume("=", "SYMBOL")
         value = self.parse_expression()
         return EqualizeNode(var_name, value)
+
+    def parse_switch_structure(self):
+        # <switch> ::= "switch" "(" <expression> ")" "{" (<case> | <default>)+ "}"
+        # <case>    ::= "case" <const-expr> ":" <statement>*      (auto-break; no fallthrough)
+        # <default> ::= "default" ":" <statement>*
+        self.tokens.consume("switch", "KEYWORD")
+        self.tokens.consume("(", "SYMBOL")
+        expr = self.parse_expression()
+        self.tokens.consume(")", "SYMBOL")
+        self.tokens.consume("{", "SYMBOL")
+        cases = []
+        default = None
+        while self.tokens.peek() and self.tokens.peek()[1] != "}":
+            tok = self.tokens.peek()
+            if tok[1] == "case":
+                self.tokens.consume("case", "KEYWORD")
+                value = self.parse_expression()
+                self.tokens.consume(":", "SYMBOL")
+                cases.append((value, self._parse_case_body()))
+            elif tok[1] == "default":
+                if default is not None:
+                    raise SyntaxError(
+                        f"Error: duplicate 'default' in switch at row {tok[2]}, column {tok[3]}"
+                    )
+                self.tokens.consume("default", "KEYWORD")
+                self.tokens.consume(":", "SYMBOL")
+                default = self._parse_case_body()
+            else:
+                raise SyntaxError(
+                    f"Error: expected 'case' or 'default' in switch but found '{tok[1]}' "
+                    f"at row {tok[2]}, column {tok[3]}"
+                )
+        self.tokens.consume("}", "SYMBOL")
+        if not cases:
+            raise SyntaxError("Error: a switch must have at least one 'case'.")
+        return SwitchNode(expr, cases, default)
+
+    def _parse_case_body(self):
+        # Statements up to the next 'case'/'default'/'}'. Wrapped in a ScopeNode so each case body
+        # gets its own variable scope; codegen auto-breaks to the switch end after it.
+        statements = []
+        while self.tokens.peek() and self.tokens.peek()[1] not in ("case", "default", "}"):
+            statements.append(self.parse_statement())
+        return ScopeNode(statements)
 
     def parse_print(self):
         # <print> ::= "print" "(" <expression> ")" ";"

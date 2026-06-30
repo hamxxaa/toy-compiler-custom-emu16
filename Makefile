@@ -7,7 +7,7 @@
 #            directly (no bash), so it works from cmd/PowerShell once emsdk is activated.
 #   test   : Python 3 on PATH, pc_emu already built
 #   verify : Node.js on PATH (emsdk bundles one — activate emsdk), wasm already built
-#   flash / uploadfs : PlatformIO (pio) on PATH
+#   flash / uploadfs : PlatformIO (pio) on PATH, or installed in the default user location
 #
 # Usage (Windows: mingw32-make <target>; Unix: make <target>):
 #   make           # build pc_emu + WASM
@@ -31,6 +31,17 @@ EMCC_FLAGS := -O2 -s MODULARIZE=1 -s EXPORT_NAME=createEmu \
               -s "EXPORTED_RUNTIME_METHODS=['cwrap','ccall','HEAPU8']" \
               -s ALLOW_MEMORY_GROWTH=0 -s INITIAL_MEMORY=16777216 -s ENVIRONMENT=web,node
 
+PIO ?= pio
+ifeq ($(OS),Windows_NT)
+PIO_HOME := $(subst \,/,$(HOME))
+PIO_USERPROFILE := $(subst \,/,$(USERPROFILE))
+ifneq ($(wildcard $(PIO_HOME)/.platformio/penv/Scripts/pio.exe),)
+PIO := $(PIO_HOME)/.platformio/penv/Scripts/pio.exe
+else ifneq ($(wildcard $(PIO_USERPROFILE)/.platformio/penv/Scripts/pio.exe),)
+PIO := $(PIO_USERPROFILE)/.platformio/penv/Scripts/pio.exe
+endif
+endif
+
 # ── Clean shims ──────────────────────────────────────────────────────────────
 # POSIX rm (Git Bash on Windows, or any Unix shell). rm -f / -rf tolerate missing paths.
 RM_FILES = rm -f $(EMU_OUT) $(WASM_OUT) simulator/emu.wasm
@@ -38,7 +49,7 @@ RM_BUILD = rm -rf build/roms
 RM_PCEMU = rm -rf build/pc_emulator
 RM_PIO   = rm -rf firmware/.pio
 
-.PHONY: all pc_emu wasm test verify flash uploadfs clean clean-roms
+.PHONY: all pc_emu wasm test verify flash uploadfs monitor clean clean-roms
 
 all: pc_emu wasm
 
@@ -64,10 +75,13 @@ $(WASM_OUT): emulator/emu.cpp emulator/emu_wasm.cpp $(EMU_HDRS)
 # `cd x && y` works in both cmd.exe and sh.
 
 flash:
-	cd firmware && pio run -t upload
+	cd firmware && $(PIO) run -t upload
 
 uploadfs:
-	cd firmware && pio run -t uploadfs
+	cd firmware && $(PIO) run -t uploadfs
+
+monitor:
+	cd firmware && $(PIO) device monitor -b 115200
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 

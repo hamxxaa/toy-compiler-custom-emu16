@@ -71,6 +71,13 @@ TESTS = [
     ("tests/test_mod.txt",            "test_mod",            2),
     ("tests/test_break.txt",          "test_break",          18),
     ("tests/test_for.txt",            "test_for",            41),
+    ("tests/test_switch.txt",         "test_switch",         427),
+    # ── event foundation (event.lib flags/dialog + scene.lib interact/zones) ──
+    ("tests/test_flags.txt",          "test_flags",          2047),
+    ("tests/test_dialog.txt",         "test_dialog",         7),
+    ("tests/test_zone.txt",           "test_zone",           31),
+    ("tests/test_interact.txt",       "test_interact",       127),
+    ("tests/test_events.txt",         "test_events",         255),
     ("tests/test_string.txt",         "test_string",         26952),
     ("tests/test_struct.txt",         "test_struct",         357),
     ("tests/test_struct_arr.txt",     "test_struct_arr",     35),
@@ -88,6 +95,11 @@ TESTS = [
     ("tests/test_anim_draw.txt",      "test_anim_draw",      4321),  # auto-packs test_anim_draw.manifest
     # ── sprite-lib Phase 5: per-game frame-rate cap syscall ──
     ("tests/test_set_fps.txt",        "test_set_fps",        42),
+    # ── scene engine: clipped blit + object cast / camera ──
+    ("tests/test_clip_blit.txt",      "test_clip_blit",      1461),
+    ("tests/test_scene.txt",          "test_scene",          2201),
+    ("tests/test_collide.txt",        "test_collide",        777),
+    ("tests/test_combat.txt",         "test_combat",         999),
 ]
 
 # Pure-Python tool tests (no ROM): run as subprocesses, must exit 0.

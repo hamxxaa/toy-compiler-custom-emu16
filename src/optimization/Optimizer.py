@@ -16,6 +16,8 @@ class Optimizer:
         "entry_begin",
         "entry_end",
         "asm",
+        "goto_reg",     # indirect jump (switch dispatch): a block terminator
+        "jump_table",   # raw address-table data: not executable, must not be optimized across
     }
 
     @staticmethod
@@ -210,7 +212,7 @@ class Optimizer:
         changed = False
         # Ops whose operands must NOT be const-substituted: addrof needs the variable's address
         # (not its value); print/asm/def_arr are opaque to the optimizer.
-        OPAQUE = ("print", "asm", "addrof", "def_arr")
+        OPAQUE = ("print", "asm", "addrof", "def_arr", "addr_label")
         for instr in instrs:
             # 1. Substitute already-known constants into this instruction's operands.
             if instr.op not in OPAQUE:

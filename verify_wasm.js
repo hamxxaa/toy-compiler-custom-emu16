@@ -25,6 +25,10 @@ const TESTS = [
     ['test_draw_char', 1], ['test_draw_string', 1],
     // M7d: the browser syscall handler now implements echo (0x7F), so the interrupt path verifies on WASM.
     ['test_syscall_echo', 42],
+    // Phase 0: the O(1) switch jump table exercises JMP register-mode (the one shared-core ISA change).
+    ['test_switch', 427],
+    // Event foundation (guest libs; deterministic — test_flags uses save/load so it's pc_emu-only).
+    ['test_dialog', 7], ['test_zone', 31], ['test_interact', 127], ['test_events', 255],
 ];
 
 (async () => {

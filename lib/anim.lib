@@ -95,6 +95,24 @@ include "../lib/sys.lib";
         }
     }
 
+    // Like clip_blit but clamped to the screen -- for scrolling worlds where (sx,sy) may be off any
+    // edge (scene.lib's renderer uses this). Same frame math; clipped primitives.
+    void clip_blit_clipped(int id, int e, int sx, int sy, int facing) {
+        var int w;
+        var int h;
+        var int f;
+        var int base;
+        w = clip_w[id];
+        h = clip_h[id];
+        f = (e / clip_period[id]) % clip_count[id];
+        base = clip_buf[id] + f * (w * h);
+        if facing == 1 {
+            draw_sprite_color_clipped_flipx(base, w, h, sx, sy);
+        } else {
+            draw_sprite_color_clipped(base, w, h, sx, sy);
+        }
+    }
+
     // --- Animator: thin per-entity timing + lock (selection stays hand-written in the game) -----
     class Animator {
         var int clip = 0;         // current clip id

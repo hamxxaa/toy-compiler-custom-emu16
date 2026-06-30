@@ -275,6 +275,62 @@ class TACGenerator:
         self.create_instruction("goto", result=start_label)
         self.create_instruction("label", result=end_label)
 
+    def visit_SwitchNode(self, node):
+        # O(1) jump-table dispatch (see the plan): bounds-check -> index a table of case-body
+        # addresses -> indirect jump. Constant work regardless of case count.
+        idx = self.generate(node.expr)
+        values = node.case_values                       # folded ints, aligned with node.cases
+        labels = [self.new_label() for _ in values]
+        min_v, max_v = min(values), max(values)
+
+        end_label = self.new_label()
+        has_default = node.default is not None
+        default_label = self.new_label() if has_default else None
+        eff_default = default_label if has_default else end_label   # holes / out-of-range land here
+        tbl_label = self.new_label()
+
+        # Bounds check via two signed '<' tests (each fuses to CMP+JS in the backend):
+        #   idx < min  -> default ;  max < idx (i.e. idx > max) -> default
+        lo = self.new_temp("bool")
+        self.create_instruction("<", arg1=idx, arg2=Const(min_v, "int"), result=lo)
+        self.create_instruction("if", arg1=lo, result=eff_default)
+        hi = self.new_temp("bool")
+        self.create_instruction("<", arg1=Const(max_v, "int"), arg2=idx, result=hi)
+        self.create_instruction("if", arg1=hi, result=eff_default)
+
+        # target = *(&table + (idx - min) * 2)
+        n = self.new_temp("int")
+        self.create_instruction("-", arg1=idx, arg2=Const(min_v, "int"), result=n)
+        off = self.new_temp("int")
+        self.create_instruction("shl", arg1=n, arg2=Const(1, "int"), result=off)
+        base = self.new_temp("int")
+        self.create_instruction("addr_label", arg1=tbl_label, result=base)   # LDI base, &table
+        ea = self.new_temp("int")
+        self.create_instruction("+", arg1=base, arg2=off, result=ea)
+        tgt = self.new_temp("int")
+        self.create_instruction("load_ptr", arg1=ea, result=tgt)
+
+        # Indirect jump. `extra` lists every reachable target so the CFG (liveness) models the edges.
+        label_by_value = {v: l for v, l in zip(values, labels)}
+        targets = list(labels)
+        targets.append(eff_default)
+        self.create_instruction("goto_reg", arg1=tgt, extra=targets)
+
+        # The address table: one word per index min..max, holes -> default. Emitted as data right
+        # after the indirect jump (never executed — the jump skips over it to a case body).
+        table = [label_by_value.get(v, eff_default) for v in range(min_v, max_v + 1)]
+        self.create_instruction("jump_table", arg1=tbl_label, extra=table)
+
+        # Case bodies (auto-break: each falls to the switch end).
+        for (value_expr, body), label in zip(node.cases, labels):
+            self.create_instruction("label", result=label)
+            self.generate(body)
+            self.create_instruction("goto", result=end_label)
+        if has_default:
+            self.create_instruction("label", result=default_label)
+            self.generate(node.default)
+        self.create_instruction("label", result=end_label)
+
     def visit_BreakNode(self, node):
         if not self.loops:
             raise Exception("Codegen Error: 'break' outside a loop.")

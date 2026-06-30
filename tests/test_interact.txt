@@ -1,0 +1,53 @@
+// scene.lib interact_front: returns the active object whose collider sits in the box in front of
+// object 0, for each facing/dir; -1 when nothing's there or the candidate is inactive.
+// All correct -> 1+2+4+8+16+32+64 = 127.
+include "../lib/scene.lib";
+{
+    // minimal clip registry (scene.lib -> anim.lib needs it declared; this test never blits)
+    const NUM_CLIPS = 1;
+    var byte clip_w[NUM_CLIPS]      = { 8 };
+    var byte clip_h[NUM_CLIPS]      = { 8 };
+    var byte clip_count[NUM_CLIPS]  = { 1 };
+    var int  clip_period[NUM_CLIPS] = { 1 };
+    var int  clip_buf[NUM_CLIPS];
+
+    int main() {
+        var int sum;
+        var int t;
+        sum = 0;
+        nobj = 2;
+        // object 0 = "player" at (50,50), 16x16 collider
+        objs[0].wx = 50; objs[0].wy = 50;
+        objs[0].cox = 0; objs[0].coy = 0; objs[0].cw = 16; objs[0].ch = 16; objs[0].active = 1;
+        // object 1 = the thing we face; 16x16 collider
+        objs[1].cox = 0; objs[1].coy = 0; objs[1].cw = 16; objs[1].ch = 16; objs[1].active = 1;
+
+        objs[1].wx = 70; objs[1].wy = 50;             // to the right
+        t = interact_front(0, FACE_SIDE, 0, 8);
+        if t == 1 { sum = sum + 1; }                  // facing right -> found
+
+        objs[1].wx = 30; objs[1].wy = 50;             // to the left
+        t = interact_front(0, FACE_SIDE, 0, 8);
+        if t == 0 - 1 { sum = sum + 2; }              // facing right, nothing there -> -1
+
+        t = interact_front(0, FACE_SIDE, 1, 8);       // now face left
+        if t == 1 { sum = sum + 4; }                  // found on the left
+
+        objs[1].wx = 50; objs[1].wy = 36;             // above
+        t = interact_front(0, FACE_UP, 0, 8);
+        if t == 1 { sum = sum + 8; }
+
+        objs[1].wx = 50; objs[1].wy = 70;             // below
+        t = interact_front(0, FACE_DOWN, 0, 8);
+        if t == 1 { sum = sum + 16; }
+
+        objs[1].wx = 120; objs[1].wy = 120;           // far away
+        t = interact_front(0, FACE_DOWN, 0, 8);
+        if t == 0 - 1 { sum = sum + 32; }             // nothing in front -> -1
+
+        objs[1].wx = 70; objs[1].wy = 50; objs[1].active = 0;   // in front but inactive
+        t = interact_front(0, FACE_SIDE, 0, 8);
+        if t == 0 - 1 { sum = sum + 64; }             // inactive is skipped -> -1
+        return sum;
+    }
+}

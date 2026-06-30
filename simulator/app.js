@@ -238,9 +238,11 @@ class App {
         // 0. Best-effort frame-rate cap: a ROM can request a target via sys_set_fps. RAF still fires
         //    ~60 Hz; we just skip stepping the emu until the target interval has elapsed, so a game
         //    that asks for 30 runs at ~30. (Firmware paces precisely; the browser is best-effort.)
+        // Only throttle for sub-60 targets; at the 60 default, step every RAF (a tighter threshold
+        // sat right under the ~16.7ms RAF interval, so jitter dropped ~1 in 6 frames -> ~49 fps).
         const targetFps = this.cpu.targetFps ? this.cpu.targetFps() : 60;
-        if (targetFps > 0 && this._lastStep !== undefined &&
-            (now - this._lastStep) < (1000 / targetFps) - 1) {
+        if (targetFps > 0 && targetFps < 58 && this._lastStep !== undefined &&
+            (now - this._lastStep) < (1000 / targetFps) - 2) {
             this.animFrameId = requestAnimationFrame(() => this._frame());
             return;
         }

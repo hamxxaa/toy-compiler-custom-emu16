@@ -731,6 +731,39 @@ class EmuBackend:
             self.current_instr_index += 1
             return
 
+        if op == "addr_label":
+            # base = &label  (LDI base, <label-addr>; resolved via the fixup table in pass 2).
+            frame = self.function_frames.get(self.current_function)
+            res_reg = self._home_reg(instruction.result, frame)
+            dst = res_reg if res_reg is not None else self.REG_RETVAL
+            self._emit_i16_operand(OP_LDI, dst, instruction.arg1)   # arg1 = table label name
+            if res_reg is None:
+                self._emit_from_reg(instruction.result, self.REG_RETVAL, frame)
+            self.current_instr_index += 1
+            return
+
+        if op == "goto_reg":
+            # Indirect jump: pc = target register (JMP register-mode, lower_flag=1).
+            frame = self.function_frames.get(self.current_function)
+            reg = self._home_reg(instruction.arg1, frame)
+            if reg is None:
+                self._emit_to_reg(instruction.arg1, self.REG_RETVAL, frame)
+                reg = self.REG_RETVAL
+            self._emit_r(OP_JMP, reg, size_flag=0, lower_flag=1)
+            self.current_instr_index += 1
+            return
+
+        if op == "jump_table":
+            # Emit the address table inline (one word per index; never executed — the indirect jump
+            # skips over it). Each entry is a fixup to a case/default label, patched in pass 2.
+            self._mark_label(instruction.arg1)
+            for label_name in instruction.extra:
+                fixup_address = self._current_address()
+                self._emit_word(0)
+                self.fixups.append((fixup_address, label_name))
+            self.current_instr_index += 1
+            return
+
         if op in ("def", "eq"):
             if instruction.arg1 is None:
                 self.current_instr_index += 1

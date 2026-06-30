@@ -18,7 +18,7 @@ class BasicBlock:
     live_in: Set[any] = field(default_factory=set)
     live_out: Set[any] = field(default_factory=set)
 
-CONTROL_OPS = {"goto", "label", "if", "arg", "ret", "func_begin", "func_end", "entry_begin", "entry_end", "param"}
+CONTROL_OPS = {"goto", "label", "if", "arg", "ret", "func_begin", "func_end", "entry_begin", "entry_end", "param", "goto_reg", "jump_table"}
 
 def _is_value_operand(operand):
     return isinstance(operand, (Var, TempVar))
@@ -35,7 +35,7 @@ def build_cfg(instructions: List[any]) -> List[BasicBlock]:
     for i, instr in enumerate(instructions):
         if instr.op == "label":
             block_starts.add(i)
-        elif instr.op in ("goto", "if", "ret"):
+        elif instr.op in ("goto", "if", "ret", "goto_reg"):
             if i + 1 < len(instructions):
                 block_starts.add(i + 1)
     
@@ -76,10 +76,18 @@ def build_cfg(instructions: List[any]) -> List[BasicBlock]:
                 block.successors.append(blocks[i + 1])
                 blocks[i + 1].predecessors.append(block)
                 
+        elif last_instr.op == "goto_reg":
+            # Indirect jump: connect to every case/default block named in `extra`. No fallthrough.
+            for label_name in (last_instr.extra or []):
+                target = label_to_block.get(label_name)
+                if target and target not in block.successors:
+                    block.successors.append(target)
+                    target.predecessors.append(block)
+
         elif last_instr.op == "ret":
             # no successors
             pass
-            
+
         else:
             # fallthrough
             if i + 1 < len(blocks):

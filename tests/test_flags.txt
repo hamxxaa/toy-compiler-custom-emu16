@@ -1,0 +1,29 @@
+// event.lib flags: cross-byte set/get/clear independence + a save -> reset -> load round-trip.
+// Each correct behaviour adds a distinct bit; all correct -> 1+2+...+1024 = 2047.  Expected: 2047.
+include "../lib/event.lib";
+{
+    int main() {
+        var int sum;
+        sum = 0;
+        flag_set(7);
+        flag_set(8);                                  // 8 is in a different byte than 7
+        if flag_get(7) == 1 { sum = sum + 1; }
+        if flag_get(8) == 1 { sum = sum + 2; }
+        if flag_get(9) == 0 { sum = sum + 4; }        // untouched neighbour stays clear
+        flag_clear(7);
+        if flag_get(7) == 0 { sum = sum + 8; }        // cleared
+        if flag_get(8) == 1 { sum = sum + 16; }       // clearing 7 didn't touch 8
+        flag_set(255);
+        if flag_get(255) == 1 { sum = sum + 32; }     // top boundary bit
+        flag_set(0);
+        if flag_get(0) == 1 { sum = sum + 64; }       // bottom boundary bit
+        flags_save(0);
+        flags_reset();
+        if flag_get(8) == 0 { sum = sum + 128; }      // reset wiped everything
+        flags_load(0);
+        if flag_get(8) == 1 { sum = sum + 256; }      // restored
+        if flag_get(255) == 1 { sum = sum + 512; }    // restored across a byte boundary
+        if flag_get(7) == 0 { sum = sum + 1024; }     // 7 was cleared before the save
+        return sum;
+    }
+}
