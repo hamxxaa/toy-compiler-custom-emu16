@@ -1,0 +1,30 @@
+// Phase 0 PPU seam: build a PAL(backdrop) command and submit it to the PPU unit, then return a
+// checksum of the exact bytes emitted. This regression-checks the whole seam end to end on both
+// hosts: ppu.lib compiles, the byte encoder lays out the wire format correctly, the SYSCALL_PPU_SUBMIT
+// port write reaches the host handler, and the handler feeds the PPU (ppu_receive -> PAL decode).
+//
+// It submits WITHOUT a trailing PRESENT on purpose: a PRESENT would yield the frame (halt for the
+// host to display + pace), so main's `return` wouldn't run under the 1-frame test harness. The
+// compose+convert path (PRESENT -> backdrop-colored frame) is verified separately via the pc_emu
+// framebuffer checksum.
+//
+// Bytes emitted by ppu_backdrop(0xF81F): 05 00 01 1F F8  (PAL, first=0, count=1, rgb565=0xF81F).
+//   clen = 5,  bytesum = 5+0+1+0x1F+0xF8 = 285,  return = (5<<8)+285 = 1565.
+include "../lib/ppu.lib";
+
+{
+    int main() {
+        var int i;
+        var int sum;
+        cmd_reset();
+        ppu_backdrop(0xF81F);                 // magenta backdrop -> PAL(0,1,0xF81F)
+        sys_ppu_submit(&ppu_cmd, ppu_clen);   // no PRESENT -> no frame yield; PAL decodes on the PPU
+        sum = 0;
+        i = 0;
+        while i < ppu_clen {
+            sum = sum + ppu_cmd[i];
+            i = i + 1;
+        }
+        return (ppu_clen << 8) + sum;         // 1565
+    }
+}

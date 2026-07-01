@@ -12,6 +12,7 @@
 
 #include "emu.h"
 #include "definitions.h"
+#include "ppu.h"
 
 namespace fs = std::filesystem;
 
@@ -120,6 +121,17 @@ static void build_framebuffer(std::vector<uint16_t> &framebuffer)
         uint8_t color_index = cpu_instance.memory[VRAM_START_ADDRESS + i];
         framebuffer[static_cast<std::size_t>(i)] = palette[color_index];
     }
+}
+
+// Choose the frame source: the PPU's composed output once a ROM has engaged it (convert its
+// indexed framebuffer through the PPU palette), else the legacy VRAM+PRAM path. Both coexist
+// while the PPU reboot is phased in.
+static void present_frame(std::vector<uint16_t> &framebuffer)
+{
+    if (ppu_engaged())
+        ppu_convert_rgb565(framebuffer.data());
+    else
+        build_framebuffer(framebuffer);
 }
 
 static uint64_t fnv1a64(const std::vector<uint16_t> &framebuffer)
@@ -337,6 +349,14 @@ static void pc_syscall_handler(uint16_t num)
     }
     case SYSCALL_SET_FPS: // 12: no-op on the one-shot PC runner (it runs N frames, no real-time pacing)
         break;
+    case SYSCALL_PPU_SUBMIT: // 13: R1=buf R2=len -> feed a PPU command stream; PRESENT yields the frame
+    {
+        uint32_t len = r2;
+        if (static_cast<uint32_t>(r1) + len > 65536u) len = 65536u - r1;
+        if (ppu_receive(&cpu_instance.memory[r1], static_cast<int>(len)))
+            emu_request_present();
+        break;
+    }
     default:
         break;
     }
@@ -443,13 +463,13 @@ int main(int argc, char **argv)
     {
         run_frame_instructions();
         ++instruction_batches;
-        build_framebuffer(framebuffer);
+        present_frame(framebuffer);
         ++completed_frames;
         if (!cpu_instance.running && !emu_present_pending())
             break;   // genuine HLT, not a frame yield
     }
 
-    build_framebuffer(framebuffer);
+    present_frame(framebuffer);
 
     fs::create_directories(output_dir);
     fs::path ppm_path = output_dir / "frame.ppm";

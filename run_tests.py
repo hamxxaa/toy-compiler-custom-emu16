@@ -72,6 +72,8 @@ TESTS = [
     ("tests/test_break.txt",          "test_break",          18),
     ("tests/test_for.txt",            "test_for",            41),
     ("tests/test_switch.txt",         "test_switch",         427),
+    # ── PPU reboot Phase 0: the command-buffer seam (ppu.lib -> SYSCALL_PPU_SUBMIT -> PPU decode) ──
+    ("tests/test_ppu_backdrop.txt",   "test_ppu_backdrop",   1565),
     # ── event foundation (event.lib flags/dialog + scene.lib interact/zones) ──
     ("tests/test_flags.txt",          "test_flags",          2047),
     ("tests/test_dialog.txt",         "test_dialog",         7),

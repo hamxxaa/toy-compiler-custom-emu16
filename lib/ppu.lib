@@ -1,0 +1,55 @@
+// lib/ppu.lib — CPU-side command-buffer builder for the PPU (the NES-2C02-style rendering unit).
+//
+// The CPU never draws pixels. Each frame it (re)builds a little command stream in `ppu_cmd`, then
+// flushes it to the PPU with sys_ppu_submit. The PPU composites tiles + sprites + text and owns the
+// display. The exact same bytes work whether the PPU is a function call (one chip) or across SPI
+// (two chips) — so nothing here knows which.
+//
+// Frame shape:
+//     cmd_reset();
+//     ... build commands (ppu_backdrop / — later — scroll, oam, tiles, text) ...
+//     ppu_present();        // appends PRESENT + flushes; the host composes, displays, and paces
+//
+// Phase 0 covers the seam: the buffer, the byte writers, PAL(backdrop), and submit/present.
+// Command wire format (little-endian, terminated by PRESENT) — see tiling-scrolling-ricoh.md:
+//     0x01 SET_REG [reg:1][val:2]              0x04 TEXT    [x,y,w,h][w*h x {glyph,color}]
+//     0x02 OAM     [count:1][count x sprite]   0x05 PAL     [first:1][count:1][count x rgb565:2]
+//     0x03 TM_EDIT [x,y,w,h][w*h tiles]        0x06 PRESENT []
+{
+    var byte ppu_cmd[2048];   // per-frame command buffer (matches the PPU's 2 KB inbound buffer)
+    var int  ppu_clen;        // bytes filled so far
+
+    // num 13 = PPU_SUBMIT: buf->R1, len->R2. Executes the command stream on the PPU; if it ends in
+    // PRESENT the host composes the frame, converts it to the display, and paces to the frame rate.
+    void sys_ppu_submit(int buf, int len) {
+        asm { LDI R0, 13
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // Start a fresh frame's command stream.
+    void cmd_reset() { ppu_clen = 0; }
+
+    // Append one byte / one little-endian 16-bit word to the command buffer.
+    void cu8(int v) {
+        ppu_cmd[ppu_clen] = v;
+        ppu_clen = ppu_clen + 1;
+    }
+    void cu16(int v) {
+        cu8(v);
+        cu8(v >> 8);
+    }
+
+    // Set the backdrop color (palette entry 0) — emits PAL(first=0, count=1, rgb565).
+    // The backdrop shows anywhere no tile/sprite/text pixel is drawn.
+    void ppu_backdrop(int rgb565) {
+        cu8(5); cu8(0); cu8(1); cu16(rgb565);
+    }
+
+    // Append PRESENT and flush the buffer to the PPU (compose + display + pace this frame).
+    void ppu_present() {
+        cu8(6);
+        sys_ppu_submit(&ppu_cmd, ppu_clen);
+    }
+}

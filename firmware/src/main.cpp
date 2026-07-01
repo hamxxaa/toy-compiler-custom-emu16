@@ -6,6 +6,7 @@
 #include <cstdio>
 #include "emu.h"
 #include "definitions.h"
+#include "ppu.h"
 #include "hw_pins.h"
 #include "storage.h"
 
@@ -225,6 +226,14 @@ static void handle_syscall(uint16_t num)
     case SYSCALL_SET_FPS: // 12: R1=target fps (0=default 60) -> set the frame-pace target
         g_frame_target_ms = r1 ? (1000u / r1) : 16;
         break;
+    case SYSCALL_PPU_SUBMIT: // 13: R1=buf R2=len -> feed a PPU command stream; PRESENT yields the frame
+    {
+        uint32_t len = r2;
+        if ((uint32_t)r1 + len > 65536u) len = 65536u - r1;
+        if (ppu_receive(&cpu_instance.memory[r1], (int)len))
+            emu_request_present();
+        break;
+    }
     default:
         break;
     }
@@ -360,6 +369,27 @@ void loop()
         return;
     }
 
+    // Display path. Once a ROM has engaged the PPU, it owns the frame: convert its composed
+    // indexed output through the PPU palette and push it. Otherwise use the legacy VRAM+PRAM path.
+    // Both coexist while the PPU reboot is phased in.
+    if (ppu_engaged())
+    {
+        t = micros();
+        ppu_convert_rgb565(frame_buffer);
+        tft.pushImage(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, frame_buffer);
+        uint32_t us_ppu = micros() - t;
+        static uint32_t pn = 0, s_ppu = 0, s_pe = 0;
+        s_ppu += us_ppu;
+        s_pe += us_emu;
+        if (++pn >= 60)
+        {
+            Serial.printf("== PPU avg/frame over %lu frames (us): emulate %lu, convert+push %lu ==\n",
+                          pn, s_pe / pn, s_ppu / pn);
+            pn = s_ppu = s_pe = 0;
+        }
+    }
+    else
+    {
     // (2) palette dirty-check; (3) rebuild the cached palette only if PRAM changed
     t = micros();
     bool pram_changed = memcmp(cpu_instance.memory + PRAM_START_ADDRESS, prev_pram, PRAM_SIZE) != 0;
@@ -418,6 +448,7 @@ void loop()
         Serial.printf("  TOTAL      : %lu us = %lu.%03lu ms\n", total, total / 1000, total % 1000);
         n = s_emu = s_pc = s_pb = s_vc = s_vb = s_pu = 0;
     }
+    } // end legacy VRAM display path
 
     int32_t frame_duration = millis() - frame_start_time;
     if (frame_duration < (int32_t)g_frame_target_ms)

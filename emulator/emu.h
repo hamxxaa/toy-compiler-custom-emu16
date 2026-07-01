@@ -26,6 +26,7 @@ void initialize_cpu();
 void emu_set_syscall_handler(void (*fn)(uint16_t));
 bool emu_present_pending();   // true if the last frame ended on a PRESENT syscall (frame yield)
 void emu_begin_frame();       // resume the CPU if the previous frame PRESENTed; call before each host frame
+void emu_request_present();   // yield the frame from a syscall handler (e.g. sys_ppu_submit ending in PRESENT)
 
 // Executed-instruction counter (no-op / returns 0 unless built with -DEMU_COUNT_INSTRUCTIONS).
 void emu_reset_instruction_count();

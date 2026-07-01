@@ -8,7 +8,7 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-emcc emulator/emu.cpp emulator/emu_wasm.cpp -O2 \
+emcc emulator/emu.cpp emulator/ppu.cpp emulator/emu_wasm.cpp -O2 \
     -s MODULARIZE=1 \
     -s EXPORT_NAME=createEmu \
     -s "EXPORTED_RUNTIME_METHODS=['cwrap','ccall','HEAPU8']" \

@@ -17,6 +17,7 @@
 
 #include "emu.h"
 #include "definitions.h"
+#include "ppu.h"
 
 // Defined in emu.cpp (not exposed via emu.h, but non-static globals).
 uint16_t read_word_le(uint16_t address);
@@ -229,6 +230,14 @@ static void wasm_syscall_handler(uint16_t num)
     case SYSCALL_SET_FPS: // 12: store the target; the JS RAF loop reads emu_target_fps() to pace
         g_target_fps = r1 ? static_cast<int>(r1) : 60;
         break;
+    case SYSCALL_PPU_SUBMIT: // 13: R1=buf R2=len -> feed a PPU command stream; PRESENT yields the frame
+    {
+        uint32_t len = r2;
+        if (static_cast<uint32_t>(r1) + len > 65536u) len = 65536u - r1;
+        if (ppu_receive(&cpu_instance.memory[r1], static_cast<int>(len)))
+            emu_request_present();
+        break;
+    }
     default:
         break;
     }

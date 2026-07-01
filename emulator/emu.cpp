@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include "definitions.h"
+#include "ppu.h"
 
 // Calling-convention trace output. OFF by default (keeps the browser console and
 // pc_emu.exe stdout clean and avoids a printf on every PSH/POP/CAL/RET). Build with
@@ -76,6 +77,16 @@ void emu_begin_frame()
         cpu_instance.running = true;
         g_present = false;
     }
+}
+
+// Trigger a frame yield from a syscall handler. sys_ppu_submit calls this when its command stream
+// ends in PRESENT: behaves exactly like the SYSCALL_PRESENT path — halt now so the host displays
+// the composed frame and paces, then resume next frame. Keeps the PPU present uniform with the
+// legacy sys_present across firmware / PC / WASM.
+void emu_request_present()
+{
+    g_present = true;
+    cpu_instance.running = false;
 }
 
 // Centralized store helpers. All guest memory writes for store opcodes go through
@@ -255,6 +266,7 @@ void initialize_cpu()
     {
         cpu_instance.memory[i] = 0;
     }
+    ppu_reset();   // reset the PPU unit alongside the CPU (every host routes through here)
 }
 
 void decode_and_execute(uint16_t instruction)

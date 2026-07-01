@@ -21,8 +21,8 @@ CXX      := g++
 CXXFLAGS := -std=c++17 -O2 -static
 
 EMU_OUT  := pc_emu.exe
-EMU_SRCS := emulator/emu.cpp emulator/pc_emulator_main.cpp
-EMU_HDRS := emulator/emu.h emulator/definitions.h
+EMU_SRCS := emulator/emu.cpp emulator/ppu.cpp emulator/pc_emulator_main.cpp
+EMU_HDRS := emulator/emu.h emulator/definitions.h emulator/ppu.h
 
 WASM_OUT  := simulator/emu.js
 EMCC      := emcc
@@ -68,8 +68,8 @@ $(EMU_OUT): $(EMU_SRCS) $(EMU_HDRS)
 
 wasm: $(WASM_OUT)
 
-$(WASM_OUT): emulator/emu.cpp emulator/emu_wasm.cpp $(EMU_HDRS)
-	$(EMCC) emulator/emu.cpp emulator/emu_wasm.cpp $(EMCC_FLAGS) -o $(WASM_OUT)
+$(WASM_OUT): emulator/emu.cpp emulator/ppu.cpp emulator/emu_wasm.cpp $(EMU_HDRS)
+	$(EMCC) emulator/emu.cpp emulator/ppu.cpp emulator/emu_wasm.cpp $(EMCC_FLAGS) -o $(WASM_OUT)
 
 # ── Firmware (ESP32) ─────────────────────────────────────────────────────────
 # `cd x && y` works in both cmd.exe and sh.

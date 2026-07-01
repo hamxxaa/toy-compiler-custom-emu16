@@ -27,6 +27,8 @@ const TESTS = [
     ['test_syscall_echo', 42],
     // Phase 0: the O(1) switch jump table exercises JMP register-mode (the one shared-core ISA change).
     ['test_switch', 427],
+    // PPU reboot Phase 0: the command-buffer seam (SYSCALL_PPU_SUBMIT -> PPU decode) runs on WASM too.
+    ['test_ppu_backdrop', 1565],
     // Event foundation (guest libs; deterministic — test_flags uses save/load so it's pc_emu-only).
     ['test_dialog', 7], ['test_zone', 31], ['test_interact', 127], ['test_events', 255],
 ];

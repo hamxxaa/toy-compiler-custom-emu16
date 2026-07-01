@@ -18,6 +18,10 @@
 #define SYSCALL_ASSET_INFO  10     // R1=id   R2=dest           -> R0 = length; writes 6-byte header at dest
 #define SYSCALL_ASSET_LOAD  11     // R1=id   R2=dest R3=maxlen -> R0 = bytes copied (0 = fail/too big)
 #define SYSCALL_SET_FPS     12     // R1=target fps (0=default 60); host paces frames to ~1000/fps ms
+// ── PPU reboot (see tiling-scrolling-ricoh.md) ──
+#define SYSCALL_PPU_SUBMIT  13     // R1=buf R2=len -> execute a PPU command stream; PRESENT yields the frame
+#define SYSCALL_PPU_DMA     14     // (Phase 1) R1=pak_id R2=target R3=dst_off -> DMA pak asset -> PPU region
+#define SYSCALL_PPU_UPLOAD  15     // (Phase 1) bulk copy CPU buffer -> PPU region (baked test data, no pak)
 #define INPUT_ADDRESS      0xADFF
 #define VRAM_START_ADDRESS 0xB000
 #define VRAM_SIZE          20480     // 160 * 128 bytes
