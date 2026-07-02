@@ -1,0 +1,26 @@
+// Phase 1: PPU bulk upload into graphics RAM + scroll encoding. Runs on both hosts (no pak), so it
+// checks sys_ppu_upload's return count (bytes written, bounds-checked) and that ppu_scroll lays out
+// the SET_REG bytes correctly. The actual composited pixels (compose_bg) are verified separately via
+// the pc_emu framebuffer checksum (the CPU can't read PPU RAM — invariant I1).
+//
+//   sys_ppu_upload(PPU_PAT, &tile, 256)  -> 256  (in-bounds)
+//   sys_ppu_upload(0xFFFF,  &tile, 8)    -> 0    (addr past PPU RAM -> nothing written)
+//   ppu_scroll(5, 3) encodes 8 bytes: 01 00 05 00  01 01 03 00
+//   return = 256 + 0 + 8 = 264
+include "../lib/ppu.lib";
+
+{
+    var byte tile[256];
+
+    int main() {
+        var int i;
+        var int wrote;
+        i = 0;
+        while i < 256 { tile[i] = 7; i = i + 1; }
+        wrote = sys_ppu_upload(PPU_PAT, &tile, 256);   // in-bounds -> 256
+        wrote = wrote + sys_ppu_upload(0xFFFF, &tile, 8);  // out of range -> 0
+        cmd_reset();
+        ppu_scroll(5, 3);                              // 8 command bytes
+        return wrote + ppu_clen;                       // 264
+    }
+}

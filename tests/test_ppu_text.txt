@@ -1,0 +1,17 @@
+// Phase 3: text-plane + palette command encoding (both hosts; compose verified via checksum).
+//   tile_text(2,1,"HI",5) -> 04 02 01 02 01  (40 05)(41 05)   ['H'=72->40, 'I'=73->41]
+//   ppu_pal1(3,0x1234)    -> 05 03 01 34 12
+//   clen=14, bytesum=101+79=180, return=(14<<8)+180=3764
+include "../lib/ppu.lib";
+{
+    int main() {
+        var int i;
+        var int sum;
+        cmd_reset();
+        tile_text(2, 1, "HI", 5);
+        ppu_pal1(3, 0x1234);
+        sum = 0; i = 0;
+        while i < ppu_clen { sum = sum + ppu_cmd[i]; i = i + 1; }
+        return (ppu_clen << 8) + sum;
+    }
+}

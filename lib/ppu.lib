@@ -18,6 +18,17 @@
 {
     var byte ppu_cmd[2048];   // per-frame command buffer (matches the PPU's 2 KB inbound buffer)
     var int  ppu_clen;        // bytes filled so far
+    var byte oam_sh[384];     // OAM shadow: up to 64 sprites x 6 bytes {pat, x:i16, y:i16, attr}
+    var int  oam_n;           // active sprites in the shadow this frame
+    var byte ppu_solid8[8] = { 255, 255, 255, 255, 255, 255, 255, 255 };  // GLYPH_SOLID bitmap
+
+    // Flat PPU-RAM addresses for bulk uploads/DMA. These name regions in the PPU's own byte-addressed
+    // graphics RAM and MUST match the memory map in emulator/ppu.cpp.
+    const PPU_PAT     = 0x0000;   // 128 x 256-byte 16x16 patterns (tiles + sprites)
+    const PPU_FONT    = 0x8000;   // 128 x 8-byte 1-bit glyphs
+    const PPU_TILEMAP = 0x8400;   // 32x32 bg tile ids (torus)
+    const PPU_PAL     = 0x8C00;   // 256 x RGB565
+    const GLYPH_SOLID = 96;       // font slot 96 = a full 8x8 block (dialog-box fill; see ppu_upload_font)
 
     // num 13 = PPU_SUBMIT: buf->R1, len->R2. Executes the command stream on the PPU; if it ends in
     // PRESENT the host composes the frame, converts it to the display, and paces to the frame rate.
@@ -28,8 +39,28 @@
               RET }
     }
 
-    // Start a fresh frame's command stream.
-    void cmd_reset() { ppu_clen = 0; }
+    // num 14 = PPU_DMA: pak_id->R1, ppu_addr->R2  =>  R0 = bytes copied. The DMA unit streams pak
+    // asset `pak_id` straight into PPU RAM at `ppu_addr` (like a cartridge) — bulk room/tileset load.
+    int sys_ppu_dma(int pak_id, int ppu_addr) {
+        asm { LDI R0, 14
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 15 = PPU_UPLOAD: ppu_addr->R1, cpu_src->R2, len->R3  =>  R0 = bytes copied. Copies a CPU
+    // buffer into PPU RAM (baked data, no pak). 3 args fill R1-R3, so borrow R4 for the port address.
+    int sys_ppu_upload(int ppu_addr, int cpu_src, int len) {
+        asm { LDI R0, 15
+              PSH R4
+              LDI R4, 0xADFE
+              STR R0, [R4], byte
+              POP R4
+              RET }
+    }
+
+    // Start a fresh frame's command stream (empties the command buffer and the OAM shadow).
+    void cmd_reset() { ppu_clen = 0; oam_n = 0; }
 
     // Append one byte / one little-endian 16-bit word to the command buffer.
     void cu8(int v) {
@@ -47,9 +78,123 @@
         cu8(5); cu8(0); cu8(1); cu16(rgb565);
     }
 
-    // Append PRESENT and flush the buffer to the PPU (compose + display + pace this frame).
+    // Set the background scroll (window-relative, 0..511; wraps as a torus) — emits SET_REG for
+    // scroll_x (reg 0) and scroll_y (reg 1). Call each frame before ppu_present to move the world.
+    void ppu_scroll(int x, int y) {
+        cu8(1); cu8(0); cu16(x);   // SET_REG reg=0 (scroll_x)
+        cu8(1); cu8(1); cu16(y);   // SET_REG reg=1 (scroll_y)
+    }
+
+    // ── Sprites (OAM shadow) ─────────────────────────────────────────────────────────────────────
+    // Build the sprite list during frame logic, then ppu_present emits it as one OAM command. Sprite
+    // (x,y) is screen-space (do world->screen on the CPU first). attr: b0 flipx, b1 flipy, b2 behind_bg.
+    // Emit back-to-front (smaller feet-Y first) for correct Y-sort — later sprites draw on top.
+
+    // Empty the sprite list (cmd_reset also does this; use mid-frame to rebuild OAM only).
+    void oam_clear() { oam_n = 0; }
+
+    // Add a 16x16 sprite: pattern `pat` at screen (x,y) with attribute flags `attr`.
+    void oam_set(int pat, int x, int y, int attr) {
+        var int o;
+        o = oam_n * 6;
+        oam_sh[o]     = pat;
+        oam_sh[o + 1] = x & 0xFF;
+        oam_sh[o + 2] = (x >> 8) & 0xFF;
+        oam_sh[o + 3] = y & 0xFF;
+        oam_sh[o + 4] = (y >> 8) & 0xFF;
+        oam_sh[o + 5] = attr;
+        oam_n = oam_n + 1;
+    }
+
+    // Append the OAM command (all sprites 0..oam_n-1) to the command buffer. ppu_present calls this;
+    // exposed so tests can build+inspect the OAM bytes without presenting (which would yield the frame).
+    void ppu_emit_oam() {
+        var int i;
+        cu8(2); cu8(oam_n);
+        i = 0;
+        while i < oam_n * 6 {
+            cu8(oam_sh[i]);
+            i = i + 1;
+        }
+    }
+
+    // Append the frame's OAM + PRESENT and flush to the PPU (compose + display + pace this frame).
     void ppu_present() {
+        ppu_emit_oam();
         cu8(6);
         sys_ppu_submit(&ppu_cmd, ppu_clen);
+    }
+
+    // ── Text plane (HUD + dialog) ────────────────────────────────────────────────────────────────
+    // The text plane is 20x16 cells (8x8 px each = the whole screen). A cell is {glyph, color}; the
+    // PPU blits font glyph `glyph` in `color` over everything at present. glyph = ascii-32 (space=0=
+    // empty). Uploaded font holds ASCII 32..127 at slots 0..95 plus GLYPH_SOLID at 96 (see below).
+
+    // Read one byte of guest memory (private so ppu.lib needs no io.lib).
+    int ppu_rdbyte(int addr) {
+        asm { LDI R0, 0
+              LDR R0, [R1], byte
+              RET }
+    }
+
+    int ppu_strlen(int s) {
+        var int i;
+        i = 0;
+        while ppu_rdbyte(s + i) != 0 { i = i + 1; }
+        return i;
+    }
+
+    // Write a NUL-terminated string into the text plane at cell (cx,cy) in `color` (one TEXT command).
+    // Clipped to the 20-cell row width so it can't spill into the next region.
+    void tile_text(int cx, int cy, int s, int color) {
+        var int n; var int i;
+        n = ppu_strlen(s);
+        if cx + n > 20 { n = 20 - cx; }
+        if n <= 0 { return; }
+        cu8(4); cu8(cx); cu8(cy); cu8(n); cu8(1);
+        i = 0;
+        while i < n {
+            cu8(ppu_rdbyte(s + i) - 32);   // ascii -> glyph slot
+            cu8(color);
+            i = i + 1;
+        }
+    }
+
+    // Fill a w x h block of text cells with one glyph/color (dialog box body = GLYPH_SOLID; erase = 0).
+    void tile_fill(int cx, int cy, int w, int h, int glyph, int color) {
+        var int n; var int i;
+        cu8(4); cu8(cx); cu8(cy); cu8(w); cu8(h);
+        n = w * h; i = 0;
+        while i < n { cu8(glyph); cu8(color); i = i + 1; }
+    }
+
+    // Clear a block of text cells (glyph 0 = empty), e.g. to dismiss a dialog/HUD region.
+    void tile_clear(int cx, int cy, int w, int h) {
+        tile_fill(cx, cy, w, h, 0, 0);
+    }
+
+    // ── Palette (live effects) ───────────────────────────────────────────────────────────────────
+    // Rewrite one palette entry -> shows next present with no recompose. Flash/fade/cycle by editing
+    // entries each frame (restore by re-DMAing the palette blob). Emits a 1-entry PAL command.
+    void ppu_pal1(int idx, int rgb565) {
+        cu8(5); cu8(idx); cu8(1); cu16(rgb565);
+    }
+
+    // Upload the 8x8 font: `src` = a 768-byte ASCII 32..127 bitmap (io.lib's font8x8) -> slots 0..95,
+    // plus a full-block glyph at slot GLYPH_SOLID (96) for dialog-box fills. Call once at startup.
+    void ppu_upload_font(int src) {
+        sys_ppu_upload(PPU_FONT, src, 768);
+        sys_ppu_upload(PPU_FONT + GLYPH_SOLID * 8, &ppu_solid8, 8);
+    }
+
+    // ── Tile collision (CPU-side, the source of truth — invariant I1: the PPU never sees this) ──────
+    // The world collision grid lives in CPU RAM, separate from the PPU tilemap. `cmap` is a byte per
+    // tile (a tile id or metatile); `flags` is a 1-byte property table indexed by that id (b0 solid,
+    // b1 hazard, ...). Returns nonzero if the tile under world pixel (wx,wy) is solid. Caller keeps
+    // (wx,wy) in-bounds (>=0, < map extent) — e.g. a solid border + clamping the camera/objects.
+    int ppu_solid_at(int cmap, int map_w, int flags, int wx, int wy) {
+        var int tile;
+        tile = ppu_rdbyte(cmap + (wy >> 4) * map_w + (wx >> 4));
+        return ppu_rdbyte(flags + tile) & 1;
     }
 }

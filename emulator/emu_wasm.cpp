@@ -238,6 +238,21 @@ static void wasm_syscall_handler(uint16_t num)
             emu_request_present();
         break;
     }
+    case SYSCALL_PPU_DMA: // 14: R1=pak_id R2=ppu_addr -> R0 = bytes streamed pak->PPU RAM
+    {
+        if ((int)r1 >= g_asset_count) { cpu_instance.registers[0].word = 0; break; }
+        TocEntry &e = g_toc[r1];
+        if ((int)(e.offset + e.length) > g_pak_size) { cpu_instance.registers[0].word = 0; break; }
+        cpu_instance.registers[0].word = static_cast<uint16_t>(ppu_write(r2, g_pak + e.offset, e.length));
+        break;
+    }
+    case SYSCALL_PPU_UPLOAD: // 15: R1=ppu_addr R2=cpu_src R3=len -> R0 = bytes copied CPU->PPU RAM
+    {
+        uint32_t len = r3;
+        if ((uint32_t)r2 + len > 65536u) len = 65536u - r2;
+        cpu_instance.registers[0].word = static_cast<uint16_t>(ppu_write(r1, &cpu_instance.memory[r2], len));
+        break;
+    }
     default:
         break;
     }
@@ -288,6 +303,18 @@ EMSCRIPTEN_KEEPALIVE int      emu_reg(int i)   { return cpu_instance.registers[i
 EMSCRIPTEN_KEEPALIVE int      emu_pc()         { return cpu_instance.pc; }
 EMSCRIPTEN_KEEPALIVE int      emu_flags()      { return cpu_instance.flags; }
 EMSCRIPTEN_KEEPALIVE int      emu_running()    { return cpu_instance.running ? 1 : 0; }
+
+// ---- PPU display bridge ----
+// Once a ROM engages the PPU, the browser draws its composed output instead of the VRAM path.
+// emu_ppu_framebuffer() converts the PPU's indexed frame through its palette into a static RGB565
+// buffer and returns it; JS reads SCREEN_WIDTH*SCREEN_HEIGHT uint16 from that pointer each frame.
+EMSCRIPTEN_KEEPALIVE int emu_ppu_engaged() { return ppu_engaged() ? 1 : 0; }
+EMSCRIPTEN_KEEPALIVE uint16_t *emu_ppu_framebuffer()
+{
+    static uint16_t fb[SCREEN_WIDTH * SCREEN_HEIGHT];
+    ppu_convert_rgb565(fb);
+    return fb;
+}
 
 // ---- ROM-library bridge for the syscall handler ----
 // JS writes up to 16 NUL-terminated names into emu_rom_names() (64-byte stride) and calls

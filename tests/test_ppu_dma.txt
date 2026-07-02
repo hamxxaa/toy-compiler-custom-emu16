@@ -1,0 +1,14 @@
+// Phase 1: PPU DMA — the DMA unit streams a pak asset straight into PPU RAM (like a cartridge).
+// The companion test_ppu_dma.manifest packs one 16-byte blob (grad16.bin) into the ROM's pak; here
+// we DMA it into the PPU tilemap region and check the byte count. pc_emu-only (verify_wasm.js does
+// not load paks), mirroring the ASSET_* tests. The bytes land in PPU RAM, which the CPU can't read
+// back (I1), so the count is what we assert; compose is verified via the framebuffer checksum.
+include "../lib/ppu.lib";
+
+{
+    int main() {
+        var int n;
+        n = sys_ppu_dma(0, PPU_TILEMAP);   // stream asset 0 (16 bytes) into PPU tilemap RAM
+        return n;                          // 16
+    }
+}

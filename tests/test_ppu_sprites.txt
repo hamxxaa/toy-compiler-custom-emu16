@@ -1,0 +1,28 @@
+// Phase 2: OAM shadow + OAM-command encoding. Runs on both hosts (no compose readback — I1), so it
+// checks that oam_set packs each sprite as {pat, x:i16, y:i16, attr} and ppu_emit_oam frames them as
+// one OAM command. The actual compositing (compose_sprites) is verified via the pc_emu checksum.
+//
+//   oam_set(1, 10, 20, 0)   -> 01 0A 00 14 00 00
+//   oam_set(2, 300, -5, 6)  -> 02 2C 01 FB FF 06   (x=300=0x012C, y=-5=0xFFFB, attr=flipy|behind)
+//   ppu_emit_oam -> [02 02] + 12 sprite bytes = 14 bytes
+//   bytesum = (2+2) + (1+10+0+20+0+0) + (2+44+1+251+255+6) = 4 + 31 + 559 = 594
+//   return = (14<<8) + 594 = 4178
+include "../lib/ppu.lib";
+
+{
+    int main() {
+        var int i;
+        var int sum;
+        cmd_reset();
+        oam_set(1, 10, 20, 0);
+        oam_set(2, 300, -5, 6);
+        ppu_emit_oam();                       // append OAM command (no present -> no frame yield)
+        sum = 0;
+        i = 0;
+        while i < ppu_clen {
+            sum = sum + ppu_cmd[i];
+            i = i + 1;
+        }
+        return (ppu_clen << 8) + sum;         // 4178
+    }
+}

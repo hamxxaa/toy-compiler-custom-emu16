@@ -74,6 +74,14 @@ TESTS = [
     ("tests/test_switch.txt",         "test_switch",         427),
     # ── PPU reboot Phase 0: the command-buffer seam (ppu.lib -> SYSCALL_PPU_SUBMIT -> PPU decode) ──
     ("tests/test_ppu_backdrop.txt",   "test_ppu_backdrop",   1565),
+    # ── PPU reboot Phase 1: bulk upload/DMA into PPU RAM + scroll encoding ──
+    ("tests/test_ppu_tiles.txt",      "test_ppu_tiles",      264),
+    ("tests/test_ppu_dma.txt",        "test_ppu_dma",        16),   # auto-packs tests/test_ppu_dma.manifest
+    # ── PPU reboot Phase 2: OAM sprite encoding ──
+    ("tests/test_ppu_sprites.txt",    "test_ppu_sprites",    4178),
+    # ── PPU reboot Phase 3: text-plane/palette encoding + CPU-side tile collision ──
+    ("tests/test_ppu_text.txt",       "test_ppu_text",       3764),
+    ("tests/test_ppu_collide.txt",    "test_ppu_collide",    31),
     # ── event foundation (event.lib flags/dialog + scene.lib interact/zones) ──
     ("tests/test_flags.txt",          "test_flags",          2047),
     ("tests/test_dialog.txt",         "test_dialog",         7),

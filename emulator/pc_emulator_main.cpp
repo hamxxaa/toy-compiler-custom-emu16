@@ -357,6 +357,23 @@ static void pc_syscall_handler(uint16_t num)
             emu_request_present();
         break;
     }
+    case SYSCALL_PPU_DMA: // 14: R1=pak_id R2=ppu_addr -> R0 = bytes streamed pak->PPU RAM
+    {
+        pc_load_pak_if_needed();
+        if (r1 >= g_pc_toc.size()) { cpu_instance.registers[0].word = 0; break; }
+        const PcPakEntry &e = g_pc_toc[r1];
+        if (e.offset + e.length > g_pc_pak.size()) { cpu_instance.registers[0].word = 0; break; }
+        cpu_instance.registers[0].word =
+            static_cast<uint16_t>(ppu_write(r2, &g_pc_pak[e.offset], e.length));
+        break;
+    }
+    case SYSCALL_PPU_UPLOAD: // 15: R1=ppu_addr R2=cpu_src R3=len -> R0 = bytes copied CPU->PPU RAM
+    {
+        uint32_t len = std::min<uint32_t>(r3, 65536u - r2);
+        cpu_instance.registers[0].word =
+            static_cast<uint16_t>(ppu_write(r1, &cpu_instance.memory[r2], len));
+        break;
+    }
     default:
         break;
     }

@@ -234,6 +234,35 @@ static void handle_syscall(uint16_t num)
             emu_request_present();
         break;
     }
+    case SYSCALL_PPU_DMA: // 14: R1=pak_id R2=ppu_addr -> R0 = bytes streamed pak(flash)->PPU RAM
+    {
+        if ((int)r1 >= g_asset_count) { cpu_instance.registers[0].word = 0; break; }
+        TocEntry &e = g_toc[r1];
+        File f = storage::open_ro(g_pak_path);
+        if (!f) { cpu_instance.registers[0].word = 0; break; }
+        f.seek(e.offset);
+        uint8_t buf[512];
+        uint32_t off = 0, total = 0;
+        while (off < e.length)
+        {
+            uint32_t want = e.length - off;
+            if (want > sizeof(buf)) want = sizeof(buf);
+            size_t got = f.read(buf, want);
+            if (got == 0) break;
+            total += ppu_write(r2 + off, buf, (uint32_t)got);
+            off += got;
+        }
+        f.close();
+        cpu_instance.registers[0].word = (uint16_t)total;
+        break;
+    }
+    case SYSCALL_PPU_UPLOAD: // 15: R1=ppu_addr R2=cpu_src R3=len -> R0 = bytes copied CPU->PPU RAM
+    {
+        uint32_t len = r3;
+        if ((uint32_t)r2 + len > 65536u) len = 65536u - r2;
+        cpu_instance.registers[0].word = (uint16_t)ppu_write(r1, &cpu_instance.memory[r2], len);
+        break;
+    }
     default:
         break;
     }

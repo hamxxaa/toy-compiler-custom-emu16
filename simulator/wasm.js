@@ -43,6 +43,9 @@ class EmuCore {
         this._assetBuf      = module.cwrap('emu_asset_buf',         'number', []);
         this._assetCap      = module.cwrap('emu_asset_capacity',    'number', []);
         this._commitAsset   = module.cwrap('emu_commit_asset_pack', null,     ['number']);
+        // PPU display bridge (PPU reboot): drawn instead of VRAM once a ROM engages the PPU.
+        this._ppuEngaged  = module.cwrap('emu_ppu_engaged',     'number', []);
+        this._ppuFbPtr    = module.cwrap('emu_ppu_framebuffer', 'number', []);
 
         this.memPtr = 0;
         this.instructionCount = 0;
@@ -71,6 +74,22 @@ class EmuCore {
     }
 
     getRegWord(i) { return this._reg(i & 7); }
+
+    // --- PPU display ---
+    // True once the running ROM has driven the PPU (submitted a PRESENT). The app then draws the
+    // PPU's composed frame instead of the legacy VRAM+PRAM path. The try/catch means a STALE cached
+    // emu.wasm (built before these exports existed) degrades to the VRAM path instead of throwing and
+    // bricking the whole sim — if the PPU demo shows black, hard-refresh to pick up the fresh wasm.
+    ppuEngaged() {
+        try { return this._ppuEngaged() === 1; } catch (e) { return false; }
+    }
+
+    // A live view of the PPU's converted RGB565 framebuffer (SCREEN_WIDTH*SCREEN_HEIGHT). The C side
+    // fills it from the indexed frame + palette on each call; the returned pointer is 2-byte aligned.
+    ppuFramebuffer() {
+        const ptr = this._ppuFbPtr();
+        return new Uint16Array(this.m.HEAPU8.buffer, ptr, SCREEN_WIDTH * SCREEN_HEIGHT);
+    }
 
     get pc()      { return this._pcF(); }
     get flags()   { return this._flagsF(); }

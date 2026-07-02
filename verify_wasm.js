@@ -29,6 +29,13 @@ const TESTS = [
     ['test_switch', 427],
     // PPU reboot Phase 0: the command-buffer seam (SYSCALL_PPU_SUBMIT -> PPU decode) runs on WASM too.
     ['test_ppu_backdrop', 1565],
+    // Phase 1: bulk upload into PPU RAM + scroll encoding (test_ppu_dma is pc_emu-only — needs a pak).
+    ['test_ppu_tiles', 264],
+    // Phase 2: OAM sprite encoding.
+    ['test_ppu_sprites', 4178],
+    // Phase 3: text-plane/palette encoding + CPU-side tile collision.
+    ['test_ppu_text', 3764],
+    ['test_ppu_collide', 31],
     // Event foundation (guest libs; deterministic — test_flags uses save/load so it's pc_emu-only).
     ['test_dialog', 7], ['test_zone', 31], ['test_interact', 127], ['test_events', 255],
 ];

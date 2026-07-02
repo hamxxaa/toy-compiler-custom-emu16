@@ -9,13 +9,10 @@
 #pragma once
 #include <cstdint>
 
-// Bulk-upload targets for sys_ppu_dma / sys_ppu_upload (a byte offset addresses within each).
-enum {
-    PPU_TARGET_PAT     = 0,   // pat[128][256]  — 16x16 full-color patterns (tiles + sprites)
-    PPU_TARGET_FONT    = 1,   // font[128][8]   — 8x8 1-bit glyphs
-    PPU_TARGET_TILEMAP = 2,   // tilemap[32*32] — bg tile ids (torus)
-    PPU_TARGET_PAL     = 3,   // pal[256]       — RGB565, little-endian
-};
+// The PPU's graphics RAM is one flat, byte-addressed array (see the memory map + region offsets in
+// ppu.cpp), exactly like the CPU's memory[]. Bulk uploads target a flat PPU address; the CPU-side
+// region base constants (PPU_PAT / PPU_FONT / PPU_TILEMAP / PPU_PAL in lib/ppu.lib) name those
+// addresses and MUST match ppu.cpp.
 
 // Reset all PPU graphics RAM + state. Called from initialize_cpu() so every host (pc_emu / WASM /
 // firmware) resets the PPU together with the CPU.
@@ -27,10 +24,9 @@ void ppu_reset();
 // Returns true if the stream ended in PRESENT (a frame was composed).
 bool ppu_receive(const uint8_t* src, int len);
 
-// Bulk region write (sys_ppu_upload / the local half of sys_ppu_dma): copy `len` bytes from `src`
-// (CPU memory) into PPU region `target` at byte offset `dst_off`. Bounds-checked to the region;
-// returns the number of bytes actually written.
-uint32_t ppu_write_region(uint8_t target, uint32_t dst_off, const uint8_t* src, uint32_t len);
+// Bulk write into PPU RAM (sys_ppu_upload from CPU memory / sys_ppu_dma from the pak): copy `len`
+// bytes from `src` to flat PPU address `addr`. Bounds-checked; returns the number of bytes written.
+uint32_t ppu_write(uint32_t addr, const uint8_t* src, uint32_t len);
 
 // Display driver (the PPU owns the display, I4): convert the composed indexed framebuffer to
 // RGB565 through the PPU palette. `out` must hold SCREEN_WIDTH*SCREEN_HEIGHT uint16_t.

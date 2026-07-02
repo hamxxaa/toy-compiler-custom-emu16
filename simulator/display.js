@@ -87,6 +87,24 @@ class Display {
     }
 
     /**
+     * Render a pre-composed RGB565 framebuffer straight to the canvas (the PPU path).
+     * `fb565` is a Uint16Array of SCREEN_WIDTH*SCREEN_HEIGHT already-palette-mapped colors,
+     * so there is no VRAM/PRAM lookup — the PPU did the compositing.
+     */
+    renderPPU(fb565) {
+        const { VRAM_SIZE } = window.EMU_CONSTANTS;
+        for (let i = 0; i < VRAM_SIZE; i++) {
+            const [r, g, b] = Display.rgb565toRGB888(fb565[i]);
+            const o = i * 4;
+            this.pixels[o]     = r;
+            this.pixels[o + 1] = g;
+            this.pixels[o + 2] = b;
+            this.pixels[o + 3] = 255;
+        }
+        this.ctx.putImageData(this.imageData, 0, 0);
+    }
+
+    /**
      * Clear the display to black
      */
     clear() {

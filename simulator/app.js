@@ -146,7 +146,7 @@ class App {
 
         this.romLoaded = true;
         this._showStatus(`Loaded: ${entry.name} (${entry.bytes.length} bytes)`, 'success');
-        this.display.render(this.cpu.memory);
+        this._renderFrame();
         this.debug.update(this.cpu);
 
         const dropZone = document.getElementById('drop-zone');
@@ -207,6 +207,16 @@ class App {
         this._updateControlState();
     }
 
+    // Draw the current frame: the PPU's composed output once a ROM engages it, else the legacy
+    // VRAM+PRAM path. Both coexist while the PPU reboot is phased in.
+    _renderFrame() {
+        if (this.cpu.ppuEngaged && this.cpu.ppuEngaged()) {
+            this.display.renderPPU(this.cpu.ppuFramebuffer());
+        } else {
+            this.display.render(this.cpu.memory);
+        }
+    }
+
     stepFrame() {
         if (!this.romLoaded) return;
         this.pause();
@@ -215,7 +225,7 @@ class App {
         const { INPUT_ADDRESS } = window.EMU_CONSTANTS;
         this.cpu.memory[INPUT_ADDRESS] = this.input.getState();
         this.cpu.runBatch(this.instructionsPerFrame);
-        this.display.render(this.cpu.memory);
+        this._renderFrame();
         this.debug.update(this.cpu);
 
         if (!this.cpu.running) {
@@ -256,7 +266,7 @@ class App {
         const stillRunning = this.cpu.runBatch(this.instructionsPerFrame);
 
         // 3. Render display
-        this.display.render(this.cpu.memory);
+        this._renderFrame();
 
         // 4. Update debug panel (throttled to avoid DOM thrashing)
         this.frameCount++;
