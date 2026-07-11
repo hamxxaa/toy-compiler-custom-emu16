@@ -15,14 +15,11 @@ const ROM_DIR = path.join(__dirname, 'build', 'roms');
 const TESTS = [
     ['test_mul', 42], ['test_div', 6], ['test_byte', 300],
     ['test_asm', 42], ['test_asm_loop', 15], ['test_include', 42],
-    ['test_plot', 99], ['test_fill', 7], ['test_palette', 1234],
-    ['demo', 42], ['test_hex', 255], ['test_array_int', 42],
     ['test_array_byte', 7], ['test_pointer', 99], ['test_deref_write', 77],
     ['test_bitand', 11], ['test_bitor', 255], ['test_bitxor', 240],
     ['test_bitnot', 255], ['test_shift', 36], ['test_logical', 3],
     ['test_else', 2], ['test_elseif', 30],
     // Font rendering: proves the font ships in the ROM (no host load) and renders on WASM.
-    ['test_draw_char', 1], ['test_draw_string', 1],
     // M7d: the browser syscall handler now implements echo (0x7F), so the interrupt path verifies on WASM.
     ['test_syscall_echo', 42],
     // Phase 0: the O(1) switch jump table exercises JMP register-mode (the one shared-core ISA change).
@@ -34,10 +31,9 @@ const TESTS = [
     // Phase 2: OAM sprite encoding.
     ['test_ppu_sprites', 4178],
     // Phase 3: text-plane/palette encoding + CPU-side tile collision.
-    ['test_ppu_text', 3764],
+    ['test_ppu_text', 4786],
     ['test_ppu_collide', 31],
     // Event foundation (guest libs; deterministic — test_flags uses save/load so it's pc_emu-only).
-    ['test_dialog', 7], ['test_zone', 31], ['test_interact', 127], ['test_events', 255],
 ];
 
 (async () => {

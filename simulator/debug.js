@@ -9,7 +9,9 @@ class DebugPanel {
     constructor() {
         this.memoryViewAddress = 0x0000;
         this.memoryViewSize = 256;  // bytes to show
+        this.ppuViewAddress = (window.EMU_CONSTANTS.PPU && window.EMU_CONSTANTS.PPU.TILEMAP) || 0x8400;
         this._setupMemoryViewer();
+        this._setupPPUMemoryViewer();
     }
 
     _setupMemoryViewer() {
@@ -42,14 +44,37 @@ class DebugPanel {
         });
     }
 
+    _setupPPUMemoryViewer() {
+        const addrInput = document.getElementById('ppu-mem-address');
+        const apply = (raw) => {
+            const val = parseInt(raw, 16);
+            if (!isNaN(val) && val >= 0 && val <= 0xFFFF) this.ppuViewAddress = val;
+        };
+        if (addrInput) {
+            addrInput.addEventListener('change', (e) => apply(e.target.value));
+            addrInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') apply(e.target.value); });
+        }
+        document.querySelectorAll('.ppu-mem-jump').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.ppuViewAddress = parseInt(btn.dataset.addr, 16);
+                if (addrInput) addrInput.value = this.ppuViewAddress.toString(16).toUpperCase().padStart(4, '0');
+            });
+        });
+    }
+
     /**
-     * Update all debug displays
+     * Update all debug displays. `isRunning` is the App's sim-loop flag; when given, it drives the
+     * RUNNING/HALTED label instead of cpu.running. The raw core flag is legitimately false in the
+     * instant right after every PRESENT yield (it resumes on the next runBatch), so using it
+     * directly made the status flicker to HALTED on almost every sample even while the game runs
+     * fine -- isRunning reflects "is the app still driving frames", which is what this label means.
      */
-    update(cpu) {
+    update(cpu, isRunning) {
         this._updateRegisters(cpu);
         this._updateFlags(cpu);
-        this._updateStatus(cpu);
+        this._updateStatus(cpu, isRunning);
         this._updateMemory(cpu);
+        this._updatePPU(cpu);
     }
 
     _updateRegisters(cpu) {
@@ -89,10 +114,11 @@ class DebugPanel {
         }
     }
 
-    _updateStatus(cpu) {
+    _updateStatus(cpu, isRunning) {
         const statusEl = document.getElementById('cpu-status');
         if (statusEl) {
-            if (cpu.running) {
+            const running = isRunning !== undefined ? isRunning : cpu.running;
+            if (running) {
                 statusEl.textContent = 'RUNNING';
                 statusEl.className = 'status-value running';
             } else {
@@ -132,6 +158,44 @@ class DebugPanel {
         }
 
         memEl.textContent = lines.join('\n');
+    }
+
+    /**
+     * PPU state (scroll + sprite count, decoded from the REGS region) and the PPU RAM hex viewer.
+     * Reads the PPU's own graphics RAM (separate from CPU memory) via cpu.ppuMem().
+     */
+    _updatePPU(cpu) {
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        const mem = cpu.ppuMem ? cpu.ppuMem() : null;
+        if (!mem) {
+            set('ppu-scroll-x', '—'); set('ppu-scroll-y', '—'); set('ppu-oam-count', '—');
+            return;
+        }
+        const C = window.EMU_CONSTANTS.PPU;
+        const rd16 = (a) => mem[a] | (mem[a + 1] << 8);
+        set('ppu-scroll-x', rd16(C.REG_SCROLL_X));
+        set('ppu-scroll-y', rd16(C.REG_SCROLL_Y));
+        set('ppu-oam-count', mem[C.REG_OAM_COUNT]);
+
+        const el = document.getElementById('ppu-mem-viewer');
+        if (!el) return;
+        const size = mem.length;
+        const start = this.ppuViewAddress & 0xFFF0;
+        const lines = [];
+        for (let row = 0; row < 16; row++) {
+            const addr = start + row * 16;
+            if (addr >= size) break;
+            let hex = '', ascii = '';
+            for (let col = 0; col < 16; col++) {
+                const a = addr + col;
+                const byte = a < size ? mem[a] : 0;
+                hex += byte.toString(16).toUpperCase().padStart(2, '0');
+                if (col < 15) hex += ' ';
+                ascii += (byte >= 0x20 && byte <= 0x7E) ? String.fromCharCode(byte) : '.';
+            }
+            lines.push(`${addr.toString(16).toUpperCase().padStart(4, '0')}  ${hex}  ${ascii}`);
+        }
+        el.textContent = lines.join('\n');
     }
 
     /**

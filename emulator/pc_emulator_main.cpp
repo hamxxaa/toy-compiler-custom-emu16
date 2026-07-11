@@ -390,6 +390,7 @@ int main(int argc, char **argv)
     fs::path output_dir = fs::path("build") / "pc_emulator";
     int frame_limit = 1;
     bool use_menu_handler = false;
+    int hold_input = -1;   // --hold-input N: force the INPUT byte to N every frame (headless input sim)
 
     for (int i = 1; i < argc; ++i)
     {
@@ -409,6 +410,10 @@ int main(int argc, char **argv)
         else if (argument == "--menu")
         {
             use_menu_handler = true;
+        }
+        else if (argument == "--hold-input" && i + 1 < argc)
+        {
+            hold_input = std::stoi(argv[++i], nullptr, 0);   // e.g. 4 = RIGHT held (camera scrolls)
         }
         else if (argument == "--help" || argument == "-h")
         {
@@ -478,6 +483,8 @@ int main(int argc, char **argv)
 
     while (completed_frames < frame_limit)
     {
+        if (hold_input >= 0)
+            cpu_instance.memory[INPUT_ADDRESS] = static_cast<uint8_t>(hold_input);   // simulate a held button
         run_frame_instructions();
         ++instruction_batches;
         present_frame(framebuffer);

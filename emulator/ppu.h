@@ -35,3 +35,10 @@ void ppu_convert_rgb565(uint16_t* out);
 // True once the PPU has composed at least one frame since reset. Hosts use this to display the
 // PPU output instead of the legacy VRAM framebuffer while both paths coexist (phases 0-3).
 bool ppu_engaged();
+
+// Debug/host access to the PPU's raw graphics RAM: a pointer to the flat array + its size. This is
+// NOT part of the render path — it's a host-side inspection seam (the simulator's PPU memory viewer;
+// on 2-chip hardware it would be an SPI debug read). It does not violate I1 (which is about the PPU
+// never reading the CPU's memory[], not the host peeking into PPU RAM for tooling).
+uint8_t* ppu_mem();
+uint32_t ppu_mem_size();

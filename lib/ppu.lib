@@ -12,23 +12,32 @@
 //
 // Phase 0 covers the seam: the buffer, the byte writers, PAL(backdrop), and submit/present.
 // Command wire format (little-endian, terminated by PRESENT) — see tiling-scrolling-ricoh.md:
-//     0x01 SET_REG [reg:1][val:2]              0x04 TEXT    [x,y,w,h][w*h x {glyph,color}]
+//     0x01 SET_REG [reg:1][val:2]              0x04 TEXT    [x,y,w,h][w*h x {glyph,fg,bg}]
 //     0x02 OAM     [count:1][count x sprite]   0x05 PAL     [first:1][count:1][count x rgb565:2]
 //     0x03 TM_EDIT [x,y,w,h][w*h tiles]        0x06 PRESENT []
+// TEXT bg byte: PPU_TEXT_NO_BG (255) = transparent (only the glyph's "on" pixels are drawn, e.g. HUD
+// text over the game world); any other value paints that color for the glyph's "off" pixels too, so
+// the whole cell is opaque (dialog boxes -- see tile_text_bg).
 {
     var byte ppu_cmd[2048];   // per-frame command buffer (matches the PPU's 2 KB inbound buffer)
     var int  ppu_clen;        // bytes filled so far
     var byte oam_sh[384];     // OAM shadow: up to 64 sprites x 6 bytes {pat, x:i16, y:i16, attr}
     var int  oam_n;           // active sprites in the shadow this frame
     var byte ppu_solid8[8] = { 255, 255, 255, 255, 255, 255, 255, 255 };  // GLYPH_SOLID bitmap
+    var byte ppu_blank8[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };                  // GLYPH_BLANK bitmap
+    var byte ppu_numbuf[8];   // scratch for tile_number
 
     // Flat PPU-RAM addresses for bulk uploads/DMA. These name regions in the PPU's own byte-addressed
     // graphics RAM and MUST match the memory map in emulator/ppu.cpp.
-    const PPU_PAT     = 0x0000;   // 128 x 256-byte 16x16 patterns (tiles + sprites)
-    const PPU_FONT    = 0x8000;   // 128 x 8-byte 1-bit glyphs
-    const PPU_TILEMAP = 0x8400;   // 32x32 bg tile ids (torus)
-    const PPU_PAL     = 0x8C00;   // 256 x RGB565
+    const PPU_PAT      = 0x0000;   // 128 x 256-byte 16x16 patterns (tiles + sprites)
+    const PPU_FONT     = 0x8000;   // 128 x 8-byte 1-bit glyphs
+    const PPU_TILEMAP  = 0x8400;   // 32x32 background tile ids (torus)
+    const PPU_PAL      = 0x8D40;   // 256 x RGB565 (shifted from 0x8C00 by the TEXTMAP growing to 3 B/cell)
     const GLYPH_SOLID = 96;       // font slot 96 = a full 8x8 block (dialog-box fill; see ppu_upload_font)
+    const GLYPH_BLANK = 97;       // font slot 97 = an all-zero-bits glyph, DISTINCT from slot 0's "empty
+                                   // cell, skip entirely" sentinel -- lets tile_text_bg give a space
+                                   // character a solid bg fill instead of leaving it transparent.
+    const PPU_NO_BG   = 255;      // TEXT bg sentinel: transparent (leaves the pixel beneath untouched)
 
     // num 13 = PPU_SUBMIT: buf->R1, len->R2. Executes the command stream on the PPU; if it ends in
     // PRESENT the host composes the frame, converts it to the display, and paces to the frame rate.
@@ -144,33 +153,70 @@
         return i;
     }
 
-    // Write a NUL-terminated string into the text plane at cell (cx,cy) in `color` (one TEXT command).
-    // Clipped to the 20-cell row width so it can't spill into the next region.
+    // Write a NUL-terminated string into the text plane at cell (cx,cy) in `color`, transparent
+    // background (HUD text drawn over the game world). Clipped to the 20-cell row width.
     void tile_text(int cx, int cy, int s, int color) {
-        var int n; var int i;
+        tile_text_bg(cx, cy, s, color, PPU_NO_BG);
+    }
+
+    // Same as tile_text, but the glyph's "off" pixels are painted `bg` too (opaque cell) instead of
+    // left transparent -- use this for dialog/menu text so letters don't show the tilemap through the
+    // gaps between strokes. `tile_fill` beneath it still needs to cover the non-text rows of the box.
+    //
+    // A space character maps to glyph slot 0 (ascii 32 - 32), which is ALSO the "empty cell, skip
+    // entirely" sentinel compose_text uses -- so a plain glyph-0 space would stay transparent even
+    // here, leaving a gap. Substitute GLYPH_BLANK (a real, all-zero-bits glyph at a different slot)
+    // for spaces so the bg fill still applies to them.
+    void tile_text_bg(int cx, int cy, int s, int fg, int bg) {
+        var int n; var int i; var int glyph;
         n = ppu_strlen(s);
         if cx + n > 20 { n = 20 - cx; }
         if n <= 0 { return; }
         cu8(4); cu8(cx); cu8(cy); cu8(n); cu8(1);
         i = 0;
         while i < n {
-            cu8(ppu_rdbyte(s + i) - 32);   // ascii -> glyph slot
-            cu8(color);
+            glyph = ppu_rdbyte(s + i) - 32;   // ascii -> glyph slot
+            if glyph == 0 { if bg != PPU_NO_BG { glyph = GLYPH_BLANK; } }
+            cu8(glyph);
+            cu8(fg);
+            cu8(bg);
             i = i + 1;
         }
     }
 
     // Fill a w x h block of text cells with one glyph/color (dialog box body = GLYPH_SOLID; erase = 0).
+    // bg is irrelevant for GLYPH_SOLID (no "off" pixels to color) but still sent for wire-format
+    // uniformity; pass PPU_NO_BG.
     void tile_fill(int cx, int cy, int w, int h, int glyph, int color) {
         var int n; var int i;
         cu8(4); cu8(cx); cu8(cy); cu8(w); cu8(h);
         n = w * h; i = 0;
-        while i < n { cu8(glyph); cu8(color); i = i + 1; }
+        while i < n { cu8(glyph); cu8(color); cu8(PPU_NO_BG); i = i + 1; }
     }
 
     // Clear a block of text cells (glyph 0 = empty), e.g. to dismiss a dialog/HUD region.
     void tile_clear(int cx, int cy, int w, int h) {
         tile_fill(cx, cy, w, h, 0, 0);
+    }
+
+    // Write a decimal integer into the text plane at cell (cx,cy) in `color` (HUD scores/counters).
+    void tile_number(int cx, int cy, int n, int color) {
+        var int i; var int neg; var int d; var int a; var int b; var int t;
+        i = 0; neg = 0;
+        if n < 0 { neg = 1; n = 0 - n; }
+        if n == 0 {
+            ppu_numbuf[0] = 48; ppu_numbuf[1] = 0;   // "0"
+        } else {
+            while n > 0 { d = n % 10; ppu_numbuf[i] = 48 + d; n = n / 10; i = i + 1; }
+            if neg == 1 { ppu_numbuf[i] = 45; i = i + 1; }   // '-'
+            ppu_numbuf[i] = 0;
+            a = 0; b = i - 1;                          // reverse the digits in place
+            while a < b {
+                t = ppu_numbuf[a]; ppu_numbuf[a] = ppu_numbuf[b]; ppu_numbuf[b] = t;
+                a = a + 1; b = b - 1;
+            }
+        }
+        tile_text(cx, cy, &ppu_numbuf, color);
     }
 
     // ── Palette (live effects) ───────────────────────────────────────────────────────────────────
@@ -185,6 +231,7 @@
     void ppu_upload_font(int src) {
         sys_ppu_upload(PPU_FONT, src, 768);
         sys_ppu_upload(PPU_FONT + GLYPH_SOLID * 8, &ppu_solid8, 8);
+        sys_ppu_upload(PPU_FONT + GLYPH_BLANK * 8, &ppu_blank8, 8);
     }
 
     // ── Tile collision (CPU-side, the source of truth — invariant I1: the PPU never sees this) ──────

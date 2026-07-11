@@ -1,18 +1,13 @@
-// lib/event.lib -- event foundation v1: state + UI (scene-independent).
+// lib/event.lib -- event state (scene-independent): 256 one-bit, save-backed flags.
 //
-// Two of the four event primitives live here because they don't need the scene cast:
-//   * flags  -- 256 one-bit, save-backed state (one-time events, gated doors, branching dialog)
-//   * dialog -- a blocking text box (signs, NPC lines); the game freezes the world while it's open
-// The other two -- interact ("what am I facing") and zones (edge-triggered world rects) -- query the
-// object cast, so they live in scene.lib alongside obj_overlap_box / scene_refresh.
+// Flags are the spine of events: one-time triggers, gated doors, branching dialog, saved progress.
+// Events themselves are GAME functions, dispatched by a `switch` on an id (the O(1) jump table).
 //
-// Events themselves are GAME functions, dispatched by a `switch` on the object/zone id (the O(1)
-// jump table). Depends only on text.lib (the dialog box) + io.lib (buttons / fill_rect), so a
-// menu/non-scene game can use flags + dialog without pulling the sprite engine.
+// (The old blocking dialog box + interact/zone helpers lived here and in scene.lib on the legacy
+// VRAM renderer; on the PPU model a dialog is a text-plane rectangle -- see lib/ppu.lib's
+// tile_fill/tile_text -- and interact/zones are simple CPU-side checks a game writes directly.)
 include "../lib/sys.lib";       // sys_save / sys_load (flag persistence)
-include "../lib/text.lib";      // draw_text_box / draw_wrapped + (via io.lib) buttons / fill_rect
 {
-    // ---- flags : 256 one-bit flags, bit-packed into 32 bytes (a tiny save blob) ------------------
     const NUM_FLAGS  = 256;
     const FLAG_BYTES = 32;
     var byte flags[FLAG_BYTES];
@@ -40,31 +35,4 @@ include "../lib/text.lib";      // draw_text_box / draw_wrapped + (via io.lib) b
     // Persist the flag blob (the spine of a save). Games that save more state bundle their own struct.
     void flags_save(int slot) { sys_save(&flags, FLAG_BYTES, slot); }
     void flags_load(int slot) { sys_load(&flags, FLAG_BYTES, slot); }
-
-    // ---- dialog : a blocking text box over text.lib ----------------------------------------------
-    // The box is a filled panel + border + word-wrapped text. v1 shows text instantly and advances
-    // one box per A-press; chain dialog_open() calls (open the next on close) for multi-line speech.
-    const DLG_X = 6;  const DLG_Y = 92;  const DLG_W = 148; const DLG_H = 32;
-    var int dlg_panel  = 1;     // background fill colour index
-    var int dlg_border = 21;    // border colour index
-    var int dlg_text   = 21;    // text colour index
-    var int dlg_on;             // 1 while a box is open
-    var int dlg_str;            // address of the current NUL-terminated message
-
-    void dialog_style(int panel, int border, int text) {
-        dlg_panel = panel; dlg_border = border; dlg_text = text;
-    }
-    void dialog_open(int str) { dlg_str = str; dlg_on = 1; }
-    int  dialog_active() { return dlg_on; }
-
-    // Call once per frame WHILE active (the game freezes gameplay + skips scene_render so the world
-    // holds still behind the box). A closes it. The game watches the active->inactive edge and calls
-    // scene_refresh() to wipe the box. (Typewriter + multi-page paging are v1+.)
-    void dialog_update() {
-        if dlg_on == 0 { return; }
-        if button_pressed(BTN_A) { dlg_on = 0; return; }     // closed; box cleared by scene_refresh
-        fill_rect(DLG_X, DLG_Y, DLG_W, DLG_H, dlg_panel);
-        draw_text_box(DLG_X, DLG_Y, DLG_W, DLG_H, dlg_border);
-        draw_wrapped(dlg_str, DLG_X + 4, DLG_Y + 4, (DLG_W - 8) / 8, (DLG_H - 8) / 8, dlg_text);
-    }
 }

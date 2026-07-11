@@ -1,8 +1,0 @@
-include "../lib/io.lib";
-
-{
-    int main() {
-        plot(5, 0, 99);
-        return peek_byte(VRAM_START + 5);
-    }
-}

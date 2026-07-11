@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="EMU16 CPU Simulator — Browser-based testing environment for the custom 16-bit CPU and toy compiler">
     <title>EMU16 Simulator</title>
-    <link rel="stylesheet" href="index.css">
+    <!-- Cache-busted like the scripts below (see that comment) -- a stale cached stylesheet during
+         active CSS work makes a real fix look like "nothing changed", with nothing to signal why. -->
+    <script>document.write('<link rel="stylesheet" href="index.css?v=' + Date.now() + '">');</script>
 </head>
 <body>
     <div class="app-container">
@@ -31,8 +33,8 @@
                 <!-- ROM Drop Zone -->
                 <div id="drop-zone" class="drop-zone">
                     <div class="drop-icon">📁</div>
-                    <div class="drop-text">Drop .rom file here or click to browse</div>
-                    <input type="file" id="rom-file" accept=".rom,.bin">
+                    <div class="drop-text">Drop .rom (+ matching .pak, if any) here or click to browse</div>
+                    <input type="file" id="rom-file" accept=".rom,.bin,.pak" multiple>
                 </div>
 
                 <!-- Screen -->
@@ -58,10 +60,21 @@
                         <span class="icon">↺</span> Reset
                     </button>
 
+                    <div class="fps-control">
+                        <label>FPS cap:</label>
+                        <select id="fps-cap">
+                            <option value="auto" selected>Auto</option>
+                            <option value="30">30</option>
+                            <option value="60">60</option>
+                            <option value="120">120</option>
+                            <option value="0">Uncap</option>
+                        </select>
+                    </div>
+
                     <div class="speed-control">
-                        <label>Speed:</label>
-                        <input type="range" id="speed-slider" min="0" max="100" value="66">
-                        <span id="speed-label">100K</span>
+                        <label title="Max instructions the emulator runs per frame — simulates CPU power (the ESP does ≈31K/frame)">CPU:</label>
+                        <input type="range" id="speed-slider" min="0" max="100" value="82">
+                        <span id="speed-label">60K/f</span>
                     </div>
                 </div>
 
@@ -120,6 +133,35 @@
                     </div>
                 </div>
 
+                <!-- Performance (real-time) -->
+                <div class="debug-section">
+                    <div class="debug-section-header">Performance</div>
+                    <div class="debug-section-body">
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="status-label">FPS</span>
+                                <span id="stat-fps" class="status-value" style="color: var(--cyan);">0</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">Target</span>
+                                <span id="stat-fps-target" class="status-value">60</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">Instr/s</span>
+                                <span id="stat-ips" class="status-value">0</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">Instr/frame</span>
+                                <span id="stat-ipf" class="status-value">0</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">CPU budget</span>
+                                <span id="stat-budget" class="status-value">60K/f</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Registers -->
                 <div class="debug-section">
                     <div class="debug-section-header">Registers</div>
@@ -173,20 +215,51 @@
                     </div>
                 </div>
 
-                <!-- Memory Viewer -->
+                <!-- CPU Memory Viewer -->
                 <div class="debug-section">
-                    <div class="debug-section-header">Memory</div>
+                    <div class="debug-section-header">CPU Memory</div>
                     <div class="debug-section-body">
                         <div class="mem-controls">
                             <label>Addr:</label>
                             <input type="text" id="mem-address" value="0000" maxlength="4" spellcheck="false">
                             <button class="mem-jump" data-addr="0000">Code</button>
-                            <button class="mem-jump" data-addr="9000">ROM</button>
+                            <button class="mem-jump" data-addr="0008">Data</button>
+                            <button class="mem-jump" data-addr="ADF0">Stack</button>
                             <button class="mem-jump" data-addr="ADFF">Input</button>
-                            <button class="mem-jump" data-addr="AE00">PRAM</button>
-                            <button class="mem-jump" data-addr="B000">VRAM</button>
                         </div>
                         <pre id="mem-viewer"></pre>
+                    </div>
+                </div>
+
+                <!-- PPU State + Memory Viewer -->
+                <div class="debug-section">
+                    <div class="debug-section-header">PPU</div>
+                    <div class="debug-section-body">
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="status-label">Scroll X</span>
+                                <span id="ppu-scroll-x" class="status-value">0</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">Scroll Y</span>
+                                <span id="ppu-scroll-y" class="status-value">0</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">Sprites</span>
+                                <span id="ppu-oam-count" class="status-value">0</span>
+                            </div>
+                        </div>
+                        <div class="mem-controls">
+                            <label>Addr:</label>
+                            <input type="text" id="ppu-mem-address" value="8400" maxlength="4" spellcheck="false">
+                            <button class="ppu-mem-jump" data-addr="0000">PAT</button>
+                            <button class="ppu-mem-jump" data-addr="8000">FONT</button>
+                            <button class="ppu-mem-jump" data-addr="8400">TILE</button>
+                            <button class="ppu-mem-jump" data-addr="8800">TEXT</button>
+                            <button class="ppu-mem-jump" data-addr="8BC0">OAM</button>
+                            <button class="ppu-mem-jump" data-addr="8D40">PAL</button>
+                        </div>
+                        <pre id="ppu-mem-viewer"></pre>
                     </div>
                 </div>
 
@@ -222,12 +295,19 @@
         </div>
     </div>
 
-    <!-- Scripts (order matters: dependencies first) -->
-    <script src="emu.js"></script>      <!-- Emscripten glue (defines createEmu); built from emu.cpp -->
-    <script src="wasm.js"></script>     <!-- EmuCore shim + EMU_CONSTANTS -->
-    <script src="display.js"></script>
-    <script src="input.js"></script>
-    <script src="debug.js"></script>
-    <script src="app.js"></script>
+    <!-- Scripts (order matters: dependencies first). ALL of them are cache-busted (document.write
+         with a fresh ?v= each load), not just emu.js: this project edits app.js/debug.js/etc. during
+         active dev sessions just as often as it rebuilds the WASM core, and the browser's HTTP cache
+         can silently keep serving an old copy of any of them with no error -- a real fix just looks
+         like "nothing changed". emu.js has the extra wrinkle that a stale copy can miss new WASM
+         exports or run against an old PPU memory layout, producing a solid-black screen; app.js also
+         cache-busts the emu.wasm fetch itself (emu.js's internal locateFile ignores this tag's own
+         query string, so both need busting). -->
+    <script>document.write('<script src="emu.js?v=' + Date.now() + '"><\/script>');</script>
+    <script>document.write('<script src="wasm.js?v=' + Date.now() + '"><\/script>');</script>
+    <script>document.write('<script src="display.js?v=' + Date.now() + '"><\/script>');</script>
+    <script>document.write('<script src="input.js?v=' + Date.now() + '"><\/script>');</script>
+    <script>document.write('<script src="debug.js?v=' + Date.now() + '"><\/script>');</script>
+    <script>document.write('<script src="app.js?v=' + Date.now() + '"><\/script>');</script>
 </body>
 </html>

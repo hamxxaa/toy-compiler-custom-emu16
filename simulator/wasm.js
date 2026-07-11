@@ -10,7 +10,7 @@
  * no changes beyond construction.
  */
 
-// Memory layout constants (from definitions.h) — kept here so the rest of the
+// CPU memory-map constants (from definitions.h) — kept here so the rest of the
 // frontend keeps reading window.EMU_CONSTANTS exactly as before.
 const INPUT_ADDRESS       = 0xADFF;
 const VRAM_START_ADDRESS  = 0xB000;
@@ -21,6 +21,22 @@ const MAX_RAM_ADDRESS     = 0xFFFF;
 const STACK_START_ADDRESS = 0xADFE;
 const SCREEN_WIDTH        = 160;
 const SCREEN_HEIGHT       = 128;
+const PIXELS              = SCREEN_WIDTH * SCREEN_HEIGHT;   // composed-framebuffer length
+
+// PPU graphics-RAM region offsets — MUST match the memory map in emulator/ppu.cpp. The PPU has its
+// own flat address space (separate from the CPU's), inspected via cpu.ppuMem().
+const PPU = {
+    PAT:      0x0000,   // 128 x 256B 16x16 patterns (tiles + sprites)
+    FONT:     0x8000,   // 128 x 8B 1-bit glyphs
+    TILEMAP:  0x8400,   // 32x32 bg tile ids (torus)
+    TEXTMAP:  0x8800,   // 20x16 cells x 3B {glyph, fg, bg}
+    OAM:      0x8BC0,   // 64 sprites x 6B {pat, x:i16, y:i16, attr}
+    PAL:      0x8D40,   // 256 x RGB565
+    REGS:     0x8F40,   // scroll_x:u16, scroll_y:u16, ctrl:u16, oam_count:u8
+    FB:       0x8F50,   // 160x128 indexed compose target
+    MEM_SIZE: 0xDF50,
+    REG_SCROLL_X: 0x8F40, REG_SCROLL_Y: 0x8F42, REG_CTRL: 0x8F44, REG_OAM_COUNT: 0x8F46,
+};
 
 class EmuCore {
     constructor(module) {
@@ -46,9 +62,22 @@ class EmuCore {
         // PPU display bridge (PPU reboot): drawn instead of VRAM once a ROM engages the PPU.
         this._ppuEngaged  = module.cwrap('emu_ppu_engaged',     'number', []);
         this._ppuFbPtr    = module.cwrap('emu_ppu_framebuffer', 'number', []);
+        // Debug / perf bridge. Wrapped in _opt so a stale cached wasm missing these exports degrades
+        // gracefully (returns 0 / no viewer) instead of throwing at construction.
+        this._ppuMemPtr   = this._opt('emu_ppu_mem',      'number');
+        this._ppuMemSize  = this._opt('emu_ppu_mem_size', 'number');
+        this._didPresent  = this._opt('emu_did_present',  'number');
+        this._instrCount  = this._opt('emu_instr_count',  'number');
 
         this.memPtr = 0;
-        this.instructionCount = 0;
+    }
+
+    // cwrap only if the export exists (older cached wasm may lack it); else a stub returning 0.
+    _opt(name, ret) {
+        try {
+            if (this.m['_' + name]) return this.m.cwrap(name, ret, []);
+        } catch (e) { /* fall through */ }
+        return () => 0;
     }
 
     // Reset core + lay down default palette / cleared VRAM (all done in C), then
@@ -56,7 +85,22 @@ class EmuCore {
     initialize() {
         this._init();
         this.memPtr = this._memPtrF();
-        this.instructionCount = 0;
+    }
+
+    // Real cumulative executed-instruction count (needs -DEMU_COUNT_INSTRUCTIONS in the wasm build;
+    // 0 otherwise). >>>0 keeps it an unsigned 32-bit value so JS-side deltas stay correct.
+    get instructionCount() { return this._instrCount() >>> 0; }
+
+    // True iff the LAST runBatch ended because the ROM presented a frame (vs the per-frame budget
+    // being hit mid-frame, or a genuine halt). Lets the app measure the effective frame rate and
+    // redraw only on a freshly composed frame.
+    presentPending() { return this._didPresent() === 1; }
+
+    // Live view of the PPU's graphics RAM (for the debug memory viewer). null if unavailable.
+    ppuMem() {
+        const p = this._ppuMemPtr(), n = this._ppuMemSize();
+        if (!p || !n) return null;
+        return this.m.HEAPU8.subarray(p, p + n);
     }
 
     // Live view of the 64 KB guest memory. Fresh subarray each access keeps it
@@ -66,11 +110,11 @@ class EmuCore {
         return this.m.HEAPU8.subarray(this.memPtr, this.memPtr + 65536);
     }
 
-    // Run up to `maxInstructions`. Returns true while still running.
+    // Run up to `maxInstructions` (the per-frame CPU budget). Returns true while still running (a
+    // PRESENT yield counts as still-running so the loop keeps pacing). The real executed count is
+    // tracked by the C core, not derived from maxInstructions here.
     runBatch(maxInstructions = 100000) {
-        const still = this._run(maxInstructions | 0);
-        this.instructionCount += maxInstructions | 0;
-        return still === 1;
+        return this._run(maxInstructions | 0) === 1;
     }
 
     getRegWord(i) { return this._reg(i & 7); }
@@ -139,4 +183,6 @@ window.EMU_CONSTANTS = {
     STACK_START_ADDRESS,
     SCREEN_WIDTH,
     SCREEN_HEIGHT,
+    PIXELS,
+    PPU,
 };

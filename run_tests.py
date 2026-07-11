@@ -18,10 +18,6 @@ TESTS = [
     ("tests/test_asm.txt",       "test_asm",       42),
     ("tests/test_asm_loop.txt",  "test_asm_loop",  15),
     ("tests/test_include.txt",   "test_include",   42),
-    ("tests/test_plot.txt",      "test_plot",      99),
-    ("tests/test_fill.txt",      "test_fill",      7),
-    ("tests/test_palette.txt",   "test_palette",   1234),
-    ("tests/demo.txt",           "demo",           42),
     # ── M2 new tests ────────────────────────────────────────────────────────
     ("tests/test_hex.txt",       "test_hex",       255),
     ("tests/test_array_int.txt", "test_array_int", 42),
@@ -38,9 +34,6 @@ TESTS = [
     # ── M4 else / else-if + drop do ───────────────────────────────────────────
     ("tests/test_else.txt",      "test_else",      2),
     ("tests/test_elseif.txt",    "test_elseif",    30),
-    # ── M6 font rendering ─────────────────────────────────────────────────────
-    ("tests/test_draw_char.txt",   "test_draw_char",   1),
-    ("tests/test_draw_string.txt", "test_draw_string", 1),
     # ── Operand-aware codegen regressions (clobber bug class) ──────────────────
     ("tests/test_global_3param.txt", "test_global_3param", 11),
     ("tests/test_cmp_const_clobber.txt", "test_cmp_const_clobber", 6),
@@ -80,42 +73,27 @@ TESTS = [
     # ── PPU reboot Phase 2: OAM sprite encoding ──
     ("tests/test_ppu_sprites.txt",    "test_ppu_sprites",    4178),
     # ── PPU reboot Phase 3: text-plane/palette encoding + CPU-side tile collision ──
-    ("tests/test_ppu_text.txt",       "test_ppu_text",       3764),
+    ("tests/test_ppu_text.txt",       "test_ppu_text",       4786),
     ("tests/test_ppu_collide.txt",    "test_ppu_collide",    31),
-    # ── event foundation (event.lib flags/dialog + scene.lib interact/zones) ──
+    # ── event foundation (event.lib: 256 save-backed flags) ──
     ("tests/test_flags.txt",          "test_flags",          2047),
-    ("tests/test_dialog.txt",         "test_dialog",         7),
-    ("tests/test_zone.txt",           "test_zone",           31),
-    ("tests/test_interact.txt",       "test_interact",       127),
-    ("tests/test_events.txt",         "test_events",         255),
     ("tests/test_string.txt",         "test_string",         26952),
     ("tests/test_struct.txt",         "test_struct",         357),
     ("tests/test_struct_arr.txt",     "test_struct_arr",     35),
-    ("tests/test_text.txt",           "test_text",           505),
     # ── Classes (compile-time objects via clone + name-mangling) ──
     ("tests/test_class_counter.txt",  "test_class_counter",  3),
     ("tests/test_class_self.txt",     "test_class_self",     25),
     ("tests/test_class_compose.txt",  "test_class_compose",  303),
     ("tests/test_class_init.txt",     "test_class_init",     43),
-    # ── Piece E: sprites + palette + animation ──
-    ("tests/test_sprite_color.txt",   "test_sprite_color",   9225),
-    ("tests/test_sprite_color_flip.txt", "test_sprite_color_flip", 2952),
-    ("tests/test_pal_load.txt",       "test_pal_load",       4665),
-    ("tests/test_anim.txt",           "test_anim",           13210),
-    ("tests/test_anim_draw.txt",      "test_anim_draw",      4321),  # auto-packs test_anim_draw.manifest
     # ── sprite-lib Phase 5: per-game frame-rate cap syscall ──
     ("tests/test_set_fps.txt",        "test_set_fps",        42),
-    # ── scene engine: clipped blit + object cast / camera ──
-    ("tests/test_clip_blit.txt",      "test_clip_blit",      1461),
-    ("tests/test_scene.txt",          "test_scene",          2201),
-    ("tests/test_collide.txt",        "test_collide",        777),
-    ("tests/test_combat.txt",         "test_combat",         999),
 ]
 
 # Pure-Python tool tests (no ROM): run as subprocesses, must exit 0.
 TOOL_TESTS = [
     "tests/test_png.py",
     "tests/test_image_import.py",
+    "tests/test_pixel_map.py",
 ]
 
 

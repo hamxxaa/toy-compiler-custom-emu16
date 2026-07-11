@@ -27,22 +27,27 @@ class App {
         this.menuIndex = -1;      // index of menu.rom, used by sys_reset()
         this.currentIndex = -1;   // index of the ROM currently running
 
-        // Performance tracking
-        this.lastFrameTime = 0;
-        this.fps = 0;
-        this.frameCount = 0;
-        this.fpsUpdateInterval = 500;  // ms
-        this.lastFpsUpdate = 0;
+        // Performance tracking (all measured over a rolling ~500ms window)
+        this.fps = 0;     // effective frame rate: game frames PRESENTED per second
+        this.ips = 0;     // instructions per second (real, from the C counter)
+        this.ipf = 0;     // instructions per presented frame
+        this.statsInterval = 500;  // ms
 
-        // Speed control
-        this.instructionsPerFrame = 100000;
+        // FPS cap: 'auto' follows the ROM's sys_set_fps (default 60); a number forces it; 0 = uncapped.
+        this.fpsCap = 'auto';
+
+        // CPU budget: max instructions the emulator runs per real-time frame. Simulates CPU power --
+        // if a game's logical frame needs more instructions than this, it fragments across several
+        // real frames, so the effective FPS drops (models a weaker/overloaded ESP). Default is high
+        // (plenty of headroom); dial it down to test performance.
+        this.instructionsPerFrame = 60000;
 
         this._bindControls();
         this._bindROMLoader();
         this._bindSpeedControl();
 
         // Initial debug update (core already initialized by the bootstrap).
-        this.debug.update(this.cpu);
+        this.debug.update(this.cpu, this.isRunning);
     }
 
     // --- ROM loading ---
@@ -65,8 +70,7 @@ class App {
             dropZone.addEventListener('drop', (e) => {
                 e.preventDefault();
                 dropZone.classList.remove('drag-over');
-                const file = e.dataTransfer.files[0];
-                if (file) this._loadROMFile(file);
+                this._loadFiles(e.dataTransfer.files);
             });
 
             // Click to open file dialog
@@ -78,10 +82,24 @@ class App {
         // File input change
         if (fileInput) {
             fileInput.addEventListener('change', (e) => {
-                const file = e.target.files[0];
-                if (file) this._loadROMFile(file);
+                this._loadFiles(e.target.files);
             });
         }
+    }
+
+    // Accepts one or more files dropped/selected at once -- e.g. dragging a .rom and its matching
+    // .pak together, which used to silently discard everything but files[0]. ROMs are processed
+    // before packs so a pack dropped in the same gesture as its ROM finds the ROM already in the
+    // library and applies immediately (see _loadROMFile's .pak branch); either order still works
+    // (each branch re-checks / re-boots), this just avoids a redundant extra boot.
+    _loadFiles(fileList) {
+        const files = Array.from(fileList || []);
+        files.sort((a, b) => {
+            const aPak = a.name.toLowerCase().endsWith('.pak');
+            const bPak = b.name.toLowerCase().endsWith('.pak');
+            return aPak === bPak ? 0 : (aPak ? 1 : -1);
+        });
+        files.forEach(f => this._loadROMFile(f));
     }
 
     _loadROMFile(file) {
@@ -145,9 +163,16 @@ class App {
         if (this.assetPacks[base]) this.cpu.setAssetPack(this.assetPacks[base]);
 
         this.romLoaded = true;
+        this._paletteChecked = false;   // re-arm the empty-palette warning for this boot
+        // Fresh boot -> fresh perf reading. Without this, the FPS/IPS/IPF readout keeps showing
+        // whatever the PREVIOUS rom (or a previous run of this rom) last measured -- e.g. still
+        // reading ~144 from an earlier Uncap test -- until a new ~500ms sample overwrites it.
+        this.fps = 0; this.ips = 0; this.ipf = 0;
+        this._resetStatsWindow();
+        this._updateStatsUI();
         this._showStatus(`Loaded: ${entry.name} (${entry.bytes.length} bytes)`, 'success');
         this._renderFrame();
-        this.debug.update(this.cpu);
+        this.debug.update(this.cpu, this.isRunning);
 
         const dropZone = document.getElementById('drop-zone');
         if (dropZone) {
@@ -167,34 +192,76 @@ class App {
         document.getElementById('btn-reset')?.addEventListener('click', () => this.reset());
     }
 
+    // CPU-budget slider: instructions the emulator may run per real-time frame (exponential 2K..128K,
+    // covering "weaker than an ESP" up to "way more headroom than needed"). The real ESP does roughly
+    // 1.9M instr/s -> ~31K per 60fps frame, so ~31K here simulates the ESP itself.
     _bindSpeedControl() {
+        const MIN = 2000, MAX = 128000;
         const slider = document.getElementById('speed-slider');
         const label = document.getElementById('speed-label');
+        const apply = (val) => {
+            const t = val / 100;                                  // 0..1
+            let b = MIN * Math.pow(MAX / MIN, t);
+            b = Math.round(b / 500) * 500;                        // snap to a tidy step
+            this.instructionsPerFrame = b;
+            if (label) label.textContent = this._fmt(b) + '/f';
+        };
         if (slider) {
             slider.addEventListener('input', (e) => {
-                const val = parseInt(e.target.value);
-                // Exponential scale: 1k to 1M
-                this.instructionsPerFrame = Math.pow(10, 3 + val * 3 / 100);
-                if (label) {
-                    if (this.instructionsPerFrame >= 1000000) {
-                        label.textContent = (this.instructionsPerFrame / 1000000).toFixed(1) + 'M';
-                    } else {
-                        label.textContent = Math.round(this.instructionsPerFrame / 1000).toFixed(0) + 'K';
-                    }
-                }
+                apply(parseInt(e.target.value));
+                this._resetStatsWindow();   // don't blend pre/post-change instr/s into one reading
+            });
+            apply(parseInt(slider.value));                       // sync to the markup's initial value
+        }
+
+        // FPS cap dropdown: Auto (follow ROM) | 30 | 60 | 120 | Uncapped.
+        const fpsSel = document.getElementById('fps-cap');
+        if (fpsSel) {
+            fpsSel.addEventListener('change', (e) => {
+                const v = e.target.value;
+                this.fpsCap = (v === 'auto') ? 'auto' : parseInt(v);
+                this._nextStep = undefined;   // restart pacing cleanly
+                // Without this, the in-flight ~500ms sampling window still has presents counted
+                // under the OLD cap, so the very next reading blends old-rate + new-rate presents
+                // into one misleading number (e.g. switching Uncap(144)->60 briefly still reads
+                // ~100+ until a full clean window passes). Starting a fresh window makes the next
+                // reading reflect only the new target.
+                this._resetStatsWindow();
             });
         }
+    }
+
+    // Restart the ~500ms FPS/IPS/IPF sampling window from now, so a rate change (FPS cap, CPU
+    // budget) doesn't get blended with presents/instructions counted under the old setting.
+    _resetStatsWindow() {
+        this._presents = 0;
+        this._statStart = performance.now();
+        this._statInstr = this.cpu.instructionCount;
+        this._statPresents = 0;
+    }
+
+    // Human-readable count (12.3K / 1.90M).
+    _fmt(n) {
+        if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+        return String(Math.round(n));
+    }
+
+    // Resolve the active frame-rate cap: the UI override, or (in 'auto') whatever the ROM requested
+    // via sys_set_fps (60 by default). 0 = uncapped (step every RAF, i.e. the monitor's refresh rate).
+    _targetFps() {
+        if (this.fpsCap === 'auto') return this.cpu.targetFps ? this.cpu.targetFps() : 60;
+        return this.fpsCap;
     }
 
     run() {
         if (!this.romLoaded) return;
         if (this.isRunning) return;
-        
+
         this.isRunning = true;
         this._updateControlState();
-        this.lastFrameTime = performance.now();
-        this.lastFpsUpdate = this.lastFrameTime;
-        this.frameCount = 0;
+        this._nextStep = undefined;          // reset the FPS-cap deadline accumulator
+        this._resetStatsWindow();
         this._frame();
     }
 
@@ -217,20 +284,49 @@ class App {
         }
     }
 
+    // Self-diagnose the #1 cause of a silent black screen: a ROM that streams its palette from an
+    // asset pack (sys_ppu_dma(PAL_MASTER, ...)) but whose matching .pak was never dropped. The PPU
+    // still composes and presents fine in that case -- every pixel just converts through an all-zero
+    // palette -- so there's no error, only a black canvas. Checked once per boot, on the first
+    // presented frame (palette DMA runs during game init, before the first present).
+    _checkPaletteWarning() {
+        if (this._paletteChecked) return;
+        this._paletteChecked = true;
+        if (!this.cpu.ppuEngaged || !this.cpu.ppuEngaged()) return;
+        const mem = this.cpu.ppuMem ? this.cpu.ppuMem() : null;
+        if (!mem) return;
+        const { PAL } = window.EMU_CONSTANTS.PPU;
+        let allZero = true;
+        for (let i = 0; i < 32 && allZero; i++) if (mem[PAL + i] !== 0) allZero = false;
+        if (allZero) {
+            this._showStatus('Screen is black: PPU palette is empty. This ROM streams its palette from a .pak -- drop the matching .pak file too.', 'warning');
+        }
+    }
+
+    // Step exactly one GAME frame: run CPU-budget batches until the ROM presents (or halts), so one
+    // click always advances one visible frame regardless of the budget. Guarded against a ROM that
+    // never presents.
     stepFrame() {
         if (!this.romLoaded) return;
         this.pause();
 
-        // Run one batch
         const { INPUT_ADDRESS } = window.EMU_CONSTANTS;
         this.cpu.memory[INPUT_ADDRESS] = this.input.getState();
-        this.cpu.runBatch(this.instructionsPerFrame);
-        this._renderFrame();
-        this.debug.update(this.cpu);
+        let guard = 0;
+        do {
+            this.cpu.runBatch(this.instructionsPerFrame);
+            guard++;
+        } while (!this.cpu.presentPending() && this.cpu.running && guard < 500);
 
-        if (!this.cpu.running) {
-            this._showStatus('CPU halted', 'warning');
-        }
+        // cpu.running is legitimately false right after a PRESENT yield (it resumes on the next
+        // runBatch) -- that's not a halt. A real halt is "stopped, and not because it just presented".
+        const presented = this.cpu.presentPending();
+        const halted = !presented && !this.cpu.running;
+
+        this._renderFrame();
+        this._checkPaletteWarning();
+        this.debug.update(this.cpu, !halted);
+        if (halted) this._showStatus('CPU halted', 'warning');
     }
 
     reset() {
@@ -242,46 +338,42 @@ class App {
 
     _frame() {
         if (!this.isRunning) return;
-
         const now = performance.now();
 
-        // 0. Best-effort frame-rate cap: a ROM can request a target via sys_set_fps. RAF still fires
-        //    ~60 Hz; we just skip stepping the emu until the target interval has elapsed, so a game
-        //    that asks for 30 runs at ~30. (Firmware paces precisely; the browser is best-effort.)
-        // Only throttle for sub-60 targets; at the 60 default, step every RAF (a tighter threshold
-        // sat right under the ~16.7ms RAF interval, so jitter dropped ~1 in 6 frames -> ~49 fps).
-        const targetFps = this.cpu.targetFps ? this.cpu.targetFps() : 60;
-        if (targetFps > 0 && targetFps < 58 && this._lastStep !== undefined &&
-            (now - this._lastStep) < (1000 / targetFps) - 2) {
-            this.animFrameId = requestAnimationFrame(() => this._frame());
-            return;
+        // 0. FPS cap. RAF keeps firing at the MONITOR'S refresh rate (60/120/144Hz); we only step the
+        //    emulator when the next deadline is due, so gameplay runs at the target rate on any
+        //    display. A deadline ACCUMULATOR (advance by exactly `interval`, don't reset to `now`) is
+        //    robust to RAF jitter -- the old "time since last step" test dropped ~1 in 6 frames.
+        const target = this._targetFps();
+        if (target > 0) {
+            const interval = 1000 / target;
+            if (this._nextStep === undefined) this._nextStep = now;
+            if (now < this._nextStep - 1) {                       // not due yet (1ms slop)
+                this.animFrameId = requestAnimationFrame(() => this._frame());
+                return;
+            }
+            this._nextStep += interval;
+            if (this._nextStep < now) this._nextStep = now + interval;  // resync if we fell behind
+        } else {
+            this._nextStep = undefined;                          // uncapped: step every RAF
         }
-        this._lastStep = now;
 
-        // 1. Write input state to memory
+        // 1. Input + 2. run one CPU budget's worth of instructions.
         const { INPUT_ADDRESS } = window.EMU_CONSTANTS;
         this.cpu.memory[INPUT_ADDRESS] = this.input.getState();
-
-        // 2. Run CPU batch
         const stillRunning = this.cpu.runBatch(this.instructionsPerFrame);
+        const presented = this.cpu.presentPending();
 
-        // 3. Render display
-        this._renderFrame();
+        // 3. Redraw only on a freshly composed frame (matches real-hardware cadence; if the budget cut
+        //    the frame short, the display holds the last complete frame -- no tearing).
+        if (presented) { this._renderFrame(); this._presents++; this._checkPaletteWarning(); }
 
-        // 4. Update debug panel (throttled to avoid DOM thrashing)
-        this.frameCount++;
-        if (now - this.lastFpsUpdate >= this.fpsUpdateInterval) {
-            this.fps = Math.round((this.frameCount * 1000) / (now - this.lastFpsUpdate));
-            this.lastFpsUpdate = now;
-            this.frameCount = 0;
-            this.debug.update(this.cpu);
+        // 4. Live stats (effective FPS / instr-per-sec / instr-per-frame), refreshed ~2x/sec.
+        this._sampleStats(now);
 
-            const fpsEl = document.getElementById('fps-counter');
-            if (fpsEl) fpsEl.textContent = `${this.fps} FPS`;
-        }
-
-        // 5. Check if CPU halted — a syscall may want to hot-swap the next ROM (M7d).
-        if (!stillRunning) {
+        // 5. Halt / hot-swap. A present is not a halt; a genuine HLT (or LOAD_ROM/RESET syscall) stops
+        //    the CPU without presenting.
+        if (!stillRunning && !presented) {
             const n = this.cpu.pendingRom();            // -1 none | >=0 game | -2 reset->menu
             if (n >= 0) {
                 this._bootFromLibrary(n);               // LOAD_ROM
@@ -289,15 +381,48 @@ class App {
                 this._bootFromLibrary(this.menuIndex >= 0 ? this.menuIndex : 0);   // RESET -> menu
             } else {
                 this.isRunning = false;                 // genuine HLT
-                this.debug.update(this.cpu);
+                this._renderFrame();
+                this.debug.update(this.cpu, this.isRunning);
                 this._updateControlState();
                 this._showStatus('CPU halted', 'warning');
                 return;
             }
         }
 
-        // 6. Next frame
+        // 6. Next frame.
         this.animFrameId = requestAnimationFrame(() => this._frame());
+    }
+
+    // Roll up perf counters over a ~500ms window and push them to the UI + debug panel.
+    _sampleStats(now) {
+        const elapsed = now - this._statStart;
+        if (elapsed < this.statsInterval) return;
+
+        const instrNow = this.cpu.instructionCount;
+        const dInstr = (instrNow - this._statInstr) >>> 0;       // uint32 delta (survives one wrap)
+        const dPresents = this._presents - this._statPresents;
+
+        this.fps = Math.round((dPresents * 1000) / elapsed);
+        this.ips = Math.round((dInstr * 1000) / elapsed);
+        this.ipf = dPresents > 0 ? Math.round(dInstr / dPresents) : 0;
+
+        this._statStart = now;
+        this._statInstr = instrNow;
+        this._statPresents = this._presents;
+
+        this._updateStatsUI();
+        this.debug.update(this.cpu, this.isRunning);
+    }
+
+    _updateStatsUI() {
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        const cap = this._targetFps();
+        set('fps-counter', `${this.fps} FPS`);
+        set('stat-fps', String(this.fps));
+        set('stat-fps-target', cap === 0 ? 'uncapped' : String(cap));
+        set('stat-ips', this._fmt(this.ips) + '/s');
+        set('stat-ipf', this._fmt(this.ipf) + '/f');
+        set('stat-budget', this._fmt(this.instructionsPerFrame) + '/f');
     }
 
     // --- UI helpers ---
@@ -325,8 +450,13 @@ class App {
 }
 
 // Boot: instantiate the WASM emulator core, then start the app.
+// locateFile cache-busts the emu.wasm fetch (Date.now() -> a fresh URL every page load). This project
+// rebuilds the WASM core often; without this, a stale cached emu.wasm can silently run against ROMs
+// compiled for a newer PPU memory layout (e.g. a shifted PPU_PAL address), producing a solid-black
+// screen with no error. The <script src="emu.js"> tag itself is cache-busted the same way in
+// index.html -- both must be busted, since emu.js's own wasm fetch ignores its own script tag's query.
 document.addEventListener('DOMContentLoaded', () => {
-    createEmu().then((module) => {
+    createEmu({ locateFile: (path) => path + '?v=' + Date.now() }).then((module) => {
         const core = new EmuCore(module);
         core.initialize();
         window.app = new App(core);

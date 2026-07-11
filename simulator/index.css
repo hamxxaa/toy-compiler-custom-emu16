@@ -212,6 +212,8 @@ body {
 .controls-bar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
+    row-gap: 10px;
     gap: 8px;
     width: 100%;
     max-width: 672px;
@@ -268,17 +270,30 @@ body {
 
 .hidden { display: none !important; }
 
+.fps-control,
 .speed-control {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-left: auto;
     font-size: 0.75rem;
     color: var(--text-secondary);
 }
 
+.fps-control { margin-left: auto; }   /* first control pushed right; speed-control follows it */
+
+.fps-control label,
 .speed-control label {
     white-space: nowrap;
+}
+
+#fps-cap {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    padding: 2px 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
 }
 
 #speed-slider {
@@ -289,8 +304,26 @@ body {
 
 #speed-label {
     font-family: 'JetBrains Mono', monospace;
-    min-width: 40px;
+    min-width: 48px;
     color: var(--accent);
+}
+
+/* PPU memory viewer shares the CPU memory-viewer look, including its own scroll box (self-contained
+   scroll instead of stretching the sidebar's overall height with its full 16-row dump). */
+#ppu-mem-viewer {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.65rem;
+    line-height: 1.4;
+    white-space: pre;
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 200px;
+    padding: 8px;
+    background: var(--bg-primary);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    margin: 0;
 }
 
 /* --- ROM drop zone --- */
@@ -447,6 +480,7 @@ body {
     flex: 1;
     min-width: 320px;
     max-width: 400px;
+    min-height: 0;   /* let overflow-y actually clamp height instead of stretching to content */
     background: var(--bg-secondary);
     border-left: 1px solid var(--border);
     padding: 16px;
@@ -462,6 +496,13 @@ body {
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     overflow: hidden;
+    /* Without this: .debug-section's overflow:hidden (needed for the rounded corners) makes the
+       flexbox spec drop its automatic min-height from "content size" to 0, so when .debug-sidebar
+       runs out of vertical room, the browser SHRINKS these cards below their content height (the
+       default flex-shrink:1) to force everything to fit -- clipping content -- instead of leaving
+       them full-size and letting the sidebar's own overflow-y:auto scroll. flex-shrink:0 pins each
+       card at its natural height so the sidebar scrolls instead of squeezing cards. */
+    flex-shrink: 0;
     backdrop-filter: blur(8px);
 }
 
@@ -587,7 +628,8 @@ body {
     color: var(--text-dim);
 }
 
-#mem-address {
+#mem-address,
+#ppu-mem-address {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.75rem;
     width: 60px;
@@ -599,11 +641,13 @@ body {
     outline: none;
 }
 
-#mem-address:focus {
+#mem-address:focus,
+#ppu-mem-address:focus {
     border-color: var(--accent);
 }
 
-.mem-jump {
+.mem-jump,
+.ppu-mem-jump {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.6rem;
     padding: 2px 6px;
@@ -615,7 +659,8 @@ body {
     transition: all var(--transition);
 }
 
-.mem-jump:hover {
+.mem-jump:hover,
+.ppu-mem-jump:hover {
     color: var(--accent);
     border-color: var(--accent);
 }
@@ -677,6 +722,19 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-dim);
+}
+
+/* The sidebar carries far more content than fits in one screen (7 debug sections). Its own
+   scrollbar is widened + colored so it reads as "this panel scrolls" at a glance, instead of the
+   easy-to-miss 5px hairline used elsewhere. */
+.debug-sidebar::-webkit-scrollbar {
+    width: 9px;
+}
+.debug-sidebar::-webkit-scrollbar-thumb {
+    background: var(--border-accent);
+}
+.debug-sidebar::-webkit-scrollbar-thumb:hover {
+    background: var(--accent);
 }
 
 /* --- Responsive --- */

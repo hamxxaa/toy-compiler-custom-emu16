@@ -14,12 +14,12 @@
 //  0x0000  PAT      128*256 = 32768   16x16 full-color patterns (tiles + sprites); idx 0 = backdrop/transparent
 //  0x8000  FONT     128*8   = 1024    8x8 1-bit glyphs (byte/row, MSB left)
 //  0x8400  TILEMAP  32*32   = 1024    bg tile ids; torus (512x512 px)
-//  0x8800  TEXTMAP  20*16*2 = 640     text-plane cells {glyph:u8, color:u8}
-//  0x8A80  OAM      64*6    = 384     sprites {pat:u8, x:i16, y:i16, attr:u8}
-//  0x8C00  PAL      256*2   = 512     RGB565, little-endian (entry 0 = backdrop)
-//  0x8E00  REGS     16                scroll_x:u16, scroll_y:u16, ctrl:u16, oam_count:u8
-//  0x8E10  FB       160*128 = 20480   indexed compose target -> RGB565 at push
-//  0xDE10  end (PPU_MEM_SIZE ≈ 55.5 KB)
+//  0x8800  TEXTMAP  20*16*3 = 960     text-plane cells {glyph:u8, fg:u8, bg:u8}; bg=255 = transparent
+//  0x8BC0  OAM      64*6    = 384     sprites {pat:u8, x:i16, y:i16, attr:u8}
+//  0x8D40  PAL      256*2   = 512     RGB565, little-endian (entry 0 = backdrop)
+//  0x8F40  REGS     16                scroll_x:u16, scroll_y:u16, ctrl:u16, oam_count:u8
+//  0x8F50  FB       160*128 = 20480   indexed compose target -> RGB565 at push
+//  0xDF50  end (PPU_MEM_SIZE ≈ 56 KB)
 #define PPU_PAT            0x0000
 #define PPU_PAT_SIZE       (128 * 256)
 #define PPU_PAT_STRIDE     256                 // bytes per 16x16 pattern
@@ -28,16 +28,17 @@
 #define PPU_TILEMAP        (PPU_FONT + PPU_FONT_SIZE)        // 0x8400
 #define PPU_TILEMAP_SIZE   (32 * 32)
 #define PPU_TEXTMAP        (PPU_TILEMAP + PPU_TILEMAP_SIZE)  // 0x8800
-#define PPU_TEXTMAP_SIZE   (20 * 16 * 2)
-#define PPU_OAM            (PPU_TEXTMAP + PPU_TEXTMAP_SIZE)  // 0x8A80
+#define PPU_TEXTMAP_SIZE   (20 * 16 * 3)
+#define PPU_TEXT_NO_BG     255                 // bg sentinel: leave the pixel beneath untouched
+#define PPU_OAM            (PPU_TEXTMAP + PPU_TEXTMAP_SIZE)  // 0x8BC0
 #define PPU_OAM_SIZE       (64 * 6)
-#define PPU_PAL            (PPU_OAM + PPU_OAM_SIZE)          // 0x8C00
+#define PPU_PAL            (PPU_OAM + PPU_OAM_SIZE)          // 0x8D40
 #define PPU_PAL_SIZE       (256 * 2)
-#define PPU_REGS           (PPU_PAL + PPU_PAL_SIZE)          // 0x8E00
+#define PPU_REGS           (PPU_PAL + PPU_PAL_SIZE)          // 0x8F40
 #define PPU_REGS_SIZE      16
-#define PPU_FB             (PPU_REGS + PPU_REGS_SIZE)        // 0x8E10
+#define PPU_FB             (PPU_REGS + PPU_REGS_SIZE)        // 0x8F50
 #define PPU_FB_SIZE        (SCREEN_WIDTH * SCREEN_HEIGHT)
-#define PPU_MEM_SIZE       (PPU_FB + PPU_FB_SIZE)            // 0xDE10
+#define PPU_MEM_SIZE       (PPU_FB + PPU_FB_SIZE)            // 0xDF50
 
 // REGS sub-fields (little-endian, like the CPU's memory-mapped words).
 #define PPU_REG_SCROLL_X   (PPU_REGS + 0)   // u16, window-relative 0..511
@@ -137,26 +138,32 @@ static void compose_sprites(int behind)
     }
 }
 
-// The text plane: 20x16 cells (exactly 160x128 px), each {glyph:u8, color:u8}. A non-zero glyph blits
-// its 8x8 1-bit font bitmap (from PPU_FONT) in the cell's color, over everything else — HUD + dialog.
-// glyph 0 = empty (skipped). Cells tile the screen exactly, so no clipping is needed.
+// The text plane: 20x16 cells (exactly 160x128 px), each {glyph:u8, fg:u8, bg:u8}. A non-zero glyph
+// blits its 8x8 1-bit font bitmap (from PPU_FONT): "on" bits draw `fg`, "off" bits draw `bg` UNLESS
+// bg==PPU_TEXT_NO_BG, in which case those pixels are left untouched (transparent, e.g. HUD text drawn
+// over the game world). glyph 0 = empty cell (fully skipped, nothing drawn at all). Cells tile the
+// screen exactly, so no clipping is needed.
 static void compose_text()
 {
     for (int cy = 0; cy < 16; ++cy)
         for (int cx = 0; cx < 20; ++cx)
         {
-            uint32_t cell  = PPU_TEXTMAP + (cy * 20 + cx) * 2;
+            uint32_t cell  = PPU_TEXTMAP + (cy * 20 + cx) * 3;
             uint8_t  glyph = ppu_instance.memory[cell];
             if (!glyph) continue;
-            uint8_t  color = ppu_instance.memory[cell + 1];
+            uint8_t  fg = ppu_instance.memory[cell + 1];
+            uint8_t  bg = ppu_instance.memory[cell + 2];
             const uint8_t* g = &ppu_instance.memory[PPU_FONT + glyph * 8];
             for (int r = 0; r < 8; ++r)
             {
                 uint8_t bits = g[r];
-                if (!bits) continue;
+                if (!bits && bg == PPU_TEXT_NO_BG) continue;   // nothing to draw this row at all
                 uint8_t* out = &ppu_instance.memory[PPU_FB + (cy * 8 + r) * SCREEN_WIDTH + cx * 8];
                 for (int b = 0; b < 8; ++b)
-                    if (bits & (0x80 >> b)) out[b] = color;
+                {
+                    if (bits & (0x80 >> b)) out[b] = fg;
+                    else if (bg != PPU_TEXT_NO_BG) out[b] = bg;
+                }
             }
         }
 }
@@ -208,17 +215,18 @@ static bool ppu_execute(const uint8_t* b, int len)
                     ppu_instance.memory[PPU_TILEMAP + ((y + r) & 31) * 32 + ((x + c) & 31)] = b[i++];
             break;
         }
-        case 0x04: // TEXT [x:1][y:1][w:1][h:1][ w*h x {glyph, color} ]
+        case 0x04: // TEXT [x:1][y:1][w:1][h:1][ w*h x {glyph, fg, bg} ]  (bg=255 = transparent)
         {
             int x = b[i], y = b[i + 1], w = b[i + 2], h = b[i + 3];
             i += 4;
             for (int r = 0; r < h; ++r)
                 for (int c = 0; c < w; ++c)
                 {
-                    uint32_t o = PPU_TEXTMAP + ((y + r) * 20 + (x + c)) * 2;
+                    uint32_t o = PPU_TEXTMAP + ((y + r) * 20 + (x + c)) * 3;
                     ppu_instance.memory[o]     = b[i];
                     ppu_instance.memory[o + 1] = b[i + 1];
-                    i += 2;
+                    ppu_instance.memory[o + 2] = b[i + 2];
+                    i += 3;
                 }
             break;
         }
@@ -271,3 +279,7 @@ void ppu_convert_rgb565(uint16_t* out)
 }
 
 bool ppu_engaged() { return ppu_composed; }
+
+// Debug/host inspection seam (see ppu.h) — the simulator's PPU memory viewer reads this.
+uint8_t*  ppu_mem()      { return ppu_instance.memory; }
+uint32_t  ppu_mem_size() { return PPU_MEM_SIZE; }

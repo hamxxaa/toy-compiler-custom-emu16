@@ -1,0 +1,106 @@
+// lib/ppuscene.lib — a small top-down scene layer on the PPU model (successor to the old scene.lib).
+//
+// The CPU owns the whole world map resident (a byte per tile; also the collision map via ppu_solid_at
+// in ppu.lib). This lib does the light per-frame visual work the CPU still owns: follow the camera,
+// stream the visible window of the world into the PPU's 32x32 tilemap (so the world can be larger
+// than the window), and emit a Y-sorted sprite cast as OAM. The PPU does all the pixels.
+//
+// Typical frame:
+//     scene_follow(hero_x, hero_y, MAP_W, MAP_H);   // clamp camera to the world
+//     cmd_reset();
+//     scene_stream(&world, MAP_W, MAP_H);            // scroll + push the visible tiles
+//     scene_clear();
+//     scene_obj(hero_pat, hero_x, hero_y, hero_attr);
+//     scene_obj(TREE_PAT, tree_x, tree_y, 0);        // ... more objects
+//     scene_draw();                                  // Y-sort -> OAM
+//     ppu_present();
+include "../lib/ppu.lib";
+
+{
+    var int scene_cam_x;      // camera top-left in world pixels
+    var int scene_cam_y;
+
+    const SCENE_MAX_OBJ = 32;
+    var int sc_pat[SCENE_MAX_OBJ];
+    var int sc_x[SCENE_MAX_OBJ];    // world pixel x/y (feet-Y sorted)
+    var int sc_y[SCENE_MAX_OBJ];
+    var int sc_attr[SCENE_MAX_OBJ];
+    var int sc_order[SCENE_MAX_OBJ];
+    var int sc_n;
+
+    // Center the camera on world pixel (wx,wy), clamped to a map of map_w x map_h TILES (16px each).
+    // A world smaller than the screen pins the camera at 0.
+    void scene_follow(int wx, int wy, int map_w, int map_h) {
+        var int maxx; var int maxy;
+        scene_cam_x = wx - 72;
+        scene_cam_y = wy - 56;
+        maxx = map_w * 16 - 160;
+        maxy = map_h * 16 - 128;
+        if maxx < 0 { maxx = 0; }
+        if maxy < 0 { maxy = 0; }
+        if scene_cam_x < 0 { scene_cam_x = 0; }
+        if scene_cam_y < 0 { scene_cam_y = 0; }
+        if scene_cam_x > maxx { scene_cam_x = maxx; }
+        if scene_cam_y > maxy { scene_cam_y = maxy; }
+    }
+
+    // Push the visible window of `world` (map_w tiles wide) into the PPU tilemap and set the scroll.
+    // The tilemap is a 32x32 torus: visible world tile (tx,ty) maps to cell (tx&31, ty&31), and
+    // scroll = camera & 511. Emits one 1-cell TM_EDIT per visible tile (~99/frame) so it stays
+    // correct for any world size and any wrap position; edge-only streaming is a future optimization.
+    void scene_stream(int world, int map_w, int map_h) {
+        var int tox; var int toy; var int r; var int c; var int tx; var int ty;
+        tox = scene_cam_x >> 4;
+        toy = scene_cam_y >> 4;
+        ppu_scroll(scene_cam_x & 511, scene_cam_y & 511);
+        r = 0;
+        while r < 9 {                 // 8 visible rows + 1 partial
+            ty = toy + r;
+            if ty < map_h {
+                c = 0;
+                while c < 11 {         // 10 visible cols + 1 partial
+                    tx = tox + c;
+                    if tx < map_w {
+                        cu8(3); cu8(tx & 31); cu8(ty & 31); cu8(1); cu8(1);
+                        cu8(ppu_rdbyte(world + ty * map_w + tx));
+                    }
+                    c = c + 1;
+                }
+            }
+            r = r + 1;
+        }
+    }
+
+    // ---- sprite cast (world-space; Y-sorted so nearer objects draw in front) ----
+    void scene_clear() { sc_n = 0; }
+
+    void scene_obj(int pat, int wx, int wy, int attr) {
+        sc_pat[sc_n] = pat; sc_x[sc_n] = wx; sc_y[sc_n] = wy; sc_attr[sc_n] = attr;
+        sc_n = sc_n + 1;
+    }
+
+    // Y-sort the cast by world y (insertion sort of indices), then emit back-to-front as OAM,
+    // converting world -> screen with the camera. Later (nearer) sprites draw on top.
+    void scene_draw() {
+        var int i; var int j; var int t; var int oi;
+        i = 0;
+        while i < sc_n { sc_order[i] = i; i = i + 1; }
+        i = 1;
+        while i < sc_n {
+            j = i;
+            while j > 0 {
+                if sc_y[sc_order[j - 1]] > sc_y[sc_order[j]] {
+                    t = sc_order[j - 1]; sc_order[j - 1] = sc_order[j]; sc_order[j] = t;
+                    j = j - 1;
+                } else { break; }
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < sc_n {
+            oi = sc_order[i];
+            oam_set(sc_pat[oi], sc_x[oi] - scene_cam_x, sc_y[oi] - scene_cam_y, sc_attr[oi]);
+            i = i + 1;
+        }
+    }
+}

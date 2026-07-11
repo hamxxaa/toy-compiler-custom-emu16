@@ -1,155 +1,148 @@
-// arena -- roam + real combat on the scene engine. Thin GAME on top of scene.lib:
-//   * HERO (objs[0]): arrows move (4-dir), A attacks (a one-shot whose strike frame deals damage in
-//     a box in front of you). Has HP; enemy contact hurts you (with i-frames + a white hit-flash).
-//   * ENEMIES (objs[1..NUM_ENEMIES]): wander, have HP, blink+knockback when hit, despawn on death and
-//     respawn after a delay.
-//   * HASTA-NINJA (objs[I_NINJA]): a solid NPC. Press B while facing him to talk -- a one-time first
-//     line (gated by flag F_NINJA_MET via event.lib), then his catchphrase every time after.
-//   * TREES (objs[..]): solid Y-sorted landmarks.
-//   Solid ground -> dirty-rect, no full clear. Build assets first:
-//     python tools/image_import.py assets/sprites.list build/arena
-//     python tools/pack_assets.py build/arena/assets.manifest build/roms/arena
-//     cp build/arena/sprites.gen.txt examples/arena_assets.gen.txt
-include "arena_assets.gen.txt";       // clip registry
-include "../lib/scene.lib";            // engine: cast + camera + render + collision + interact/zones
-include "../lib/game.lib";             // rand_range / srand_time
-include "../lib/text.lib";             // draw_number for the HUD
-include "../lib/event.lib";            // flags + dialog (the ninja's talk event)
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// arena (PPU + a painted tilemap) — the combat arena on a real tiled world authored with the
+// pixel-map tool. The tool is PURE TILEMAP: it paints one flat 32x32 tilemap (grass/dirt/river/
+// tree-border) and the CPU-side collision map, nothing else. Trees are just tiles, painted straight
+// into the map like any terrain (the retro-console way: background tiles are always fully opaque —
+// no per-pixel transparency, no object layer). Objects (player, 4 slimes, NPC) are plain code, with
+// hand-picked spawn coordinates, exactly like a map-tool-less game would place them.
+//
+// Build:  python tools/image_import.py assets/sprites.list build/demo_assets
+//         cp build/demo_assets/sprites.gen.txt examples/arena_assets.gen.txt
+//         python tools/pixel_map.py assets/map.png assets/legend.txt examples/arena_map.gen.txt
+//         python main.py examples/arena.txt --save-rom arena
+//         python tools/pack_assets.py build/demo_assets/assets.manifest build/roms/arena
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+include "../lib/io.lib";              // read_input + font8x8
+include "../lib/game.lib";            // rand_range / srand_time / aabb (pulls sys.lib -> sys_time)
+include "../lib/event.lib";           // flags (the NPC's one-time line)
+include "../lib/ppuscene.lib";        // camera + Y-sort cast (pulls ppu.lib)
+include "arena_assets.gen.txt";       // ANIM_*_ID / PAL_MASTER asset ids
+include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure tilemap; no spawns)
 
 {
-    const WORLD_W = 480;
-    const WORLD_H = 384;
-    const GROUND  = 15;
+    const WORLD_W = 512; const WORLD_H = 512;        // 32x32 tiles
 
-    const I_PLAYER    = 0;
-    const NUM_ENEMIES = 4;
-    const I_ENEMY0    = 1;            // enemies at objs[1 .. NUM_ENEMIES]
-    const I_NINJA     = I_ENEMY0 + NUM_ENEMIES;   // 5: the hasta-ninja NPC, spawned before the trees
-    const NUM_TREES   = 14;
+    // Spawn points -- plain code, hand-picked to sit on open grass in assets/map.png (the map tool
+    // does not place objects). Change these if you repaint the map.
+    const PLAYER_SPAWN_X = 144; const PLAYER_SPAWN_Y = 336;
+    const NPC_SPAWN_X    = 320; const NPC_SPAWN_Y    = 464;
+    var int slime_x[4] = { 192, 288, 48, 160 };
+    var int slime_y[4] = { 112, 112, 432, 432 };
 
-    // hasta-ninja NPC: a solid landmark you talk to (press B while facing him)
-    const NINJA_X = 100; const NINJA_Y = 60;     // just east of the player's spawn
-    const NINJA_REACH = 12;                       // interact box depth in front of the player
-    const F_NINJA_MET = 0;                        // event flag: have we heard his first line?
+    // pattern slots. Sprites avoid the terrain tile ids (16,17,18,19,20..23,40) the map uses.
+    const S_H_SIDE = 0;  const S_H_ATK = 4; const S_H_UP = 8;  const S_H_DOWN = 12;
+    const S_E_SIDE = 24; const S_E_UP = 29; const S_E_DOWN = 34; const S_NPC = 39;
+    const T_TREE5 = 40;   // imported, not yet painted into assets/map.png -- ready for a future repaint
+    const ANIM_PERIOD = 200;
 
+    const C_WHITE = 21; const C_RED = 27; const C_BLACK = 0; const C_GREEN = 10;
+
+    // object model: 0=player, 1..4=slimes, 5=npc (trees + terrain are TILES, not objects)
+    const NOBJ = 6;
+    const I_PLAYER = 0; const I_E0 = 1; const NUM_EN = 4; const I_NPC = 5;
+    var int ox[6]; var int oy[6];
+    var int obase[6]; var int ocount[6]; var int ostart[6];
+    var int ohp[6]; var int oactive[6]; var int oblink[6]; var int ofacing[6];
+    var int ocx[6]; var int ocy[6]; var int ocw[6]; var int och[6];
+
+    const PLAYER_HP = 6; const ENEMY_HP = 3; const ATTACK_REACH = 10; const STRIKE_FRAME = 1;
+    // The swing anim is 4 frames * ANIM_PERIOD(200ms) = 800ms; at a real, correctly-paced 60fps
+    // that's 48 logic frames. attack_lock used to be a mismatched 12 (=200ms), which raced against
+    // STRIKE_FRAME's own >=200ms requirement and lost every time -- attack_lock hit 0 (and
+    // resolve_attack's "if attack_lock<=0 return" bailed) in the SAME frame af first reached 1, so
+    // the hit-test never ran and the swing anim got cut back to idle after its first frame. Only
+    // looked "fine" before because the simulator wasn't actually holding a clean 60fps.
+    const ATTACK_LOCK = 48;
+    const IFRAMES = 40; const HURT_BLINK = 20; const KB = 6; const RESPAWN_T = 120;
+    const F_NPC_MET = 0;
     const DIR_SIDE = 0; const DIR_UP = 1; const DIR_DOWN = 2;
 
-    // combat tuning
-    const PLAYER_HP    = 6;
-    const ENEMY_HP     = 3;
-    const ATTACK_DMG   = 1;
-    const ATTACK_REACH = 10;
-    const STRIKE_FRAME = 1;           // attack clip frame on which the hit registers
-    const HURT_BLINK   = 20;
-    const IFRAMES      = 40;
-    const KB           = 6;
-    const RESPAWN_T    = 120;
-    const HP_FILL = 32;              // green (current health)
-    const HP_BG   = 1;              // dark panel (empty)
+    var int player_dir; var int player_iframes; var int attack_lock; var int attack_fired; var int flash_timer; var int flash_restore;
+    var int en_dir[4]; var int en_timer[4]; var int en_respawn[4];
+    var int dialog_on; var int prev_b; var int dialog_dirty; var int dialog_first_time;
 
-    var int player_dir;
-    var int player_iframes;
-    var int attack_fired;            // one strike per swing
-    var int flash_timer;             // white hit-flash countdown
+    void play_anim(int i, int base, int count) {
+        if obase[i] != base { obase[i] = base; ostart[i] = sys_time(); }
+        ocount[i] = count;
+    }
+    int obj_pat(int i) {
+        var int f;
+        f = sys_time() - ostart[i]; f = f / ANIM_PERIOD; f = f % ocount[i];
+        return obase[i] + f;
+    }
+    void set_collider(int i, int cx, int cy, int cw, int ch) { ocx[i] = cx; ocy[i] = cy; ocw[i] = cw; och[i] = ch; }
 
-    var int en_dir[NUM_ENEMIES];
-    var int en_timer[NUM_ENEMIES];
-    var int en_respawn[NUM_ENEMIES]; // counts down while despawned
+    int obj_hit(int a, int b) {
+        return aabb(ox[a] + ocx[a], oy[a] + ocy[a], ocw[a], och[a],
+                    ox[b] + ocx[b], oy[b] + ocy[b], ocw[b], och[b]);
+    }
 
-    var int fps; var int fps_count; var int fps_last;
-
-    // --- map: {tree_type 0..3, world x, world y} per tree ---
-    var int tree_clip[4];
-    var int tree_data[42] = {        // NUM_TREES * 3 (sizes must be a literal/const)
-        0,  40,  40,    1, 130,  30,    2, 250,  60,    3, 360,  25,
-        1,  70, 150,    2, 200, 130,    0, 330, 170,    3, 430, 110,
-        2,  30, 260,    0, 150, 300,    3, 280, 250,    1, 400, 290,
-        0,  90, 350,    2, 230, 360
-    };
-
-    void spawn_trees() {
-        var int i; var int t; var int id;
-        tree_clip[0] = ANIM_TREE1_ID; tree_clip[1] = ANIM_TREE2_ID;
-        tree_clip[2] = ANIM_TREE3_ID; tree_clip[3] = ANIM_TREE4_ID;
-        i = 0;
-        while i < NUM_TREES {
-            t = tree_data[i * 3];
-            id = spawn_obj(tree_clip[t], tree_data[i * 3 + 1], tree_data[i * 3 + 2]);
-            set_solid(id, 1);
-            set_collider(id, 5, 11, 6, 4);
-            i = i + 1;
-        }
+    // TILE collision: lower-body footprint vs solid tiles (trees + water) in the painted world.
+    int tile_blocked(int px, int py) {
+        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 3,  py + 10) == 1 { return 1; }
+        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 12, py + 10) == 1 { return 1; }
+        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 3,  py + 15) == 1 { return 1; }
+        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 12, py + 15) == 1 { return 1; }
+        return 0;
+    }
+    int move_obj(int i, int dx, int dy) {
+        var int nx; var int ny; var int blk;
+        blk = 0;
+        nx = ox[i] + dx; if nx < 0 { nx = 0; } if nx > WORLD_W - 16 { nx = WORLD_W - 16; }
+        if tile_blocked(nx, oy[i]) == 0 { ox[i] = nx; } else { blk = 1; }
+        ny = oy[i] + dy; if ny < 0 { ny = 0; } if ny > WORLD_H - 16 { ny = WORLD_H - 16; }
+        if tile_blocked(ox[i], ny) == 0 { oy[i] = ny; } else { blk = 1; }
+        return blk;
     }
 
     void respawn_enemy(int e) {
         var int oi;
-        oi = I_ENEMY0 + e;
-        objs[oi].wx = rand_range(WORLD_W - 16);
-        objs[oi].wy = rand_range(WORLD_H - 16);
-        objs[oi].hp = ENEMY_HP;
-        objs[oi].active = 1;
-        objs[oi].blink = 0;
-        play_obj(oi, ANIM_ENEMY_WALK_ID);
-        en_dir[e] = rand_range(4);
-        en_timer[e] = 40 + rand_range(60);
+        oi = I_E0 + e;
+        ox[oi] = slime_x[e]; oy[oi] = slime_y[e];       // back to the painted spawn (guaranteed clear)
+        ohp[oi] = ENEMY_HP; oactive[oi] = 1; oblink[oi] = 0;
+        play_anim(oi, S_E_SIDE, 5);
+        en_dir[e] = rand_range(4); en_timer[e] = 40 + rand_range(60);
     }
 
-    void player_respawn() {
-        objs[I_PLAYER].wx = 60; objs[I_PLAYER].wy = 60;
-        objs[I_PLAYER].hp = PLAYER_HP;
-        player_iframes = IFRAMES;
-        objs[I_PLAYER].blink = IFRAMES;
-    }
-
-    void player_update(int attack) {
-        var int moving; var int c; var int dx; var int dy;
-        tick_obj(I_PLAYER);
-        if objs[I_PLAYER].blink > 0 { objs[I_PLAYER].blink = objs[I_PLAYER].blink - 1; }
+    void player_update() {
+        var int dx; var int dy; var int moving; var int input; var int locked;
+        input = read_input();
+        if oblink[I_PLAYER] > 0 { oblink[I_PLAYER] = oblink[I_PLAYER] - 1; }
         if player_iframes > 0 { player_iframes = player_iframes - 1; }
-        moving = 0; dx = 0; dy = 0;
-        if button(BTN_LEFT)  { dx = 0 - 1; moving = 1; objs[I_PLAYER].facing = 1; player_dir = DIR_SIDE; }
-        if button(BTN_RIGHT) { dx = 1;     moving = 1; objs[I_PLAYER].facing = 0; player_dir = DIR_SIDE; }
-        if button(BTN_UP)    { dy = 0 - 1; moving = 1; player_dir = DIR_UP; }
-        if button(BTN_DOWN)  { dy = 1;     moving = 1; player_dir = DIR_DOWN; }
-        move_obj(I_PLAYER, dx, dy);
-        if obj_locked(I_PLAYER) == 0 {
-            if attack == 1 {
-                play_obj_once(I_PLAYER, ANIM_HERO_ATTACK_ID);
-            } else {
-                if player_dir == DIR_UP        { c = ANIM_HERO_WALK_UP_ID; }
-                else if player_dir == DIR_DOWN { c = ANIM_HERO_WALK_DOWN_ID; }
-                else                           { c = ANIM_HERO_WALK_ID; }
-                play_obj(I_PLAYER, c);
-                if moving == 0 { objs[I_PLAYER].start = sys_time(); }   // idle -> hold frame 0
+        locked = 0;
+        if attack_lock > 0 { attack_lock = attack_lock - 1; locked = 1; }
+        dx = 0; dy = 0; moving = 0;
+        if locked == 0 {
+            if (input & 0x01) != 0 { dx = 0 - 1; moving = 1; ofacing[I_PLAYER] = 1; player_dir = DIR_SIDE; }
+            if (input & 0x04) != 0 { dx = 1;     moving = 1; ofacing[I_PLAYER] = 0; player_dir = DIR_SIDE; }
+            if (input & 0x02) != 0 { dy = 0 - 1; moving = 1; player_dir = DIR_UP; }
+            if (input & 0x08) != 0 { dy = 1;     moving = 1; player_dir = DIR_DOWN; }
+            move_obj(I_PLAYER, dx, dy);
+            if (input & 0x10) != 0 { attack_lock = ATTACK_LOCK; attack_fired = 0; play_anim(I_PLAYER, S_H_ATK, 4); ostart[I_PLAYER] = sys_time(); }
+            else {
+                if player_dir == DIR_UP { play_anim(I_PLAYER, S_H_UP, 4); }
+                else { if player_dir == DIR_DOWN { play_anim(I_PLAYER, S_H_DOWN, 4); } else { play_anim(I_PLAYER, S_H_SIDE, 4); } }
+                if moving == 0 { ostart[I_PLAYER] = sys_time(); }
             }
         }
     }
 
     void enemy_update() {
-        var int e; var int oi; var int c; var int dx; var int dy; var int bl;
+        var int e; var int oi; var int dx; var int dy; var int bl;
         e = 0;
-        while e < NUM_ENEMIES {
-            oi = I_ENEMY0 + e;
-            if objs[oi].active == 1 {
-                if objs[oi].blink > 0 { objs[oi].blink = objs[oi].blink - 1; }
-                tick_obj(oi);
+        while e < NUM_EN {
+            oi = I_E0 + e;
+            if oactive[oi] == 1 {
+                if oblink[oi] > 0 { oblink[oi] = oblink[oi] - 1; }
                 en_timer[e] = en_timer[e] - 1;
-                if en_timer[e] <= 0 {
-                    en_dir[e] = rand_range(4);
-                    en_timer[e] = 40 + rand_range(60);
-                }
+                if en_timer[e] <= 0 { en_dir[e] = rand_range(4); en_timer[e] = 40 + rand_range(60); }
                 dx = 0; dy = 0;
-                if en_dir[e] == 0      { dx = 1;     objs[oi].facing = 0; c = ANIM_ENEMY_WALK_ID; }
-                else if en_dir[e] == 1 { dx = 0 - 1; objs[oi].facing = 1; c = ANIM_ENEMY_WALK_ID; }
-                else if en_dir[e] == 2 { dy = 0 - 1; objs[oi].facing = 0; c = ANIM_ENEMY_WALK_UP_ID; }
-                else                   { dy = 1;     objs[oi].facing = 0; c = ANIM_ENEMY_WALK_DOWN_ID; }
-                play_obj(oi, c);
+                if en_dir[e] == 0      { dx = 1;     ofacing[oi] = 0; play_anim(oi, S_E_SIDE, 5); }
+                else { if en_dir[e] == 1 { dx = 0 - 1; ofacing[oi] = 1; play_anim(oi, S_E_SIDE, 5); }
+                else { if en_dir[e] == 2 { dy = 0 - 1; play_anim(oi, S_E_UP, 5); }
+                else                     { dy = 1;     play_anim(oi, S_E_DOWN, 5); } } }
                 bl = move_obj(oi, dx, dy);
                 if bl == 1 { en_timer[e] = 0; }
-                if objs[oi].wx <= 0            { en_dir[e] = 0; }
-                if objs[oi].wx >= WORLD_W - 16 { en_dir[e] = 1; }
-                if objs[oi].wy <= 0            { en_dir[e] = 3; }
-                if objs[oi].wy >= WORLD_H - 16 { en_dir[e] = 2; }
             } else {
                 en_respawn[e] = en_respawn[e] - 1;
                 if en_respawn[e] <= 0 { respawn_enemy(e); }
@@ -158,36 +151,25 @@ include "../lib/event.lib";            // flags + dialog (the ninja's talk event
         }
     }
 
-    // On the strike frame of the swing, damage every enemy in the hitbox once.
     void resolve_attack() {
-        var int af; var int e; var int oi;
-        var int hx; var int hy; var int hw; var int hh; var int kdx; var int kdy;
-        if obj_locked(I_PLAYER) == 0 { attack_fired = 0; return; }   // not attacking -> rearm
-        af = clip_frame(ANIM_HERO_ATTACK_ID, sys_time() - objs[I_PLAYER].start);
+        var int af; var int e; var int oi; var int hx; var int hy; var int hw; var int hh; var int kdx; var int kdy;
+        if attack_lock <= 0 { return; }
+        af = sys_time() - ostart[I_PLAYER]; af = af / ANIM_PERIOD;
         if af < STRIKE_FRAME { return; }
         if attack_fired == 1 { return; }
         attack_fired = 1;
-
         kdx = 0; kdy = 0;
-        if player_dir == DIR_UP {
-            hx = objs[I_PLAYER].wx; hy = objs[I_PLAYER].wy - ATTACK_REACH; hw = 16; hh = ATTACK_REACH; kdy = 0 - KB;
-        } else if player_dir == DIR_DOWN {
-            hx = objs[I_PLAYER].wx; hy = objs[I_PLAYER].wy + 16; hw = 16; hh = ATTACK_REACH; kdy = KB;
-        } else if objs[I_PLAYER].facing == 1 {
-            hx = objs[I_PLAYER].wx - ATTACK_REACH; hy = objs[I_PLAYER].wy; hw = ATTACK_REACH; hh = 16; kdx = 0 - KB;
-        } else {
-            hx = objs[I_PLAYER].wx + 16; hy = objs[I_PLAYER].wy; hw = ATTACK_REACH; hh = 16; kdx = KB;
-        }
-
+        if player_dir == DIR_UP { hx = ox[I_PLAYER]; hy = oy[I_PLAYER] - ATTACK_REACH; hw = 16; hh = ATTACK_REACH; kdy = 0 - KB; }
+        else { if player_dir == DIR_DOWN { hx = ox[I_PLAYER]; hy = oy[I_PLAYER] + 16; hw = 16; hh = ATTACK_REACH; kdy = KB; }
+        else { if ofacing[I_PLAYER] == 1 { hx = ox[I_PLAYER] - ATTACK_REACH; hy = oy[I_PLAYER]; hw = ATTACK_REACH; hh = 16; kdx = 0 - KB; }
+        else { hx = ox[I_PLAYER] + 16; hy = oy[I_PLAYER]; hw = ATTACK_REACH; hh = 16; kdx = KB; } } }
         e = 0;
-        while e < NUM_ENEMIES {
-            oi = I_ENEMY0 + e;
-            if objs[oi].active == 1 {
-                if obj_overlap_box(oi, hx, hy, hw, hh) == 1 {
-                    objs[oi].hp = objs[oi].hp - ATTACK_DMG;
-                    objs[oi].blink = HURT_BLINK;
-                    move_obj(oi, kdx, kdy);
-                    if objs[oi].hp <= 0 { despawn(oi); en_respawn[e] = RESPAWN_T; }
+        while e < NUM_EN {
+            oi = I_E0 + e;
+            if oactive[oi] == 1 {
+                if aabb(hx, hy, hw, hh, ox[oi] + ocx[oi], oy[oi] + ocy[oi], ocw[oi], och[oi]) == 1 {
+                    ohp[oi] = ohp[oi] - 1; oblink[oi] = HURT_BLINK; move_obj(oi, kdx, kdy);
+                    if ohp[oi] <= 0 { oactive[oi] = 0; en_respawn[e] = RESPAWN_T; }
                 }
             }
             e = e + 1;
@@ -198,131 +180,190 @@ include "../lib/event.lib";            // flags + dialog (the ninja's talk event
         var int e; var int oi; var int kdx; var int kdy;
         if player_iframes > 0 { return; }
         e = 0;
-        while e < NUM_ENEMIES {
-            oi = I_ENEMY0 + e;
-            if objs[oi].active == 1 {
-                if obj_overlap(I_PLAYER, oi) == 1 {
-                    objs[I_PLAYER].hp = objs[I_PLAYER].hp - 1;
-                    player_iframes = IFRAMES;
-                    objs[I_PLAYER].blink = IFRAMES;
+        while e < NUM_EN {
+            oi = I_E0 + e;
+            if oactive[oi] == 1 {
+                if obj_hit(I_PLAYER, oi) == 1 {
+                    ohp[I_PLAYER] = ohp[I_PLAYER] - 1; player_iframes = IFRAMES; oblink[I_PLAYER] = IFRAMES;
                     kdx = KB; kdy = KB;
-                    if objs[I_PLAYER].wx < objs[oi].wx { kdx = 0 - KB; }
-                    if objs[I_PLAYER].wy < objs[oi].wy { kdy = 0 - KB; }
+                    if ox[I_PLAYER] < ox[oi] { kdx = 0 - KB; }
+                    if oy[I_PLAYER] < oy[oi] { kdy = 0 - KB; }
                     move_obj(I_PLAYER, kdx, kdy);
                     flash_timer = 3;
-                    palette_fill(0, 256, 0xFFFF);                 // white screen flash
-                    if objs[I_PLAYER].hp <= 0 { player_respawn(); }
-                    e = NUM_ENEMIES;                              // one hit per frame
+                    if ohp[I_PLAYER] <= 0 { ox[I_PLAYER] = PLAYER_SPAWN_X; oy[I_PLAYER] = PLAYER_SPAWN_Y; ohp[I_PLAYER] = PLAYER_HP; player_iframes = IFRAMES; }
+                    e = NUM_EN;
                 }
             }
             e = e + 1;
         }
     }
 
-    // The hasta-ninja's talk event. First time: a one-time line (gated by F_NINJA_MET). Every time
-    // after: he just says his catchphrase. Pure event.lib flags + dialog.
-    void talk_ninja() {
-        if flag_get(F_NINJA_MET) == 0 {
-            flag_set(F_NINJA_MET);
-            dialog_open("A ninja appears. 'Hasta... you found me!'");
-        } else {
-            dialog_open("He says: I am a sick ninja.");
-        }
+    int facing_npc() {
+        var int fx; var int fy;
+        fx = ox[I_PLAYER]; fy = oy[I_PLAYER];
+        if player_dir == DIR_UP { fy = fy - 12; }
+        else { if player_dir == DIR_DOWN { fy = fy + 12; }
+        else { if ofacing[I_PLAYER] == 1 { fx = fx - 12; } else { fx = fx + 12; } } }
+        return aabb(fx, fy, 16, 16, ox[I_NPC], oy[I_NPC], 16, 16);
     }
 
-    // Route an interacted object id to its event (the O(1) switch dispatch). I_NINJA is a compile-time
-    // constant, so this is a real jump-table dispatch ready for more NPCs; other objects are no-ops.
-    void dispatch_interact(int obj) {
-        switch (obj) {
-            case I_NINJA: talk_ninja();
-            default: { }
+    // The dialog's whole visual footprint is rows 10-15, cols 1-18 -- tile_clear on close must match
+    // this exactly (border + panel), or a stray border strip is left behind.
+    const DLG_X = 1;  const DLG_Y = 10; const DLG_W = 18; const DLG_H = 6;
+
+    // dialog_first_time is decided ONCE, when the dialog opens (see the B-press trigger in main()),
+    // not re-checked here every frame -- otherwise flag_get would flip mid-read (the flag gets set
+    // right after the decision) and the "first meeting" text would change to the repeat line before
+    // the player finishes reading it.
+    // Text must stay within [DLG_X+2, DLG_X+DLG_W-2] (a margin cell on each side) -- tile_text only
+    // clips to the 20-cell SCREEN edge, not to this box, so a string that runs past the box's own
+    // right edge lands directly on bare tilemap (no black behind it) and, worse, sits outside the
+    // tile_clear rectangle on close, leaving a stray letter behind forever. Keep every line <=14 cols.
+    void draw_dialog() {
+        tile_fill(DLG_X, DLG_Y, DLG_W, DLG_H, GLYPH_SOLID, C_BLACK);
+        // tile_text_bg (not tile_text) so the letters' "off" pixels also paint black -- otherwise the
+        // gaps between/around strokes stay transparent and show the tilemap bleeding through them.
+        if dialog_first_time == 1 { tile_text_bg(3, 12, "HASTA... YOU", C_WHITE, C_BLACK); tile_text_bg(3, 13, "FOUND ME!", C_WHITE, C_BLACK); }
+        else { tile_text_bg(3, 12, "I AM A SICK", C_WHITE, C_BLACK); tile_text_bg(3, 13, "NINJA.", C_WHITE, C_BLACK); }
+    }
+
+    // Rebuild + emit the Y-sorted OAM cast from the CURRENT ox/oy/anim state. Called every frame in
+    // BOTH branches -- including while a dialog is open -- because cmd_reset() zeroes the OAM shadow
+    // (oam_n) each frame; skipping this during dialog would emit an empty OAM command and every
+    // sprite (player, ninja, enemies) would vanish until the next normal frame rebuilds it.
+    // `frozen`=1 (used during dialog, since update() calls are skipped and positions don't move) holds
+    // everyone on their base/idle pattern instead of obj_pat's time-based walk cycle, which would
+    // otherwise keep advancing off the real clock and make the player appear to walk in place.
+    void build_cast(int frozen) {
+        var int i; var int pat;
+        scene_clear();
+        i = 0;
+        while i < NOBJ {
+            if oactive[i] == 1 {
+                if oblink[i] > 0 { if (oblink[i] & 2) != 0 { i = i; } else {
+                    if frozen == 1 { pat = obase[i]; } else { pat = obj_pat(i); }
+                    if ofacing[i] == 1 { scene_obj(pat, ox[i], oy[i], 1); } else { scene_obj(pat, ox[i], oy[i], 0); }
+                } }
+                else {
+                    if frozen == 1 { pat = obase[i]; } else { pat = obj_pat(i); }
+                    if ofacing[i] == 1 { scene_obj(pat, ox[i], oy[i], 1); } else { scene_obj(pat, ox[i], oy[i], 0); }
+                }
+            }
+            i = i + 1;
         }
+        scene_draw();
     }
 
     int main() {
-        var int attack; var int e; var int t;
+        var int i;
 
-        sys_set_fps(30);
-        sys_asset_load(PAL_MASTER, PRAM, 512);
-        scene_reset();
-        scene_world(WORLD_W, WORLD_H, GROUND);
-        scene_deadzone(60, 44, 84, 68);
+        sys_set_fps(60);   // this game moves per-frame, so its speed is frame-rate bound: pin 60 fps
 
-        anim_load(ANIM_HERO_WALK_ID);   anim_load(ANIM_HERO_ATTACK_ID);
-        anim_load(ANIM_HERO_WALK_UP_ID); anim_load(ANIM_HERO_WALK_DOWN_ID);
-        anim_load(ANIM_ENEMY_WALK_ID);  anim_load(ANIM_ENEMY_WALK_UP_ID); anim_load(ANIM_ENEMY_WALK_DOWN_ID);
-        anim_load(ANIM_TREE1_ID); anim_load(ANIM_TREE2_ID); anim_load(ANIM_TREE3_ID); anim_load(ANIM_TREE4_ID);
-        anim_load(ANIM_NINJA_ID);
+        sys_ppu_dma(PAL_MASTER, PPU_PAL);
+        sys_ppu_dma(ANIM_HERO_WALK_ID,      PPU_PAT + S_H_SIDE * 256);
+        sys_ppu_dma(ANIM_HERO_ATTACK_ID,    PPU_PAT + S_H_ATK * 256);
+        sys_ppu_dma(ANIM_HERO_WALK_UP_ID,   PPU_PAT + S_H_UP * 256);
+        sys_ppu_dma(ANIM_HERO_WALK_DOWN_ID, PPU_PAT + S_H_DOWN * 256);
+        sys_ppu_dma(ANIM_ENEMY_WALK_ID,     PPU_PAT + S_E_SIDE * 256);
+        sys_ppu_dma(ANIM_ENEMY_WALK_UP_ID,  PPU_PAT + S_E_UP * 256);
+        sys_ppu_dma(ANIM_ENEMY_WALK_DOWN_ID,PPU_PAT + S_E_DOWN * 256);
+        sys_ppu_dma(ANIM_NINJA_ID, PPU_PAT + S_NPC * 256);
+        // painted terrain tiles -> the slots the map's tile ids name
+        sys_ppu_dma(ANIM_CIMEN_ID, PPU_PAT + 16 * 256);   // grass
+        sys_ppu_dma(ANIM_ROAD_ID,  PPU_PAT + 18 * 256);   // dirt path
+        sys_ppu_dma(ANIM_WATER_ID, PPU_PAT + 19 * 256);   // river
+        sys_ppu_dma(ANIM_TREE1_ID, PPU_PAT + 20 * 256);
+        sys_ppu_dma(ANIM_TREE2_ID, PPU_PAT + 21 * 256);
+        sys_ppu_dma(ANIM_TREE3_ID, PPU_PAT + 22 * 256);
+        sys_ppu_dma(ANIM_TREE4_ID, PPU_PAT + 23 * 256);
+        sys_ppu_dma(ANIM_BRIDGE_ID, PPU_PAT + 17 * 256);      // walkable, over water
+        sys_ppu_dma(ANIM_TREE5_ID,  PPU_PAT + T_TREE5 * 256); // ready; not yet painted into the map
+        ppu_upload_font(&font8x8);
+
+        // the painted world IS the tilemap (32x32 == the window) and the collision map. Trees are
+        // solid tiles baked right into it, with their own grass background baked into the tile art
+        // (proper opaque retro tiles -- no per-pixel transparency, no backdrop trick needed).
+        sys_ppu_upload(PPU_TILEMAP, &world, 1024);
 
         srand_time();
 
-        spawn_obj(ANIM_HERO_WALK_ID, 60, 60);            // objs[I_PLAYER]
-        set_collider(I_PLAYER, 4, 11, 8, 4);
-        objs[I_PLAYER].hp = PLAYER_HP;
-        player_dir = DIR_DOWN; player_iframes = 0; attack_fired = 0; flash_timer = 0;
+        i = 0;
+        while i < NOBJ { oactive[i] = 0; oblink[i] = 0; obase[i] = 0 - 1; i = i + 1; }
 
-        e = 0;
-        while e < NUM_ENEMIES {                          // objs[I_ENEMY0 .. ]
-            spawn_obj(ANIM_ENEMY_WALK_ID, 150 + e * 70, 100 + e * 50);
-            set_collider(I_ENEMY0 + e, 4, 11, 8, 4);
-            objs[I_ENEMY0 + e].hp = ENEMY_HP;
-            en_dir[e] = rand_range(4);
-            en_timer[e] = 40 + rand_range(60);
-            en_respawn[e] = 0;
-            e = e + 1;
+        ox[I_PLAYER] = PLAYER_SPAWN_X; oy[I_PLAYER] = PLAYER_SPAWN_Y; ohp[I_PLAYER] = PLAYER_HP; oactive[I_PLAYER] = 1;
+        set_collider(I_PLAYER, 4, 11, 8, 4); play_anim(I_PLAYER, S_H_DOWN, 4);
+        player_dir = DIR_DOWN; player_iframes = 0; attack_lock = 0; flash_timer = 0; flash_restore = 0; dialog_on = 0; prev_b = 0; dialog_dirty = 0; dialog_first_time = 0;
+
+        i = 0;
+        while i < NUM_EN {
+            ox[I_E0 + i] = slime_x[i]; oy[I_E0 + i] = slime_y[i];
+            ohp[I_E0 + i] = ENEMY_HP; oactive[I_E0 + i] = 1;
+            set_collider(I_E0 + i, 4, 11, 8, 4); play_anim(I_E0 + i, S_E_SIDE, 5);
+            en_dir[i] = rand_range(4); en_timer[i] = 40 + rand_range(60); en_respawn[i] = 0;
+            i = i + 1;
         }
 
-        spawn_obj(ANIM_NINJA_ID, NINJA_X, NINJA_Y);      // objs[I_NINJA] -- solid NPC you can talk to
-        set_solid(I_NINJA, 1);
-        set_collider(I_NINJA, 3, 8, 10, 8);
+        ox[I_NPC] = NPC_SPAWN_X; oy[I_NPC] = NPC_SPAWN_Y; oactive[I_NPC] = 1;
+        set_collider(I_NPC, 0, 0, 16, 16); play_anim(I_NPC, S_NPC, 1);
 
-        spawn_trees();
-
-        fps = 0; fps_count = 0; fps_last = sys_time();
-        fill(GROUND);
-
-        while (true) {
-            if dialog_active() == 1 {
-                // World frozen while the box is up; A advances/closes it.
-                dialog_update();
-                if dialog_active() == 0 {                    // just closed -> repaint the world (clears the box)
-                    scene_refresh();
-                    camera_follow(objs[I_PLAYER].wx, objs[I_PLAYER].wy);
-                    scene_render();
-                }
+        while true {
+            if dialog_on == 1 {
+                // Close on A. dialog_dirty is set HERE (at close), not at open -- the else branch
+                // below unconditionally drains dialog_dirty every normal frame, so setting it at open
+                // would clear it again on that very same frame, before the box was ever drawn, and
+                // the later real close would have nothing left to trigger the cleanup wipe.
+                if (read_input() & 0x10) != 0 { dialog_on = 0; dialog_dirty = 1; }
+                cmd_reset();
+                scene_follow(ox[I_PLAYER], oy[I_PLAYER], MAP_W, MAP_H);
+                ppu_scroll(scene_cam_x, scene_cam_y);
+                build_cast(1);          // world is frozen (no update calls), but still visible
+                draw_dialog();
+                ppu_present();
             } else {
-                attack = 0;
-                if button(BTN_A) { attack = 1; }
-                player_update(attack);
+                player_update();
                 enemy_update();
                 resolve_attack();
                 player_hurt_check();
 
-                if button_pressed(BTN_B) {                   // press B facing the ninja to talk
-                    t = interact_front(I_PLAYER, player_dir, objs[I_PLAYER].facing, NINJA_REACH);
-                    if t >= 0 { dispatch_interact(t); }
-                }
+                if (read_input() & 0x20) != 0 { if prev_b == 0 { if facing_npc() == 1 {
+                    // Decide the message ONCE, before setting the flag, so a first meeting can't
+                    // read back as "already met" (flag_get would flip the instant flag_set ran).
+                    if flag_get(F_NPC_MET) == 0 { dialog_first_time = 1; } else { dialog_first_time = 0; }
+                    flag_set(F_NPC_MET);
+                    dialog_on = 1;
+                } } }
+                prev_b = read_input() & 0x20;
 
-                camera_follow(objs[I_PLAYER].wx, objs[I_PLAYER].wy);
-                scene_render();
+                scene_follow(ox[I_PLAYER], oy[I_PLAYER], MAP_W, MAP_H);
+                cmd_reset();
+                ppu_scroll(scene_cam_x, scene_cam_y);
 
+                // The dialog box writes text-plane cells that PERSIST in PPU RAM until something
+                // overwrites them -- compose_text just keeps redrawing whatever's there every frame.
+                // So on the first normal frame after a dialog closes, wipe those cells back to empty
+                // (glyph 0), once, or the box stays on screen forever.
+                if dialog_dirty == 1 { tile_clear(DLG_X, DLG_Y, DLG_W, DLG_H); dialog_dirty = 0; }
+
+                // sys_ppu_dma is an IMMEDIATE write to the PPU's real palette; ppu_pal1 only QUEUES
+                // bytes that apply later, when ppu_present() flushes the command buffer. So the
+                // restore must happen on a frame where NO ppu_pal1 white is queued -- otherwise the
+                // queued white (flushed after this immediate DMA) clobbers the restore and, since
+                // flash_timer never goes above 0 again, it never gets undone (stays white forever).
                 if flash_timer > 0 {
+                    ppu_pal1(C_GREEN, 0xFFFF); ppu_pal1(C_RED, 0xFFFF); ppu_pal1(7, 0xFFFF);
                     flash_timer = flash_timer - 1;
-                    if flash_timer == 0 { sys_asset_load(PAL_MASTER, PRAM, 512); }   // restore colors
+                    if flash_timer == 0 { flash_restore = 1; }
+                } else {
+                    if flash_restore == 1 { sys_ppu_dma(PAL_MASTER, PPU_PAL); flash_restore = 0; }
                 }
 
-                fps_count = fps_count + 1;
-                if sys_time() - fps_last >= 1000 {
-                    fps = fps_count; fps_count = 0; fps_last = sys_time();
-                }
-                fill_rect(0, 0, 24, 9, 0);                       // FPS panel
-                draw_number(fps, 1, 1, 21);
-                fill_rect(0, 11, PLAYER_HP * 4 + 2, 5, HP_BG);   // HP bar (empty)
-                fill_rect(1, 12, objs[I_PLAYER].hp * 4, 3, HP_FILL);   // HP bar (filled)
+                build_cast(0);
+
+                tile_text(0, 0, "HP", C_WHITE);
+                tile_number(3, 0, ohp[I_PLAYER], C_WHITE);
+
+                ppu_present();
             }
-
-            buttons_update();
-            sys_present();
         }
         return 0;
     }

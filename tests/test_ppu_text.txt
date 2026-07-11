@@ -1,7 +1,8 @@
 // Phase 3: text-plane + palette command encoding (both hosts; compose verified via checksum).
-//   tile_text(2,1,"HI",5) -> 04 02 01 02 01  (40 05)(41 05)   ['H'=72->40, 'I'=73->41]
+//   tile_text(2,1,"HI",5) -> 04 02 01 02 01  (40 05 FF)(41 05 FF)   ['H'=72->40, 'I'=73->41,
+//                            fg=5, bg=255=PPU_NO_BG (transparent -- tile_text always emits NO_BG)]
 //   ppu_pal1(3,0x1234)    -> 05 03 01 34 12
-//   clen=14, bytesum=101+79=180, return=(14<<8)+180=3764
+//   clen=16, bytesum=10+300+301+79=690, return=(16<<8)+690=4786
 include "../lib/ppu.lib";
 {
     int main() {

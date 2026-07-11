@@ -14,11 +14,16 @@
     const ANIM_TREE3_ID = 10;
     const ANIM_TREE4_ID = 11;
     const ANIM_NINJA_ID = 12;
+    const ANIM_CIMEN_ID = 13;
+    const ANIM_ROAD_ID = 14;
+    const ANIM_WATER_ID = 15;
+    const ANIM_BRIDGE_ID = 16;
+    const ANIM_TREE5_ID = 17;
 
-    const NUM_CLIPS = 13;
-    var byte clip_w[NUM_CLIPS]      = { 0, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 };
-    var byte clip_h[NUM_CLIPS]      = { 0, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 };
-    var byte clip_count[NUM_CLIPS]  = { 0, 4, 4, 4, 4, 5, 5, 5, 1, 1, 1, 1, 1 };
-    var int  clip_period[NUM_CLIPS] = { 0, 200, 200, 200, 200, 200, 200, 200, 100, 100, 100, 100, 100 };
+    const NUM_CLIPS = 18;
+    var byte clip_w[NUM_CLIPS]      = { 0, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 };
+    var byte clip_h[NUM_CLIPS]      = { 0, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16 };
+    var byte clip_count[NUM_CLIPS]  = { 0, 4, 4, 4, 4, 5, 5, 5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+    var int  clip_period[NUM_CLIPS] = { 0, 200, 200, 200, 200, 200, 200, 200, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100 };
     var int  clip_buf[NUM_CLIPS];
 }

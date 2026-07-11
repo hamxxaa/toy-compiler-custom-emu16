@@ -27,7 +27,10 @@ EMU_HDRS := emulator/emu.h emulator/definitions.h emulator/ppu.h
 WASM_OUT  := simulator/emu.js
 EMCC      := emcc
 # Keep these flags in sync with simulator/build.sh (the manual bash build).
-EMCC_FLAGS := -O2 -s MODULARIZE=1 -s EXPORT_NAME=createEmu \
+# -DEMU_COUNT_INSTRUCTIONS: the simulator is a dev tool -> enable the executed-instruction counter so
+# the browser can show live instructions/second + instructions/frame (negligible per-instruction cost;
+# firmware still omits it for zero production overhead).
+EMCC_FLAGS := -O2 -DEMU_COUNT_INSTRUCTIONS -s MODULARIZE=1 -s EXPORT_NAME=createEmu \
               -s "EXPORTED_RUNTIME_METHODS=['cwrap','ccall','HEAPU8']" \
               -s ALLOW_MEMORY_GROWTH=0 -s INITIAL_MEMORY=16777216 -s ENVIRONMENT=web,node
 

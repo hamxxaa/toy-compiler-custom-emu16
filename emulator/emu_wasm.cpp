@@ -316,6 +316,17 @@ EMSCRIPTEN_KEEPALIVE uint16_t *emu_ppu_framebuffer()
     return fb;
 }
 
+// ---- debug / perf bridges (simulator) ----
+// emu_ppu_mem() exposes the PPU's raw graphics RAM for the memory viewer; emu_did_present() lets the
+// JS loop tell "the ROM presented a frame" from "the per-frame instruction budget was hit mid-frame"
+// (so it can measure the real, effective frame rate + only redraw on a new composed frame); and
+// emu_instr_count() is the executed-instruction counter (built with -DEMU_COUNT_INSTRUCTIONS in the
+// WASM/simulator build) for the live instructions/second + instructions/frame readouts.
+EMSCRIPTEN_KEEPALIVE uint8_t *emu_ppu_mem()      { return ppu_mem(); }
+EMSCRIPTEN_KEEPALIVE int      emu_ppu_mem_size() { return (int)ppu_mem_size(); }
+EMSCRIPTEN_KEEPALIVE int      emu_did_present()  { return emu_present_pending() ? 1 : 0; }
+EMSCRIPTEN_KEEPALIVE int      emu_instr_count()  { return (int)emu_instruction_count(); }
+
 // ---- ROM-library bridge for the syscall handler ----
 // JS writes up to 16 NUL-terminated names into emu_rom_names() (64-byte stride) and calls
 // emu_set_rom_count(); after a halt it polls emu_pending_rom() to hot-swap the next ROM.
