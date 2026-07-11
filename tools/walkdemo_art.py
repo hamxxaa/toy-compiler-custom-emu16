@@ -3,7 +3,7 @@
 12x12 character sheet (indexed PNG) + an Aseprite-style JSON + a sprites.list. Normally you'd draw
 this in LibreSprite; this stands in so the demo is self-contained and reproducible.
 
-Run it, then feed examples/walkdemo_src/sprites.list to tools/image_import.py + tools/pack_assets.py.
+Run it, then feed assets/walkdemo/sprites.list to tools/image_import.py + tools/pack_assets.py.
 """
 import json
 import os
@@ -57,7 +57,8 @@ def write_indexed_png(path, width, height, indices, palette):
 
 
 def main():
-    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "walkdemo_src")
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src = os.path.join(repo_root, "assets", "walkdemo")
     os.makedirs(src, exist_ok=True)
 
     write_indexed_png(os.path.join(src, "master.png"), 1, 1, [0], PALETTE)   # palette carrier

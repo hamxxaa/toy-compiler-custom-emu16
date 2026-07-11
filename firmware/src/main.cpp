@@ -13,6 +13,8 @@
 TFT_eSPI tft = TFT_eSPI();
 
 uint16_t frame_buffer[SCREEN_WIDTH * SCREEN_HEIGHT];
+uint16_t prev_frame_buffer[SCREEN_WIDTH * SCREEN_HEIGHT];  // last frame pushed via the PPU path, to skip redundant pushes
+bool     have_prev_frame = false;                          // false forces a push on the first frame / after a ROM swap
 uint8_t  prev_vram[VRAM_SIZE];   // last frame's VRAM, to skip redundant pushes
 uint8_t  prev_pram[PRAM_SIZE];   // last frame's PRAM, to skip redundant palette rebuilds
 uint16_t g_palette[256];         // cached RGB565 palette (rebuilt only when PRAM changes)
@@ -391,9 +393,12 @@ void loop()
             cpu_instance.memory[VRAM_START_ADDRESS + i] = 0;
         load_rom_from_flash(g_pending_rom.c_str());
         // 0xFF is an impossible VRAM/PRAM state, so the new ROM's first frame always rebuilds
-        // the palette and pushes -- clears the panel off the previous ROM's image.
+        // the palette and pushes -- clears the panel off the previous ROM's image. Same idea for
+        // the PPU path: force its first frame to push too, so the new ROM's art replaces whatever
+        // the previous ROM last drew.
         memset(prev_vram, 0xFF, VRAM_SIZE);
         memset(prev_pram, 0xFF, PRAM_SIZE);
+        have_prev_frame = false;
         g_pending_rom = "";
         return;
     }
@@ -403,16 +408,29 @@ void loop()
     // Both coexist while the PPU reboot is phased in.
     if (ppu_engaged())
     {
+        // Games call ppu_present() every loop, so there's no "did the PPU produce a NEW frame"
+        // flag to key off (it's true every frame) -- the only real dirty signal is whether the
+        // CONVERTED PIXELS actually changed, mirroring the legacy VRAM path's memcmp-before-push
+        // below. A push is the expensive part (~8ms via SPI); skipping it on a static frame (menus,
+        // a paused dialog, an idle title screen) is a real win. An animating/scrolling game changes
+        // every frame and pushes every frame regardless -- same as the VRAM path always did.
         t = micros();
         ppu_convert_rgb565(frame_buffer);
-        tft.pushImage(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, frame_buffer);
+        bool frame_changed = !have_prev_frame ||
+            memcmp(frame_buffer, prev_frame_buffer, sizeof(frame_buffer)) != 0;
+        if (frame_changed)
+        {
+            tft.pushImage(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, frame_buffer);
+            memcpy(prev_frame_buffer, frame_buffer, sizeof(frame_buffer));
+            have_prev_frame = true;
+        }
         uint32_t us_ppu = micros() - t;
         static uint32_t pn = 0, s_ppu = 0, s_pe = 0;
         s_ppu += us_ppu;
         s_pe += us_emu;
         if (++pn >= 60)
         {
-            Serial.printf("== PPU avg/frame over %lu frames (us): emulate %lu, convert+push %lu ==\n",
+            Serial.printf("== PPU avg/frame over %lu frames (us): emulate %lu, convert+compare+push %lu ==\n",
                           pn, s_pe / pn, s_ppu / pn);
             pn = s_ppu = s_pe = 0;
         }

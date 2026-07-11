@@ -6,22 +6,23 @@
 // tile world, tile collision (water blocks), animated + flipped hero, walk-behind trees (Y-sort),
 // a colored HUD, a dialog box (button B), and a live palette flash (button A).
 //
-// Assets stream from ppu_overworld.pak (built from assets/sprites.list; ids below match that order).
+// Assets stream from ppu_overworld.pak (built from assets/sprites/sprites.list; ids below match that order).
 //
 // Build + run:
 //   python main.py examples/ppu_overworld.txt --save-rom ppu_overworld
-//   python tools/image_import.py assets/sprites.list build/demo_assets
+//   python tools/image_import.py assets/sprites/sprites.list build/demo_assets
 //   python tools/pack_assets.py build/demo_assets/assets.manifest build/roms/ppu_overworld
 //   ./pc_emu.exe --rom build/roms/ppu_overworld.rom --frames 1     # headless (writes frame.ppm)
 //   # browser: open simulator/index.html and drop ppu_overworld.rom + ppu_overworld.pak
 // Controls: arrows move, B toggles a dialog box, A flashes the palette.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-include "../lib/io.lib";      // font8x8 (for the text plane) + read_input
+include "../lib/io.lib";      // read_input
 include "../lib/sys.lib";     // sys_time (animation clock)
-include "../lib/ppu.lib";     // PPU command builder + text plane + tile collision
+include "../lib/ppu.lib";     // PPU command builder + text plane (also font8x8, for the text plane)
+include "../lib/map.lib";     // map_solid_at (tile collision against the compiled-in world)
 
 {
-    // ---- asset ids (order == assets/sprites.list, packed into ppu_overworld.pak) ----
+    // ---- asset ids (order == assets/sprites/sprites.list, packed into ppu_overworld.pak) ----
     const PAL_MASTER  = 0;
     const HERO_SIDE_A = 1;    // "Walk" (side, faces right), 4 frames
     const HERO_UP_A   = 3;    // "walk_up",   4 frames
@@ -133,10 +134,10 @@ include "../lib/ppu.lib";     // PPU command builder + text plane + tile collisi
         var int x0; var int x1; var int y0; var int y1;
         x0 = px + 3;  x1 = px + 12;
         y0 = py + 10; y1 = py + 15;
-        if ppu_solid_at(&world, MAPW, &tile_flags, x0, y0) == 1 { return 1; }
-        if ppu_solid_at(&world, MAPW, &tile_flags, x1, y0) == 1 { return 1; }
-        if ppu_solid_at(&world, MAPW, &tile_flags, x0, y1) == 1 { return 1; }
-        if ppu_solid_at(&world, MAPW, &tile_flags, x1, y1) == 1 { return 1; }
+        if map_solid_at(&world, MAPW, &tile_flags, x0, y0) == 1 { return 1; }
+        if map_solid_at(&world, MAPW, &tile_flags, x1, y0) == 1 { return 1; }
+        if map_solid_at(&world, MAPW, &tile_flags, x0, y1) == 1 { return 1; }
+        if map_solid_at(&world, MAPW, &tile_flags, x1, y1) == 1 { return 1; }
         return 0;
     }
 

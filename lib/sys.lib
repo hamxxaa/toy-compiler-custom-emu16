@@ -1,14 +1,18 @@
-// lib/sys.lib — host syscall (interrupt) wrappers.
+// lib/sys.lib — host syscall (interrupt) wrappers. Every real host syscall lives here;
+// the one exception (a PC-only test diagnostic) is deliberately NOT here — see the note above
+// sys_save.
 //
 // A guest BYTE-store to SYSCALL_PORT (0xADFE) synchronously invokes the host-registered
 // handler. By convention the handler reads its arguments from R1..R3 and returns its
 // result in R0; the value written to the port is the syscall *number*. A byte store is
 // required — a word store to 0xADFE would also write 0xADFF and clobber INPUT.
 //
-// These are naked asm functions: parameters already arrive in R1/R2 (param0->R1,
-// param1->R2), so the body must not disturb them before triggering the call. R0 holds the
-// syscall number on the way in and the result on the way out; R3 is free (every syscall
-// here takes <= 2 args) and carries the port address.
+// These are naked asm functions: parameters already arrive in R1/R2/R3 (param0->R1,
+// param1->R2, param2->R3), so the body must not disturb them before triggering the call.
+// R0 holds the syscall number on the way in and the result on the way out. Wrappers that
+// take fewer than 3 args use R3 (still free) to carry the port address; the three 3-arg
+// wrappers (sys_save/sys_load/sys_asset_load) and the three PPU bulk-transfer wrappers
+// instead borrow R4 (callee-saved: PSH/POP around the call) since R3 is already an argument.
 {
     // num 1 = LIST_ROMS: dest->R1, max->R2  =>  R0 = count
     // (also dumps the available names into dest as [len][name][NUL] records)
@@ -43,9 +47,6 @@
               RET }
     }
 
-    // num 0x7F = ECHO (diagnostic): R0 = R1 + R2. Implemented ONLY by the PC dev handler
-    // (pc_emu --menu). Used by tests/test_syscall_echo.txt to regression-test the interrupt
-    // path end to end: port write -> handler -> arg pass (R1,R2) -> result (R0).
     // num 5 = PRESENT: yield this frame to the host (it displays the finished frame and paces to
     // ~60 Hz), then resumes you. Call once per frame, AFTER drawing, for flicker-free, frame-paced
     // updates. Handled by the emulator core, so it behaves identically on firmware / PC / WASM.
@@ -64,16 +65,13 @@
               RET }
     }
 
-    int sys_echo(int a, int b) {
-        asm { LDI R0, 0x7F
-              LDI R3, 0xADFE
-              STR R0, [R3], byte
-              RET }
-    }
-
     // num 7 = SAVE: src->R1, len->R2, slot->R3  =>  R0 = bytes written (0 = fail). 3 args fill
     // R1-R3, so the port address can't sit in R3 like the 2-arg wrappers above; borrow R4
     // (callee-saved) and restore it so the caller's R4 survives the call.
+    //
+    // (num 0x7F = ECHO, a PC-only test diagnostic, deliberately has NO wrapper here: it exists
+    // only for tests/test_syscall_echo.txt to regression-test the raw interrupt path, and no
+    // shipped game should ever call it -- see that test file for its own local wrapper.)
     int sys_save(int src, int len, int slot) {
         asm { LDI R0, 7
               PSH R4
@@ -128,6 +126,35 @@
         asm { LDI R0, 12
               LDI R3, 0xADFE
               STR R0, [R3], byte
+              RET }
+    }
+
+    // num 13 = PPU_SUBMIT: buf->R1, len->R2. Executes the command stream on the PPU; if it ends in
+    // PRESENT the host composes the frame, converts it to the display, and paces to the frame rate.
+    void sys_ppu_submit(int buf, int len) {
+        asm { LDI R0, 13
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 14 = PPU_DMA: pak_id->R1, ppu_addr->R2  =>  R0 = bytes copied. The DMA unit streams pak
+    // asset `pak_id` straight into PPU RAM at `ppu_addr` (like a cartridge) — bulk room/tileset load.
+    int sys_ppu_dma(int pak_id, int ppu_addr) {
+        asm { LDI R0, 14
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
+    // num 15 = PPU_UPLOAD: ppu_addr->R1, cpu_src->R2, len->R3  =>  R0 = bytes copied. Copies a CPU
+    // buffer into PPU RAM (baked data, no pak). 3 args fill R1-R3, so borrow R4 for the port address.
+    int sys_ppu_upload(int ppu_addr, int cpu_src, int len) {
+        asm { LDI R0, 15
+              PSH R4
+              LDI R4, 0xADFE
+              STR R0, [R4], byte
+              POP R4
               RET }
     }
 }

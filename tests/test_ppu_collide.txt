@@ -1,4 +1,4 @@
-// Phase 3: CPU-side tile collision (ppu_solid_at). Pure CPU logic (no PPU readback), so it runs on
+// Phase 3: CPU-side tile collision (map_solid_at). Pure CPU logic (no PPU readback), so it runs on
 // both hosts. A 4x4 collision map + a tile-flag table; probe five world-pixel positions.
 //   map (row-major, 1 = solid tile id):   flags: tile0=open, tile1=solid(b0)
 //     0 0 1 0
@@ -7,7 +7,7 @@
 //     1 0 0 1
 //   +1 tile(2,0) solid | +2 tile(0,0) open | +4 tile(1,1) solid | +8 tile(3,3) solid | +16 tile(3,0) open
 //   return = 31
-include "../lib/ppu.lib";
+include "../lib/map.lib";
 
 {
     var byte cmap[16] = {
@@ -21,11 +21,11 @@ include "../lib/ppu.lib";
     int main() {
         var int r;
         r = 0;
-        if ppu_solid_at(&cmap, 4, &tflags, 33, 1)  == 1 { r = r + 1; }   // tile col2,row0 -> solid
-        if ppu_solid_at(&cmap, 4, &tflags, 0, 0)   == 0 { r = r + 2; }   // tile col0,row0 -> open
-        if ppu_solid_at(&cmap, 4, &tflags, 16, 16) == 1 { r = r + 4; }   // tile col1,row1 -> solid
-        if ppu_solid_at(&cmap, 4, &tflags, 48, 48) == 1 { r = r + 8; }   // tile col3,row3 -> solid
-        if ppu_solid_at(&cmap, 4, &tflags, 48, 0)  == 0 { r = r + 16; }  // tile col3,row0 -> open
+        if map_solid_at(&cmap, 4, &tflags, 33, 1)  == 1 { r = r + 1; }   // tile col2,row0 -> solid
+        if map_solid_at(&cmap, 4, &tflags, 0, 0)   == 0 { r = r + 2; }   // tile col0,row0 -> open
+        if map_solid_at(&cmap, 4, &tflags, 16, 16) == 1 { r = r + 4; }   // tile col1,row1 -> solid
+        if map_solid_at(&cmap, 4, &tflags, 48, 48) == 1 { r = r + 8; }   // tile col3,row3 -> solid
+        if map_solid_at(&cmap, 4, &tflags, 48, 0)  == 0 { r = r + 16; }  // tile col3,row0 -> open
         return r;
     }
 }

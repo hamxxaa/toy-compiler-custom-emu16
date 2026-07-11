@@ -1,0 +1,80 @@
+// lib/map.lib — pak-loaded map blobs: parse a headered map asset into the resident world
+// (lib/scene.lib then reflects that world onto the screen), read its spawns/warps/entries, and
+// answer CPU-side tile-collision queries against it. See plans/swapping-worldmaps-kojima.md and
+// docs/file-formats.md for the exact blob layout.
+include "../lib/ppu.lib";     // PPU_PAT/PPU_TILEMAP/PPU_PAL, ppu_rdbyte
+include "../lib/sys.lib";     // sys_asset_load / sys_ppu_dma / sys_ppu_upload
+{
+    // Pattern slots are split by a NAMED constant -- sprites 0..PPU_SPRITE_SLOTS-1 stay
+    // boot-resident; a map's own tileset DMAs into PPU_SPRITE_SLOTS..127 and is free to overwrite
+    // that region on every map switch (world bytes are ABSOLUTE PPU slot ids, exactly like arena
+    // hardcodes today, so map_solid_at/scene_stream need no changes at all). Retune the split later
+    // purely via this one constant.
+    const PPU_SPRITE_SLOTS = 80;
+    const MAX_MAP_BLOB     = 9728;   // 96x96 world (9216) + header(16) + flags(<=128) +
+                                     // entries(16*3) + spawns(48*4) + warps(16*5), rounded up
+
+    var byte map_buf[MAX_MAP_BLOB];  // the whole loaded blob; cur_* below are pointers INTO it
+    var int cur_w; var int cur_h;
+    var int cur_world; var int cur_flags; var int cur_stream;
+    var int cur_spawn; var int cur_spawn_n;
+    var int cur_warp;  var int cur_warp_n;
+    var int cur_entry; var int cur_entry_n;
+
+    // Load map `pak_id` from the pak: parse its header, DMA its tileset+palette (unless a field
+    // says 255 = keep current), set the section pointers, and push tiles -- one upload if the map
+    // fits the 32x32 PPU window, else cur_stream=1 so the frame loop calls scene_stream() instead.
+    // Returns 1 on success, 0 on a bad id / bad magic / a blob too big for map_buf. Loading a new
+    // map simply overwrites map_buf and every cur_* pointer -- there is no separate "unload" step.
+    int map_load(int pak_id) {
+        var int off;
+        if sys_asset_load(pak_id, &map_buf, MAX_MAP_BLOB) == 0 { return 0; }
+        if map_buf[0] != 77 { return 0; }   // 'M' (magic "MP") -- not a valid map blob
+        cur_w = map_buf[3]; cur_h = map_buf[4];
+        if map_buf[6] != 255 { sys_ppu_dma(map_buf[6], PPU_PAT + map_buf[5] * 256); }  // tileset
+        if map_buf[7] != 255 { sys_ppu_dma(map_buf[7], PPU_PAL); }                     // palette
+        off = 16;
+        cur_flags = &map_buf + off;  off = off + map_buf[8];
+        cur_entry = &map_buf + off;  cur_entry_n = map_buf[11]; off = off + cur_entry_n * 3;
+        cur_spawn = &map_buf + off;  cur_spawn_n = map_buf[9];  off = off + cur_spawn_n * 4;
+        cur_warp  = &map_buf + off;  cur_warp_n  = map_buf[10]; off = off + cur_warp_n * 5;
+        cur_world = &map_buf + off;
+        if (cur_w <= 32) && (cur_h <= 32) {
+            sys_ppu_upload(PPU_TILEMAP, cur_world, cur_w * cur_h);
+            cur_stream = 0;
+        } else {
+            cur_stream = 1;
+        }
+        return 1;
+    }
+
+    int map_spawn_count() { return cur_spawn_n; }
+    int map_spawn_field(int i, int f) { return ppu_rdbyte(cur_spawn + i * 4 + f); }  // 0 type 1 tx 2 ty 3 arg
+    int map_warp_count()  { return cur_warp_n; }
+    int map_warp_field(int i, int f)  { return ppu_rdbyte(cur_warp + i * 5 + f); }   // 0 tx 1 ty 2 map 3 entry 4 arg
+    int map_entry_field(int e, int f) { return ppu_rdbyte(cur_entry + e * 3 + f); }  // 0 tx 1 ty 2 facing
+
+    // Index of the warp whose trigger tile is (ptx,pty), or -1 if none.
+    int map_warp_at(int ptx, int pty) {
+        var int i;
+        i = 0;
+        while i < cur_warp_n {
+            if (map_warp_field(i, 0) == ptx) && (map_warp_field(i, 1) == pty) { return i; }
+            i = i + 1;
+        }
+        return 0 - 1;
+    }
+
+    // ── Tile collision (CPU-side, the source of truth — invariant I1: the PPU never sees this) ────
+    // The world collision grid lives in CPU RAM, separate from the PPU tilemap. `cmap` is a byte per
+    // tile (a tile id or metatile); `flags` is a 1-byte property table indexed by that id (b0 solid,
+    // b1 hazard, ...). Returns nonzero if the tile under world pixel (wx,wy) is solid. Caller keeps
+    // (wx,wy) in-bounds (>=0, < map extent) — e.g. a solid border + clamping the camera/objects.
+    // Works against either a pak-loaded map's cur_world/cur_flags or a compile-time-baked one
+    // (tools/pixel_map.py's generated world[]/tile_flags[]) -- it only needs the two byte arrays.
+    int map_solid_at(int cmap, int map_w, int flags, int wx, int wy) {
+        var int tile;
+        tile = ppu_rdbyte(cmap + (wy >> 4) * map_w + (wx >> 4));
+        return ppu_rdbyte(flags + tile) & 1;
+    }
+}

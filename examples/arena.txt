@@ -1,38 +1,44 @@
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// arena (PPU + a painted tilemap) — the combat arena on a real tiled world authored with the
-// pixel-map tool. The tool is PURE TILEMAP: it paints one flat 32x32 tilemap (grass/dirt/river/
-// tree-border) and the CPU-side collision map, nothing else. Trees are just tiles, painted straight
-// into the map like any terrain (the retro-console way: background tiles are always fully opaque —
-// no per-pixel transparency, no object layer). Objects (player, 4 slimes, NPC) are plain code, with
-// hand-picked spawn coordinates, exactly like a map-tool-less game would place them.
+// arena (PPU + pak-loaded, multi-map worlds) — the combat arena, now split across TWO maps
+// ("arena" and "grove") loaded at runtime from the .pak via map_load (lib/map.lib -- see
+// plans/swapping-worldmaps-kojima.md). Each map is painted with tools/pixel_map.py's PNG+legend
+// convention, one pixel = one tile, and authored (entries/spawns/warps) via tools/map_set.py.
+// Objects (player, slimes, NPC) are placed from each map's own spawn/entry data -- no compiled-in
+// world[] anymore, no hardcoded spawn coordinates. The two maps connect via one warp: the arena's
+// south edge (tile 20,31) leads to the grove's north edge (tile 20,0), and back.
 //
-// Build:  python tools/image_import.py assets/sprites.list build/demo_assets
-//         cp build/demo_assets/sprites.gen.txt examples/arena_assets.gen.txt
-//         python tools/pixel_map.py assets/map.png assets/legend.txt examples/arena_map.gen.txt
-//         python main.py examples/arena.txt --save-rom arena
-//         python tools/pack_assets.py build/demo_assets/assets.manifest build/roms/arena
+// Build:
+//   python tools/image_import.py assets/sprites/sprites.list build/demo_assets
+//   cp build/demo_assets/sprites.gen.txt examples/generated/arena_assets.gen.txt
+//   python tools/map_set.py assets/maps assets/maps/legend.txt build/demo_assets --name arena \
+//       --assets build/demo_assets/assets.manifest
+//   cp build/demo_assets/maps.gen.txt examples/generated/arena_maps.gen.txt
+//   python main.py examples/arena.txt --save-rom arena
+//   grep -v '^#' build/demo_assets/assets.manifest build/demo_assets/maps.manifest \
+//       > build/demo_assets/combined.manifest
+//   python tools/pack_assets.py build/demo_assets/combined.manifest build/roms/arena
+// (ASSET_MAP_ARENA/ASSET_MAP_GROVE below are hardcoded from that combined manifest's line order:
+//  the 18 sprite/palette assets first, then the 2 maps -- ids 18 and 19. If sprites.list ever
+//  gains/loses an asset, recompute these two from a fresh build's build/roms/arena_assets.txt.)
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-include "../lib/io.lib";              // read_input + font8x8
+include "../lib/io.lib";              // read_input + buttons
 include "../lib/game.lib";            // rand_range / srand_time / aabb (pulls sys.lib -> sys_time)
 include "../lib/event.lib";           // flags (the NPC's one-time line)
-include "../lib/ppuscene.lib";        // camera + Y-sort cast (pulls ppu.lib)
-include "arena_assets.gen.txt";       // ANIM_*_ID / PAL_MASTER asset ids
-include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure tilemap; no spawns)
+include "../lib/scene.lib";           // camera + Y-sort cast (pulls ppu.lib -- also font8x8 now)
+include "../lib/map.lib";             // map_load + spawn/warp/entry reads + map_solid_at
+include "generated/arena_assets.gen.txt";  // ANIM_*_ID / PAL_MASTER sprite asset ids
+include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_set.py)
 
 {
-    const WORLD_W = 512; const WORLD_H = 512;        // 32x32 tiles
+    // The two maps' pak ids (see the Build recipe above for how these are derived).
+    const ASSET_MAP_ARENA = 18;
+    const ASSET_MAP_GROVE = 19;
 
-    // Spawn points -- plain code, hand-picked to sit on open grass in assets/map.png (the map tool
-    // does not place objects). Change these if you repaint the map.
-    const PLAYER_SPAWN_X = 144; const PLAYER_SPAWN_Y = 336;
-    const NPC_SPAWN_X    = 320; const NPC_SPAWN_Y    = 464;
-    var int slime_x[4] = { 192, 288, 48, 160 };
-    var int slime_y[4] = { 112, 112, 432, 432 };
-
-    // pattern slots. Sprites avoid the terrain tile ids (16,17,18,19,20..23,40) the map uses.
+    // pattern slots: sprites 0..79 (PPU_SPRITE_SLOTS in map.lib); terrain lives at 80+
+    // (assets/maps/legend.txt). Sprites avoid the terrain ids the map uses (80..87, 104).
     const S_H_SIDE = 0;  const S_H_ATK = 4; const S_H_UP = 8;  const S_H_DOWN = 12;
     const S_E_SIDE = 24; const S_E_UP = 29; const S_E_DOWN = 34; const S_NPC = 39;
-    const T_TREE5 = 40;   // imported, not yet painted into assets/map.png -- ready for a future repaint
+    const T_TREE5 = 104;  // imported, not yet painted into any map -- ready for a future repaint
     const ANIM_PERIOD = 200;
 
     const C_WHITE = 21; const C_RED = 27; const C_BLACK = 0; const C_GREEN = 10;
@@ -45,6 +51,13 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
     var int ohp[6]; var int oactive[6]; var int oblink[6]; var int ofacing[6];
     var int ocx[6]; var int ocy[6]; var int ocw[6]; var int och[6];
 
+    // per-map enemy spawn points, captured by apply_spawns() each time a map loads -- replaces the
+    // old compile-time slime_x[]/slime_y[] consts (a map only has ONE spawn layout now, its own).
+    var int en_spawn_x[NUM_EN]; var int en_spawn_y[NUM_EN];
+    var int en_count;   // how many of the NUM_EN enemy slots the CURRENT map actually uses
+
+    var int on_warp;    // edge-detect for map_warp_at: only transition on the frame you STEP ONTO it
+
     const PLAYER_HP = 6; const ENEMY_HP = 3; const ATTACK_REACH = 10; const STRIKE_FRAME = 1;
     // The swing anim is 4 frames * ANIM_PERIOD(200ms) = 800ms; at a real, correctly-paced 60fps
     // that's 48 logic frames. attack_lock used to be a mismatched 12 (=200ms), which raced against
@@ -55,7 +68,7 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
     const ATTACK_LOCK = 48;
     const IFRAMES = 40; const HURT_BLINK = 20; const KB = 6; const RESPAWN_T = 120;
     const F_NPC_MET = 0;
-    const DIR_SIDE = 0; const DIR_UP = 1; const DIR_DOWN = 2;
+    const DIR_SIDE = 0; const DIR_UP = 1; const DIR_DOWN = 2;   // matches map entry "facing" encoding
 
     var int player_dir; var int player_iframes; var int attack_lock; var int attack_fired; var int flash_timer; var int flash_restore;
     var int en_dir[4]; var int en_timer[4]; var int en_respawn[4];
@@ -77,20 +90,22 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
                     ox[b] + ocx[b], oy[b] + ocy[b], ocw[b], och[b]);
     }
 
-    // TILE collision: lower-body footprint vs solid tiles (trees + water) in the painted world.
+    // TILE collision: lower-body footprint vs solid tiles (trees + water) in the CURRENTLY LOADED
+    // map (cur_world/cur_w/cur_flags -- lib/map.lib globals, set by map_load).
     int tile_blocked(int px, int py) {
-        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 3,  py + 10) == 1 { return 1; }
-        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 12, py + 10) == 1 { return 1; }
-        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 3,  py + 15) == 1 { return 1; }
-        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 12, py + 15) == 1 { return 1; }
+        if map_solid_at(cur_world, cur_w, cur_flags, px + 3,  py + 10) == 1 { return 1; }
+        if map_solid_at(cur_world, cur_w, cur_flags, px + 12, py + 10) == 1 { return 1; }
+        if map_solid_at(cur_world, cur_w, cur_flags, px + 3,  py + 15) == 1 { return 1; }
+        if map_solid_at(cur_world, cur_w, cur_flags, px + 12, py + 15) == 1 { return 1; }
         return 0;
     }
     int move_obj(int i, int dx, int dy) {
-        var int nx; var int ny; var int blk;
+        var int nx; var int ny; var int blk; var int ww; var int wh;
+        ww = cur_w * 16; wh = cur_h * 16;   // world pixel bounds of the CURRENT map (dims vary per map)
         blk = 0;
-        nx = ox[i] + dx; if nx < 0 { nx = 0; } if nx > WORLD_W - 16 { nx = WORLD_W - 16; }
+        nx = ox[i] + dx; if nx < 0 { nx = 0; } if nx > ww - 16 { nx = ww - 16; }
         if tile_blocked(nx, oy[i]) == 0 { ox[i] = nx; } else { blk = 1; }
-        ny = oy[i] + dy; if ny < 0 { ny = 0; } if ny > WORLD_H - 16 { ny = WORLD_H - 16; }
+        ny = oy[i] + dy; if ny < 0 { ny = 0; } if ny > wh - 16 { ny = wh - 16; }
         if tile_blocked(ox[i], ny) == 0 { oy[i] = ny; } else { blk = 1; }
         return blk;
     }
@@ -98,10 +113,64 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
     void respawn_enemy(int e) {
         var int oi;
         oi = I_E0 + e;
-        ox[oi] = slime_x[e]; oy[oi] = slime_y[e];       // back to the painted spawn (guaranteed clear)
+        ox[oi] = en_spawn_x[e]; oy[oi] = en_spawn_y[e];   // back to THIS map's painted spawn
         ohp[oi] = ENEMY_HP; oactive[oi] = 1; oblink[oi] = 0;
         play_anim(oi, S_E_SIDE, 5);
         en_dir[e] = rand_range(4); en_timer[e] = 40 + rand_range(60);
+    }
+
+    // ---- map switching: despawn everything but the player, then repopulate from the new map's
+    // spawn list (engine-agnostic: map_load only hands back {type,tx,ty,arg} tuples -- the GAME
+    // decides what each type means, here SPAWN_SLIME/SPAWN_NPC from arena_maps.gen.txt) ----
+    void despawn_all() {
+        var int i;
+        i = I_E0;
+        while i < I_E0 + NUM_EN { oactive[i] = 0; oblink[i] = 0; obase[i] = 0 - 1; i = i + 1; }
+        oactive[I_NPC] = 0; oblink[I_NPC] = 0; obase[I_NPC] = 0 - 1;
+        en_count = 0;
+    }
+    void apply_spawns() {
+        var int i; var int type; var int tx; var int ty; var int arg; var int oi;
+        despawn_all();
+        i = 0;
+        while i < map_spawn_count() {
+            type = map_spawn_field(i, 0); tx = map_spawn_field(i, 1); ty = map_spawn_field(i, 2); arg = map_spawn_field(i, 3);
+            if type == SPAWN_SLIME {
+                if en_count < NUM_EN {
+                    oi = I_E0 + en_count;
+                    en_spawn_x[en_count] = tx * 16; en_spawn_y[en_count] = ty * 16;
+                    ox[oi] = en_spawn_x[en_count]; oy[oi] = en_spawn_y[en_count];
+                    ohp[oi] = ENEMY_HP; oactive[oi] = 1; oblink[oi] = 0;
+                    set_collider(oi, 4, 11, 8, 4); play_anim(oi, S_E_SIDE, 5);
+                    en_dir[en_count] = rand_range(4); en_timer[en_count] = 40 + rand_range(60); en_respawn[en_count] = 0;
+                    en_count = en_count + 1;
+                }
+            } else { if type == SPAWN_NPC {
+                ox[I_NPC] = tx * 16; oy[I_NPC] = ty * 16; oactive[I_NPC] = 1;
+                set_collider(I_NPC, 0, 0, 16, 16); play_anim(I_NPC, S_NPC, 1);
+            } }
+            i = i + 1;
+        }
+    }
+
+    // ---- player placement: always via an entry point (no hardcoded spawn coords) ----
+    void place_player(int px, int py) { ox[I_PLAYER] = px; oy[I_PLAYER] = py; }
+    void set_player_facing(int f) {
+        player_dir = f;
+        if f == DIR_SIDE { ofacing[I_PLAYER] = 0; }   // default to facing right; no side-facing entry used yet
+    }
+    void place_player_at_entry(int e) {
+        place_player(map_entry_field(e, 0) * 16, map_entry_field(e, 1) * 16);
+        set_player_facing(map_entry_field(e, 2));
+    }
+    // The warp primitive: load the new map, repopulate its enemies/npc, place the player at the
+    // given entry. (No explicit "repaint" needed -- the PPU compose pipeline redraws bg/sprites
+    // fresh from the tilemap/OAM every frame regardless; only the persistent text plane would need
+    // clearing, and nothing here writes to it.)
+    void go_to_map(int pak_id, int entry_id) {
+        map_load(pak_id);
+        apply_spawns();
+        place_player_at_entry(entry_id);
     }
 
     void player_update() {
@@ -130,7 +199,7 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
     void enemy_update() {
         var int e; var int oi; var int dx; var int dy; var int bl;
         e = 0;
-        while e < NUM_EN {
+        while e < en_count {
             oi = I_E0 + e;
             if oactive[oi] == 1 {
                 if oblink[oi] > 0 { oblink[oi] = oblink[oi] - 1; }
@@ -164,7 +233,7 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
         else { if ofacing[I_PLAYER] == 1 { hx = ox[I_PLAYER] - ATTACK_REACH; hy = oy[I_PLAYER]; hw = ATTACK_REACH; hh = 16; kdx = 0 - KB; }
         else { hx = ox[I_PLAYER] + 16; hy = oy[I_PLAYER]; hw = ATTACK_REACH; hh = 16; kdx = KB; } } }
         e = 0;
-        while e < NUM_EN {
+        while e < en_count {
             oi = I_E0 + e;
             if oactive[oi] == 1 {
                 if aabb(hx, hy, hw, hh, ox[oi] + ocx[oi], oy[oi] + ocy[oi], ocw[oi], och[oi]) == 1 {
@@ -180,7 +249,7 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
         var int e; var int oi; var int kdx; var int kdy;
         if player_iframes > 0 { return; }
         e = 0;
-        while e < NUM_EN {
+        while e < en_count {
             oi = I_E0 + e;
             if oactive[oi] == 1 {
                 if obj_hit(I_PLAYER, oi) == 1 {
@@ -190,8 +259,8 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
                     if oy[I_PLAYER] < oy[oi] { kdy = 0 - KB; }
                     move_obj(I_PLAYER, kdx, kdy);
                     flash_timer = 3;
-                    if ohp[I_PLAYER] <= 0 { ox[I_PLAYER] = PLAYER_SPAWN_X; oy[I_PLAYER] = PLAYER_SPAWN_Y; ohp[I_PLAYER] = PLAYER_HP; player_iframes = IFRAMES; }
-                    e = NUM_EN;
+                    if ohp[I_PLAYER] <= 0 { place_player_at_entry(0); ohp[I_PLAYER] = PLAYER_HP; player_iframes = IFRAMES; }
+                    e = en_count;
                 }
             }
             e = e + 1;
@@ -200,6 +269,7 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
 
     int facing_npc() {
         var int fx; var int fy;
+        if oactive[I_NPC] == 0 { return 0; }   // NPC isn't on every map (e.g. not in the grove)
         fx = ox[I_PLAYER]; fy = oy[I_PLAYER];
         if player_dir == DIR_UP { fy = fy - 12; }
         else { if player_dir == DIR_DOWN { fy = fy + 12; }
@@ -254,8 +324,14 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
         scene_draw();
     }
 
+    // Push the CURRENT map's tiles to the PPU: a one-time upload if it fits the 32x32 window
+    // (cur_stream==0, e.g. the arena), else stream the visible window every frame (the grove, 50x50).
+    void push_tiles() {
+        if cur_stream == 1 { scene_stream(cur_world, cur_w, cur_h); } else { ppu_scroll(scene_cam_x, scene_cam_y); }
+    }
+
     int main() {
-        var int i;
+        var int i; var int wi;
 
         sys_set_fps(60);   // this game moves per-frame, so its speed is frame-rate bound: pin 60 fps
 
@@ -268,43 +344,30 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
         sys_ppu_dma(ANIM_ENEMY_WALK_UP_ID,  PPU_PAT + S_E_UP * 256);
         sys_ppu_dma(ANIM_ENEMY_WALK_DOWN_ID,PPU_PAT + S_E_DOWN * 256);
         sys_ppu_dma(ANIM_NINJA_ID, PPU_PAT + S_NPC * 256);
-        // painted terrain tiles -> the slots the map's tile ids name
-        sys_ppu_dma(ANIM_CIMEN_ID, PPU_PAT + 16 * 256);   // grass
-        sys_ppu_dma(ANIM_ROAD_ID,  PPU_PAT + 18 * 256);   // dirt path
-        sys_ppu_dma(ANIM_WATER_ID, PPU_PAT + 19 * 256);   // river
-        sys_ppu_dma(ANIM_TREE1_ID, PPU_PAT + 20 * 256);
-        sys_ppu_dma(ANIM_TREE2_ID, PPU_PAT + 21 * 256);
-        sys_ppu_dma(ANIM_TREE3_ID, PPU_PAT + 22 * 256);
-        sys_ppu_dma(ANIM_TREE4_ID, PPU_PAT + 23 * 256);
-        sys_ppu_dma(ANIM_BRIDGE_ID, PPU_PAT + 17 * 256);      // walkable, over water
-        sys_ppu_dma(ANIM_TREE5_ID,  PPU_PAT + T_TREE5 * 256); // ready; not yet painted into the map
+        // painted terrain tiles -> the slots BOTH maps' tile ids name (assets/maps/legend.txt, 80+).
+        // Both maps share this one tileset (their .map.txt omit tileset/palette -> map_load keeps
+        // whatever's already loaded), so it's DMA'd once here at boot, not re-DMA'd per map switch.
+        sys_ppu_dma(ANIM_CIMEN_ID, PPU_PAT + 80 * 256);   // grass
+        sys_ppu_dma(ANIM_BRIDGE_ID, PPU_PAT + 81 * 256);  // walkable, over water
+        sys_ppu_dma(ANIM_ROAD_ID,  PPU_PAT + 82 * 256);   // dirt path
+        sys_ppu_dma(ANIM_WATER_ID, PPU_PAT + 83 * 256);   // river
+        sys_ppu_dma(ANIM_TREE1_ID, PPU_PAT + 84 * 256);
+        sys_ppu_dma(ANIM_TREE2_ID, PPU_PAT + 85 * 256);
+        sys_ppu_dma(ANIM_TREE3_ID, PPU_PAT + 86 * 256);
+        sys_ppu_dma(ANIM_TREE4_ID, PPU_PAT + 87 * 256);
+        sys_ppu_dma(ANIM_TREE5_ID, PPU_PAT + T_TREE5 * 256); // ready; not yet painted into a map
         ppu_upload_font(&font8x8);
-
-        // the painted world IS the tilemap (32x32 == the window) and the collision map. Trees are
-        // solid tiles baked right into it, with their own grass background baked into the tile art
-        // (proper opaque retro tiles -- no per-pixel transparency, no backdrop trick needed).
-        sys_ppu_upload(PPU_TILEMAP, &world, 1024);
 
         srand_time();
 
-        i = 0;
-        while i < NOBJ { oactive[i] = 0; oblink[i] = 0; obase[i] = 0 - 1; i = i + 1; }
-
-        ox[I_PLAYER] = PLAYER_SPAWN_X; oy[I_PLAYER] = PLAYER_SPAWN_Y; ohp[I_PLAYER] = PLAYER_HP; oactive[I_PLAYER] = 1;
+        // One-time player setup (stats/collider/anim) -- NOT map-specific, so it happens once at
+        // boot, unlike position (which always comes from an entry point via go_to_map below).
+        ohp[I_PLAYER] = PLAYER_HP; oactive[I_PLAYER] = 1;
         set_collider(I_PLAYER, 4, 11, 8, 4); play_anim(I_PLAYER, S_H_DOWN, 4);
-        player_dir = DIR_DOWN; player_iframes = 0; attack_lock = 0; flash_timer = 0; flash_restore = 0; dialog_on = 0; prev_b = 0; dialog_dirty = 0; dialog_first_time = 0;
+        player_dir = DIR_DOWN; player_iframes = 0; attack_lock = 0; flash_timer = 0; flash_restore = 0;
+        dialog_on = 0; prev_b = 0; dialog_dirty = 0; dialog_first_time = 0; on_warp = 0;
 
-        i = 0;
-        while i < NUM_EN {
-            ox[I_E0 + i] = slime_x[i]; oy[I_E0 + i] = slime_y[i];
-            ohp[I_E0 + i] = ENEMY_HP; oactive[I_E0 + i] = 1;
-            set_collider(I_E0 + i, 4, 11, 8, 4); play_anim(I_E0 + i, S_E_SIDE, 5);
-            en_dir[i] = rand_range(4); en_timer[i] = 40 + rand_range(60); en_respawn[i] = 0;
-            i = i + 1;
-        }
-
-        ox[I_NPC] = NPC_SPAWN_X; oy[I_NPC] = NPC_SPAWN_Y; oactive[I_NPC] = 1;
-        set_collider(I_NPC, 0, 0, 16, 16); play_anim(I_NPC, S_NPC, 1);
+        go_to_map(ASSET_MAP_ARENA, 0);   // boot into the arena at entry 0 (new-game start)
 
         while true {
             if dialog_on == 1 {
@@ -314,8 +377,8 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
                 // the later real close would have nothing left to trigger the cleanup wipe.
                 if (read_input() & 0x10) != 0 { dialog_on = 0; dialog_dirty = 1; }
                 cmd_reset();
-                scene_follow(ox[I_PLAYER], oy[I_PLAYER], MAP_W, MAP_H);
-                ppu_scroll(scene_cam_x, scene_cam_y);
+                scene_follow(ox[I_PLAYER], oy[I_PLAYER], cur_w, cur_h);
+                push_tiles();
                 build_cast(1);          // world is frozen (no update calls), but still visible
                 draw_dialog();
                 ppu_present();
@@ -324,6 +387,16 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
                 enemy_update();
                 resolve_attack();
                 player_hurt_check();
+
+                // map transitions -- edge-triggered (on_warp) so standing still on a warp tile
+                // doesn't re-fire it every frame.
+                wi = map_warp_at(ox[I_PLAYER] >> 4, oy[I_PLAYER] >> 4);
+                if wi >= 0 {
+                    if on_warp == 0 { go_to_map(map_warp_field(wi, 2), map_warp_field(wi, 3)); }
+                    on_warp = 1;
+                } else {
+                    on_warp = 0;
+                }
 
                 if (read_input() & 0x20) != 0 { if prev_b == 0 { if facing_npc() == 1 {
                     // Decide the message ONCE, before setting the flag, so a first meeting can't
@@ -334,9 +407,9 @@ include "arena_map.gen.txt";          // MAP_W/H, world[], tile_flags[]  (pure t
                 } } }
                 prev_b = read_input() & 0x20;
 
-                scene_follow(ox[I_PLAYER], oy[I_PLAYER], MAP_W, MAP_H);
+                scene_follow(ox[I_PLAYER], oy[I_PLAYER], cur_w, cur_h);
                 cmd_reset();
-                ppu_scroll(scene_cam_x, scene_cam_y);
+                push_tiles();
 
                 // The dialog box writes text-plane cells that PERSIST in PPU RAM until something
                 // overwrites them -- compose_text just keeps redrawing whatever's there every frame.

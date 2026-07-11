@@ -1,0 +1,39 @@
+// Regression test for map_load (lib/map.lib -- plans/swapping-worldmaps-kojima.md Phase 6).
+// The companion test_map_load.manifest packs two REAL maps into build/roms/test_map_load.pak:
+//   id 0 = "arena"  (tests/assets/map_arena.map,  32x32 -- the actual arena.txt map)
+//   id 1 = "forest" (tests/assets/map_forest.map, 50x50 -- a second, larger map)
+// both built by tools/map_set.py from tests/assets/map_src/{arena,forest}.png + .map.txt against
+// the shared assets/maps/legend.txt, so their tile ids/solidity come from one real, shared legend.
+//
+// Loads each map in turn and checks collision (via map_solid_at, the CPU-side tile-collision
+// helper) at a few known tiles, PLUS one shared coordinate -- tile (0,0) -- that is SOLID in
+// arena (a tree) but WALKABLE in forest (grass): the same coordinate giving a DIFFERENT answer
+// after each load is the proof that map_load genuinely swapped the resident collision grid rather
+// than serving stale data from the previous map. Also checks cur_w/cur_h update per map.
+//
+// Expected values (from the real map art, verified against tools/pixel_map.py's own tile scan):
+//   arena  tile(0,0)   = tree  (id 20) -> solid=1        arena  tile(12,1) = grass (id 16) -> solid=0
+//   forest tile(0,0)   = grass (id 16) -> solid=0        forest tile(37,0) = water (id 19) -> solid=1
+//   arena is 32x32; forest is 50x50.
+// R0 = a*1 + b*3 + c*5 + d*7 + wA*11 + hA*13 + wB*17 + hB*19
+//    = 1 + 0 + 0 + 7 + 352 + 416 + 850 + 950 = 2576
+include "../lib/map.lib";
+
+{
+    int main() {
+        var int a; var int b; var int c; var int d;
+        var int wA; var int hA; var int wB; var int hB;
+
+        map_load(0);                                                    // arena (32x32)
+        a = map_solid_at(cur_world, cur_w, cur_flags, 0, 0);             // tile(0,0): tree, solid
+        b = map_solid_at(cur_world, cur_w, cur_flags, 12 * 16, 1 * 16);  // tile(12,1): grass, walkable
+        wA = cur_w; hA = cur_h;
+
+        map_load(1);                                                    // forest (50x50)
+        c = map_solid_at(cur_world, cur_w, cur_flags, 0, 0);             // tile(0,0): grass, walkable
+        d = map_solid_at(cur_world, cur_w, cur_flags, 37 * 16, 0 * 16);  // tile(37,0): water, solid
+        wB = cur_w; hB = cur_h;
+
+        return a * 1 + b * 3 + c * 5 + d * 7 + wA * 11 + hA * 13 + wB * 17 + hB * 19;
+    }
+}

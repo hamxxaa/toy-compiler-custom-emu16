@@ -1,17 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // PPU bigworld — Phase 4 streaming reference. The world (64x48 tiles = 1024x768 px) is far larger
-// than the PPU's 32x32 tilemap window, so lib/ppuscene.lib streams the visible tiles into the torus
+// than the PPU's 32x32 tilemap window, so lib/scene.lib streams the visible tiles into the torus
 // each frame while the camera follows the hero. Same asset pak as ppu_overworld.
 //
 // Build + run:
 //   python main.py examples/ppu_bigworld.txt --save-rom ppu_bigworld
-//   python tools/image_import.py assets/sprites.list build/demo_assets
+//   python tools/image_import.py assets/sprites/sprites.list build/demo_assets
 //   python tools/pack_assets.py build/demo_assets/assets.manifest build/roms/ppu_bigworld
 //   browser: drop ppu_bigworld.rom + ppu_bigworld.pak.  Arrows move.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-include "../lib/io.lib";       // font8x8 + read_input
+include "../lib/io.lib";       // read_input
 include "../lib/sys.lib";      // sys_time
-include "../lib/ppuscene.lib"; // camera + streaming + Y-sort cast (pulls ppu.lib)
+include "../lib/scene.lib";    // camera + streaming + Y-sort cast (pulls ppu.lib -- also font8x8)
+include "../lib/map.lib";      // map_solid_at (tile collision against the compiled-in world)
 
 {
     const PAL_MASTER  = 0;
@@ -88,10 +89,10 @@ include "../lib/ppuscene.lib"; // camera + streaming + Y-sort cast (pulls ppu.li
     }
 
     int blocked(int px, int py) {
-        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 3,  py + 10) == 1 { return 1; }
-        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 12, py + 10) == 1 { return 1; }
-        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 3,  py + 15) == 1 { return 1; }
-        if ppu_solid_at(&world, MAP_W, &tile_flags, px + 12, py + 15) == 1 { return 1; }
+        if map_solid_at(&world, MAP_W, &tile_flags, px + 3,  py + 10) == 1 { return 1; }
+        if map_solid_at(&world, MAP_W, &tile_flags, px + 12, py + 10) == 1 { return 1; }
+        if map_solid_at(&world, MAP_W, &tile_flags, px + 3,  py + 15) == 1 { return 1; }
+        if map_solid_at(&world, MAP_W, &tile_flags, px + 12, py + 15) == 1 { return 1; }
         return 0;
     }
 

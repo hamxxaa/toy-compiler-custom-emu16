@@ -1,0 +1,18 @@
+# arena (map1) -- the original combat arena. 32x32, fits the PPU's 32x32 window (no streaming).
+base    80
+
+# entry 0 = new-game start (the historical PLAYER_SPAWN_X/Y=144,336 -> tile 9,21).
+# entry 1 = arrival point when returning from the grove (one tile north of the warp trigger below,
+#           so stepping back in doesn't immediately re-trigger the south warp).
+entry   0  9  21  down
+entry   1  20 30  up
+
+# the 4 historical slime spawns (slime_x/y) + the ninja NPC (NPC_SPAWN_X/Y=320,464 -> tile 20,29).
+spawn   slime  12 7
+spawn   slime  18 7
+spawn   slime  3  27
+spawn   slime  10 27
+spawn   npc    20 29
+
+# south edge -> the grove's entry 0.
+warp    20 31  grove  0

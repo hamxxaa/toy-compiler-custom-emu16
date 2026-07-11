@@ -1,0 +1,13 @@
+# grove (map3) -- a second, larger area south of the arena. 50x50, bigger than the 32x32 PPU
+# window, so it streams (scene_stream) instead of a one-time upload.
+base    80
+
+# entry 0 = arrival from the arena's south warp (one tile south of the warp trigger below, so
+# arriving here doesn't immediately re-trigger the north warp back).
+entry   0  20 1  down
+
+spawn   slime  25 25
+spawn   slime  15 35
+
+# north edge -> arena's entry 1 (the return-arrival point, not its warp trigger tile).
+warp    20 0   arena  1

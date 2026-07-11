@@ -1,4 +1,4 @@
-// examples/menu.txt — ROM selector menu.
+// examples/menu.txt — ROM selector menu (PPU text-plane version).
 //
 // A normal ROM compiled through the pipeline. It lists the games the host exposes (over
 // the syscall/interrupt mechanism) and launches the highlighted one. Boots first on the
@@ -7,17 +7,40 @@
 // Doubles as a syntax reference for the language: globals, arrays, address-of, function
 // calls, while loops, nested if/else, comparisons and bitwise tests.
 //
-// Rendering note: a "frame" is only ~100k instructions, but a full redraw (fill + one
-// draw_string per row) costs far more, so redrawing every frame never finishes and the
-// screen looks black. The fix below is to draw ONCE and redraw ONLY when the selection
-// changes; the rest of the time the loop just polls input and the picture stays put.
+// Renders entirely on the PPU's text plane (no tilemap, no sprites): an opaque black panel
+// covers the whole 20x16 grid once at boot (tile_fill with GLYPH_SOLID -- its bitmap is fully
+// "on", so even with bg=NO_BG every pixel still paints, giving an opaque block), then each row's
+// letters are redrawn ONLY when the highlighted row changes. tile_text_bg's cells PERSIST in PPU
+// RAM between frames (compose_text just keeps redrawing whatever's already there), so an
+// unchanged frame safely re-presents the same picture for free -- this used to be a hard
+// requirement on the old VRAM path (a full redraw couldn't finish inside one frame's instruction
+// budget); on the PPU it's just a cheap, still-worth-doing optimization.
+//
+// Unlike a game ROM, the menu can't assume a .pak is ever present (it's the very first thing
+// that boots, before any game's assets exist on the device) -- so it uploads its own tiny
+// 3-color palette directly from a baked-in byte array via sys_ppu_upload, instead of DMA-ing one
+// from storage like every other PPU program in this repo does.
 
-include "../lib/io.lib";
-include "../lib/sys.lib";
+include "../lib/io.lib";              // read_input
+include "../lib/sys.lib";             // sys_list_roms / sys_get_rom_name / sys_load_rom
+include "../lib/ppu.lib";             // text plane + the PPU command/present protocol (also font8x8)
+
 {
     // GET_ROM_NAME writes one name here per row. LIST_ROMS (called once, for the count)
     // also dumps ALL names here, so the buffer is sized for the whole list, not one name.
     var byte namebuf[512];
+
+    // A minimal palette: index 0 = black (panel + letter background), 1 = white (unselected),
+    // 2 = red (selected) -- RGB565, little-endian, matching sys_ppu_upload's raw byte copy.
+    var byte menu_pal[6] = { 0x00, 0x00,   0xFF, 0xFF,   0x00, 0xF8 };
+    const IDX_BLACK = 0; const IDX_WHITE = 1; const IDX_RED = 2;
+
+    // Row text starts at column 1 (a small left margin) and the grid is 20 columns wide, so a
+    // name longer than 19 chars would run past the row -- the PPU's TEXT command does NOT clamp
+    // that (same as the old VRAM plot path), it would just spill into the NEXT row's cells (or
+    // past the end of PPU_TEXTMAP entirely for a long enough name on the last row). ROM filenames
+    // are short in practice, but they come from whatever's on the storage device, so clamp them.
+    const ROW_X = 1; const MAX_NAME = 19;
 
     int main() {
         var int count;
@@ -26,42 +49,54 @@ include "../lib/sys.lib";
         var int drawn;
         var int prev;
         var int i;
-        var int input;
         var int len;
+        var int input;
         var int color;
 
         count = sys_list_roms(&namebuf, 16);    // R0 = number of ROMs
 
-        // Only ~12 rows of 8px text fit on the 128px-tall screen. Cap the row count so we
-        // never plot past the end of VRAM (which would be an out-of-bounds write).
+        // MAX_ROMS (every host's own list cap) is 16, which also happens to be exactly the text
+        // grid's row count -- so every possible ROM fits with no separate screen-height cap needed
+        // (unlike the old VRAM version, which had to cap at 12 rows of 8px text on a 128px screen).
         shown = count;
-        if shown > 12 {
-            shown = 12;
+        if shown > 16 {
+            shown = 16;
         }
 
         selected = 0;
         prev = 0;
         drawn = -1;                             // -1 != selected, so the first frame draws
 
-        fill(0);                                // black background, painted once
+        sys_ppu_upload(PPU_PAL, &menu_pal, 6);
+        ppu_upload_font(&font8x8);
+        ppu_scroll(0, 0);
 
         while (true) {
-            // Redraw ONLY when the highlight moved. Redrawing every frame can't finish
-            // within the per-frame instruction budget, so the screen would look black.
+            cmd_reset();
+
+            // Redraw ONLY when the highlight moved (see the file header for why this is safe).
             if selected != drawn {
+                if drawn < 0 {
+                    tile_fill(0, 0, 20, 16, GLYPH_SOLID, IDX_BLACK);   // opaque panel, once
+                }
                 i = 0;
                 while (i < shown) {
                     len = sys_get_rom_name(i, &namebuf);
-                    if i == selected {
-                        color = 2;              // red (selected)
-                    } else {
-                        color = 1;              // white
+                    if len > MAX_NAME {
+                        namebuf[MAX_NAME] = 0;      // clamp: NUL-terminate early, don't overrun the row
                     }
-                    draw_string(&namebuf, len, 8, i * 10, color);
+                    if i == selected {
+                        color = IDX_RED;            // red (selected)
+                    } else {
+                        color = IDX_WHITE;           // white
+                    }
+                    tile_text_bg(ROW_X, i, &namebuf, color, IDX_BLACK);
                     i = i + 1;
                 }
                 drawn = selected;
             }
+
+            ppu_present();
 
             // Navigation: act only on a FRESH press (bit set now AND clear last frame).
             // The language has no '!' operator, so test the previous state with '== 0'.

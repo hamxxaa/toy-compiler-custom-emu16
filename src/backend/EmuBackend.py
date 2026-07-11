@@ -46,19 +46,22 @@ from .core.function_frame import FunctionFrame
 class EmuBackend:
     # Memory layout:
     #   0x0000-0x0007  Bootstrap (LDI sp + JMP code_start)
-    #   0x0008-0x3FFF  Data section (globals + arrays incl. the ROM-shipped font, AND streamed
-    #                  sprite sheets — the sprite pool lives here; 16 KB as of the sprite library)
-    #   0x4000-0xADFB  Code section (functions, grows up from 0x4000)
-    #   0xADFC         Stack base (grows DOWN from here)
+    #   0x0008-0x5FFF  Data section (globals + arrays incl. the ROM-shipped font, streamed sprite
+    #                  sheets, AND the runtime map buffer for pak-loaded maps — 24 KB, bumped from
+    #                  16 KB to make room for the map system; see plans/swapping-worldmaps-kojima.md)
+    #   0x6000-0xADFB  Code section (functions, grows up from 0x6000)
+    #   0xADFC         Stack base (grows DOWN from here; floor = STACK_FLOOR in definitions.h)
     #   0xADFE         SYSCALL_PORT (write-triggered host call)
     #   0xADFF         INPUT (hardware mapped)
-    #   0xAE00-0xAFFF  PRAM (hardware mapped, 512 bytes)
-    #   0xB000-0xFFFF  VRAM (hardware mapped, 20480 bytes)
+    #   0xAE00-0xAFFF  PRAM (hardware mapped, 512 bytes; legacy VRAM-path fallback)
+    #   0xB000-0xFFFF  VRAM (hardware mapped, 20480 bytes; legacy VRAM-path fallback)
     # NOTE: the DATA/CODE boundary lives only in the ROM bootstrap's `JMP CODE_START`; the
-    # emulators load the flat image and execute it, so moving it is a compiler-only change.
-    CODE_START_ADDRESS = 0x4000
+    # emulators load the flat image and execute it, so moving it is a compiler-only change. The
+    # ONE place outside this file that must move in lockstep is emulator/definitions.h's
+    # STACK_FLOOR (used by emu.cpp's stack-underflow sanity check) — keep it equal to CODE_START.
+    CODE_START_ADDRESS = 0x6000
     DATA_START_ADDRESS = 0x0008
-    DATA_END_ADDRESS   = 0x4000   # data grows up to code start (16 KB for globals + streamed sheets)
+    DATA_END_ADDRESS   = 0x6000   # data grows up to code start (24 KB for globals + streamed sheets)
     STACK_START_ADDRESS = 0xADFC
     SYSCALL_PORT = 0xADFE
     INPUT_ADDRESS = 0xADFF

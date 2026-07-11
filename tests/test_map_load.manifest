@@ -1,0 +1,8 @@
+# name type w h source
+# Two real maps (the arena map + a second, larger one), built via tools/map_set.py from
+# tests/assets/map_src/{arena,forest}.png + .map.txt against the shared assets/legend.txt.
+# Regenerate with:
+#   python tools/map_set.py tests/assets/map_src assets/legend.txt <out_dir> --name test_map_load
+# then copy <out_dir>/arena.map -> tests/assets/map_arena.map (and forest.map likewise).
+map_arena tilemap 32 32 assets/map_arena.map
+map_forest tilemap 50 50 assets/map_forest.map

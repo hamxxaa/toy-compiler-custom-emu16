@@ -1,10 +1,19 @@
 // Regression test for the host syscall / interrupt path.
-// sys_echo triggers syscall 0x7F (the PC dev handler's echo: R0 = R1 + R2), proving the
-// byte-store to SYSCALL_PORT fires the handler, passes R1/R2, and returns R0.
+// Triggers syscall 0x7F (the PC dev handler's echo: R0 = R1 + R2), proving the byte-store to
+// SYSCALL_PORT fires the handler, passes R1/R2, and returns R0. 0x7F is a PC-only test diagnostic
+// (see pc_emulator_main.cpp) with no wrapper in lib/sys.lib -- no shipped game should call it, so
+// this test carries its own tiny local wrapper instead, same naked-asm pattern as every real
+// syscall wrapper in sys.lib.
 // Run with `pc_emu --menu` so the handler is registered.  Expected return: 42.
-include "../lib/sys.lib";
 {
+    int test_echo(int a, int b) {
+        asm { LDI R0, 0x7F
+              LDI R3, 0xADFE
+              STR R0, [R3], byte
+              RET }
+    }
+
     int main() {
-        return sys_echo(40, 2);
+        return test_echo(40, 2);
     }
 }

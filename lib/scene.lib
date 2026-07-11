@@ -1,9 +1,9 @@
-// lib/ppuscene.lib — a small top-down scene layer on the PPU model (successor to the old scene.lib).
-//
-// The CPU owns the whole world map resident (a byte per tile; also the collision map via ppu_solid_at
-// in ppu.lib). This lib does the light per-frame visual work the CPU still owns: follow the camera,
-// stream the visible window of the world into the PPU's 32x32 tilemap (so the world can be larger
-// than the window), and emit a Y-sorted sprite cast as OAM. The PPU does all the pixels.
+// lib/scene.lib — a small top-down scene layer on the PPU model (successor to the old scene.lib
+// from the pre-PPU renderer). Reflects the CPU-resident world onto the screen and nothing else: a
+// dead-zone follow camera, tilemap streaming into the PPU's 32x32 window, and a Y-sorted sprite
+// cast. It does not know or care whether the world it's streaming was baked into the ROM at compile
+// time (tools/pixel_map.py) or loaded from the pak at runtime (lib/map.lib) -- scene_stream just
+// takes a (world, map_w, map_h) triple. Map loading/parsing and tile collision live in lib/map.lib.
 //
 // Typical frame:
 //     scene_follow(hero_x, hero_y, MAP_W, MAP_H);   // clamp camera to the world
@@ -15,7 +15,6 @@
 //     scene_draw();                                  // Y-sort -> OAM
 //     ppu_present();
 include "../lib/ppu.lib";
-
 {
     var int scene_cam_x;      // camera top-left in world pixels
     var int scene_cam_y;

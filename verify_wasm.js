@@ -34,14 +34,25 @@ const TESTS = [
     ['test_ppu_text', 4786],
     ['test_ppu_collide', 31],
     // Event foundation (guest libs; deterministic — test_flags uses save/load so it's pc_emu-only).
+    // Map system (swapping-worldmaps-kojima.md) Phase 3: byte-array + &arr+offset pointer math smoke test.
+    ['test_map_buf_smoke', 234],
+    // Map system Phase 6: map_load end-to-end on a real 2-map pak (needs test_map_load.pak,
+    // auto-loaded below like the browser sim does — see the pak-loading block in the runner).
+    ['test_map_load', 2576],
 ];
 
 (async () => {
     const Module = await createEmu();
-    const init     = Module.cwrap('emu_init', null, []);
-    const memPtrF  = Module.cwrap('emu_mem', 'number', []);
-    const runFrame = Module.cwrap('emu_run_frame', 'number', ['number']);
-    const reg      = Module.cwrap('emu_reg', 'number', ['number']);
+    const init       = Module.cwrap('emu_init', null, []);
+    const memPtrF    = Module.cwrap('emu_mem', 'number', []);
+    const runFrame   = Module.cwrap('emu_run_frame', 'number', ['number']);
+    const reg        = Module.cwrap('emu_reg', 'number', ['number']);
+    // Asset-pack bridge (same exports simulator/wasm.js's setAssetPack uses) — lets a test whose
+    // ROM streams data via sys_asset_load/sys_asset_info/sys_ppu_dma run here too, instead of
+    // being pc_emu-only. Auto-loaded below for any test with a matching build/roms/<name>.pak.
+    const assetBufF  = Module.cwrap('emu_asset_buf', 'number', []);
+    const assetCapF  = Module.cwrap('emu_asset_capacity', 'number', []);
+    const commitAsset = Module.cwrap('emu_commit_asset_pack', null, ['number']);
 
     let allPass = true;
     console.log(`${'Test'.padEnd(20)} ${'expect'.padStart(7)} ${'got'.padStart(7)}`);
@@ -57,6 +68,16 @@ const TESTS = [
         const rom = fs.readFileSync(romPath);
 
         init();                                   // zero mem + default palette
+
+        const pakPath = path.join(ROM_DIR, name + '.pak');
+        if (fs.existsSync(pakPath)) {
+            const pak = fs.readFileSync(pakPath);
+            const buf = assetBufF(), cap = assetCapF();
+            const n = Math.min(pak.length, cap);
+            Module.HEAPU8.set(pak.subarray(0, n), buf);
+            commitAsset(n);
+        }
+
         const base = memPtrF();
         Module.HEAPU8.set(rom, base);             // load ROM at address 0
         runFrame(100000);                         // one frame

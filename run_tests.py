@@ -87,6 +87,10 @@ TESTS = [
     ("tests/test_class_init.txt",     "test_class_init",     43),
     # ── sprite-lib Phase 5: per-game frame-rate cap syscall ──
     ("tests/test_set_fps.txt",        "test_set_fps",        42),
+    # ── map system (swapping-worldmaps-kojima.md) Phase 3: smoke test for map_load's mechanic ──
+    ("tests/test_map_buf_smoke.txt",  "test_map_buf_smoke",  234),
+    # ── map system Phase 6: map_load end-to-end on a real 2-map pak (arena + a 2nd larger map) ──
+    ("tests/test_map_load.txt",       "test_map_load",       2576),
 ]
 
 # Pure-Python tool tests (no ROM): run as subprocesses, must exit 0.
@@ -94,6 +98,7 @@ TOOL_TESTS = [
     "tests/test_png.py",
     "tests/test_image_import.py",
     "tests/test_pixel_map.py",
+    "tests/test_map_set.py",
 ]
 
 

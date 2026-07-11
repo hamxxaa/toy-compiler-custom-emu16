@@ -6,11 +6,11 @@ __pycache__/
 .Python
 .claude
 
-assets
-saves/
-experiments/
+# Runtime-generated data (not source)
+/saves/
+/experiments/
 
-# Build directory
+# Build directory (fully regenerated from source — see README)
 build/
 
 # IDE files
@@ -22,12 +22,6 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
-
-# Legacy files (no longer used)
-AsmGenerator.py
-CodeGenerator.py
-runtime/print_integer.asm
-runtime/print_integer.o
 
 # Temporary files
 *.tmp

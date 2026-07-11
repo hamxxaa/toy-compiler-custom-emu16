@@ -612,7 +612,7 @@ void decode_and_execute(uint16_t instruction)
         EMU_TRACE_PRINT("TRACE POP R%d val=0x%04X SP=0x%04X\n", register1, cpu_instance.registers[register1].word, cpu_instance.registers[7].word);
         // Sanity check: detect stack underflow / wrap-around (floor = CODE_START; the stack lives
         // high and must never drop into the code/data region below it)
-        if (cpu_instance.registers[7].word < 0x4000)
+        if (cpu_instance.registers[7].word < STACK_FLOOR)
         {
             EMU_TRACE_PRINT("ERROR: Stack underflow/wrap detected at PC=0x%04X after POP (SP=0x%04X)\n", cpu_instance.pc, cpu_instance.registers[7].word);
             cpu_instance.running = false;

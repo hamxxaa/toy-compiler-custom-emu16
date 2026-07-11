@@ -1,13 +1,21 @@
 // Memory map — shared between PC emulator, WASM simulator, and ESP32 firmware.
 // Hardware pin assignments live in firmware/src/hw_pins.h.
 //
-// 0x0008–0x3FFF  DATA   compiler globals / arrays (incl. the font + streamed sprite sheets)
-// 0x4000–0xADFB  CODE
-// 0xADFC         stack base (pre-decrement grows DOWN)
+// 0x0008–0x5FFF  DATA   compiler globals / arrays (incl. the font, streamed sprite sheets, and the
+//                       runtime map buffer for pak-loaded maps) — 24 KB, bumped from 16 KB for the
+//                       map system (see plans/swapping-worldmaps-kojima.md)
+// 0x6000–0xADFB  CODE
+// 0xADFC         stack base (pre-decrement grows DOWN; floor = STACK_FLOOR below)
 // 0xADFE         SYSCALL_PORT  write-triggered host call
 // 0xADFF         INPUT
-// 0xAE00–0xAFFF  PRAM
-// 0xB000–0xFFFF  VRAM
+// 0xAE00–0xAFFF  PRAM   (legacy VRAM-path fallback)
+// 0xB000–0xFFFF  VRAM   (legacy VRAM-path fallback)
+//
+// The DATA/CODE boundary is CODE_START_ADDRESS in src/backend/EmuBackend.py (compiler-only — the
+// emulators just load the flat ROM image). STACK_FLOOR below MUST equal that same boundary: it's
+// the emulator core's stack-underflow sanity check (emu.cpp), so the two constants move together
+// any time DATA is resized.
+#define STACK_FLOOR         0x6000
 
 #define SYSCALL_PORT        0xADFE
 #define SYSCALL_PRESENT     5      // syscall #: yield the frame to the host (display + pace), then resume

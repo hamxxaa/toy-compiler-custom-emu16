@@ -2,12 +2,17 @@
 //   streamed palette + sheet, the clip REGISTRY, the bump allocator (anim_load), time-based blitting,
 //   and the thin compile-time Animator class composed into the player. The sheet is no longer a
 //   global -- it streams into anim.lib's shared pool. Build the assets first:
-//     python examples/walkdemo_art.py
-//     python tools/image_import.py examples/walkdemo_src/sprites.list build/walkdemo
+//     python tools/walkdemo_art.py
+//     python tools/image_import.py assets/walkdemo/sprites.list build/walkdemo
 //     python tools/pack_assets.py build/walkdemo/assets.manifest build/roms/walkdemo
-//     cp build/walkdemo/sprites.gen.txt examples/walkdemo_assets.gen.txt
+//     cp build/walkdemo/sprites.gen.txt examples/generated/walkdemo_assets.gen.txt
 //   then compile this; ship build/roms/walkdemo.rom + walkdemo.pak together.
-include "walkdemo_assets.gen.txt";        // clip registry: PAL_MASTER, ANIM_CHAR_WALK_ID, clip_* tables
+//
+// BROKEN pending a PPU rewrite: lib/anim.lib (and the legacy VRAM draw path it drew through) was
+// retired in the PPU reboot -- this file is kept as source material for that future port, not as a
+// working demo (see ppu_overworld.txt/ppu_bigworld.txt for the PPU-era equivalent of what this
+// showed). Preserved at the user's request, same as block_blast.txt/block_blast2.txt.
+include "generated/walkdemo_assets.gen.txt";  // clip registry: PAL_MASTER, ANIM_CHAR_WALK_ID, clip_* tables
 include "../lib/anim.lib";                 // pulls in io.lib + sys.lib; reads the registry above
 
 {

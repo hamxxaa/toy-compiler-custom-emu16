@@ -1,82 +1,79 @@
 # EMU16
 
-A homebrew game platform built from scratch — a custom 16-bit CPU, a C-like compiler that targets it,
-a **tile/sprite PPU**, an ESP32-S3 handheld, and a browser simulator, all in one repo. Write a program
-once; run it on hardware, in the terminal, or in a browser tab.
+A homebrew game platform built from scratch: a custom 16-bit CPU, a C-like compiler that targets it,
+a NES-style tile/sprite PPU, an ESP32-S3 handheld, and a browser simulator — all in one repo, all
+running the same core. Write a game once; run it on real hardware, in a terminal, or in a browser tab.
 
-| Layer | What it is |
+| | |
 |---|---|
-| **Language** | C-like: types, **structs**, **classes**, arrays, pointers, strings, bitwise/shift, `if`/`else`, `while`/`for`, **`switch`** (O(1) jump table), `const`, inline asm |
+| **Language** | C-like: types, structs, classes, arrays, pointers, strings, bitwise/shift, `if`/`else`, `while`/`for`, `switch` (O(1) jump table), `const`, inline asm |
 | **Compiler** | Hand-written: regex-NFA lexer → recursive-descent parser → TAC IR → linear-scan allocator → `.rom` |
-| **CPU** | Custom 16-bit, 8 registers (R6 = FP, R7 = SP), 64 KB little-endian address space |
-| **PPU** | Separate NES-2C02-style **tile + sprite + text** unit with its own graphics RAM; the CPU submits a command buffer, the PPU composes the frame |
+| **CPU** | Custom 16-bit, 8 registers, 64 KB little-endian address space |
+| **PPU** | Separate NES-2C02-style tile + sprite + text unit with its own graphics RAM |
 | **Targets** | ESP32-S3 handheld · desktop emulator (`pc_emu`) · browser WebAssembly sim |
+| **Assets** | Draw in [LibreSprite](https://libresprite.github.io/), paint tilemaps as PNGs, stream everything from a `.pak` |
+
+## Quick start
 
 ```bash
-python main.py examples/arena.txt --save-rom arena   # compile -> build/roms/arena.rom
-pc_emu.exe --rom build/roms/arena.rom --frames 60    # run on PC -> build/pc_emulator/frame.ppm
-make flash && make uploadfs                           # flash the handheld
+make pc_emu wasm                                       # build the desktop emulator + WASM sim
+python main.py examples/arena.txt --save-rom arena      # compile -> build/roms/arena.rom
+pc_emu.exe --rom build/roms/arena.rom --frames 60       # run headless -> build/pc_emulator/frame.ppm
+cd simulator && python -m http.server                   # or: play it in a browser tab
 ```
 
-(Graphical games stream their art from a `.pak` — see [Assets](#assets--the-sprite-pipeline).)
+```bash
+make test      # compile + run the full regression suite
+make verify    # headless WASM cross-check -- proves the browser core matches pc_emu bit-for-bit
+make flash && make uploadfs   # build + flash the real handheld (needs PlatformIO)
+```
 
-## Memory map
+Requirements: Python 3.7+ · GCC/MinGW (`pc_emu`) · Emscripten (WASM) · Node (WASM verify) ·
+PlatformIO (firmware). Full command reference per target:
+[docs/pc-emulator.md](docs/pc-emulator.md) · [docs/simulator.md](docs/simulator.md) ·
+[docs/firmware.md](docs/firmware.md).
 
-The CPU has its own 64 KB space; the PPU has a **separate** graphics RAM it alone owns (below).
+## Architecture
 
-### CPU address space
+Only one thing here is physical — everything else is the same emulator core wearing a different
+host shim:
 
-| Region | Range | Purpose |
-|---|---|---|
-| Data | `0x0008`–`0x3FFF` | globals, arrays, the bitmap font, resident map/collision data |
-| Code | `0x4000`–`0xADFB` | compiled program (stack grows down into the top of this region) |
-| Stack | `0xADFC` down | call stack (pre-decrement) |
-| SYSCALL_PORT | `0xADFE` | write-triggered host call (see [Syscalls](#syscalls)) |
-| INPUT | `0xADFF` | button state (read-only) |
-| PRAM / VRAM | `0xAE00`–`0xFFFF` | **legacy** palette + framebuffer, used only by ROMs that don't drive the PPU |
+```
+ SOFTWARE (dev machine)          compiler + libraries + asset pipeline -> game.rom + game.pak
+        │
+        ├──────────────┬──────────────────┐
+        ▼              ▼                  ▼
+   FIRMWARE        pc_emu.exe        browser sim (WASM)
+   (ESP32-S3)      (desktop CLI)     (no install needed)
+        │              │                  │
+        └──────────────┴──────────────────┘
+                        ▼
+         SHARED CORE — emu.cpp (CPU) + ppu.cpp (PPU)
+         compiled three ways from identical source, one ISA, no drift
+                        │
+                        ▼
+                   HARDWARE
+              ESP32-S3 · TFT · buttons
+```
 
-Calling convention: args in R1–R3, return value in R0, R4–R5 callee-saved.
+- **Hardware** — an ESP32-S3 handheld: TFT display, 8 buttons, an SD reader wired for later. Pins:
+  [`firmware/src/hw_pins.h`](firmware/src/hw_pins.h).
+- **Firmware** — a PlatformIO/Arduino project (`firmware/`) that boots the shared core on the ESP32.
+  It doesn't contain a second emulator: `emu_shim.cpp`/`ppu_shim.cpp` `#include` the real
+  `emulator/emu.cpp`/`ppu.cpp` directly.
+- **The shared core** (`emulator/emu.cpp` + `ppu.cpp`) — the actual CPU + PPU emulation, compiled
+  three ways (native for `pc_emu`, Arduino for firmware, Emscripten for the browser) with zero source
+  drift. This is *why* one `.rom` runs identically everywhere.
+- **Software** — the compiler (`src/`), the libraries (`lib/`), and the asset pipeline (`tools/`) that
+  run on your dev machine and produce a `game.rom` + `game.pak`.
 
-### PPU graphics RAM (separate from the CPU)
+Full depth — the CPU ISA and instruction encoding, the PPU's command-stream protocol and the
+"never touches CPU memory" invariant, the compiler's pipeline stage by stage — is in
+**[docs/architecture.md](docs/architecture.md)**.
 
-The PPU owns ~56 KB of its own memory, a flat byte array with fixed region offsets. The CPU never
-reads it directly — it pushes commands/data in (invariant: the PPU never touches CPU memory).
+## Making a game
 
-| Region | Offset | Contents |
-|---|---|---|
-| PAT | `0x0000` | 128 × 256 B patterns (16×16 tiles **and** sprites share these slots) |
-| FONT | `0x8000` | 128 × 8 B 1-bit glyphs |
-| TILEMAP | `0x8400` | 32×32 background tile ids (a scrollable torus) |
-| TEXTMAP | `0x8800` | 20×16 cells × 3 B `{glyph, fg, bg}` (the HUD/dialog text plane) |
-| OAM | `0x8BC0` | 64 sprites × 6 B `{pat, x:i16, y:i16, attr}` |
-| PAL | `0x8D40` | 256 × RGB565 |
-| REGS | `0x8F40` | scroll_x/y, ctrl, oam_count |
-| FB | `0x8F50` | 160×128 indexed framebuffer (converted through PAL at present) |
-
-## Graphics — the PPU
-
-The CPU does **no per-pixel drawing**. Each frame it builds a small command buffer and hands it to the
-PPU with `sys_ppu_submit`; bulk art (tilesets, sprite sheets, palettes) is streamed straight into PPU
-RAM with `sys_ppu_dma` (from the `.pak`) or `sys_ppu_upload` (from a CPU buffer). The PPU then composes
-the frame in NES order: **background tilemap → sprites → text plane**, and converts its indexed
-framebuffer through the 256-color palette on `PRESENT`.
-
-- **Background:** a 32×32 tilemap of pattern ids, scrolled as a torus (window-relative 0–511) — the
-  camera can roam a world far larger than the window by streaming the leading edge.
-- **Sprites:** up to 64 16×16 entries in OAM, with per-sprite horizontal/vertical flip and a
-  behind-background priority bit; index 0 is transparent. The CPU decides on-screen order (Y-sort).
-- **Text plane:** a 20×16 grid of `{glyph, fg, bg}` cells over the whole screen — the HUD and dialog
-  boxes. `bg = 255` is transparent (only the glyph's lit pixels draw, e.g. HUD over the world); any
-  other `bg` makes the whole cell opaque (dialog panels).
-- **Collision** stays CPU-side: a resident tile grid + a `tile_flags` property table (separate from
-  the PPU's tilemap), queried with `ppu_solid_at`.
-
-This models the NES 2C02 (a software PPU, so no NES hardware limits); a future revision splits it onto a
-second chip over SPI — the same command bytes work either way.
-
-## Language
-
-C-like with a few twists — one example covers most of it:
+One example covers most of the language:
 
 ```c
 include "lib/io.lib";
@@ -98,160 +95,65 @@ include "lib/io.lib";
 }
 ```
 
-- Types: `int` (16-bit), `byte` (1 byte in arrays), `bool`, `void`, and **`struct`** (below). Hex
-  literals (`0xB000`) are fine; string literals (`"hi\n"`) are NUL-terminated byte arrays whose value is
-  the address (escapes `\n \t \\ \" \0`).
-- Operators: `+ - * / %`, unary `-`, `& | ^ ~`, `<< >>`, comparisons, `&&`/`||` (parenthesize each side).
-  Precedence loosest→tightest: bitwise < shift < `+ -` < `* / %`; comparisons bind loosest. There is no `!`.
-- Control flow: `if`/`else`, `while`, `for (init; cond; post)`, `break`, `continue`, and `switch`
-  (over compile-time-constant `case`s, auto-break/no fallthrough; compiles to an **O(1) jump table**).
-- `const NAME = <expr>;` — compile-time integer constants; they fold to literals and may be used as
-  array sizes (`const N = 64; var int a[N];`).
-- `struct Name { int a; byte b; }` then `var Name s;` or `var Name arr[N];`; read/write with `s.a` /
-  `arr[i].b`. Data-only and byte-packed. Pass entities via a global array + an index — struct
-  pointers/params aren't supported yet.
-- `class Name { … }` — compile-time **objects**: `new Name obj;` stamps out a uniquely-named copy of the
-  class's fields + methods (monomorphization); call them with `obj.method()`, access fields inside a
-  method via `self.field`. Supports composition (`var Other sub;` → `self.sub.method()`) and a manual
-  `init()`. v1 limits: static/global named instances; fields must be primitive or a composed class
-  (big buffers stay global); no inheritance; no runtime-indexed object arrays — use struct-arrays for
-  swarms. (Desugars to plain globals + functions before analysis, so it's pure front-end sugar.)
-- A function whose whole body is one `asm { }` block is **naked**: no prologue, args in R1–R3, return
-  in R0, you write `RET`. The IO and syscall libraries are built this way.
-- `include "path";` splices a library's source into the program — there is no separate linker.
+Types: `int` (16-bit), `byte`, `bool`, `void`, `struct` (data-only, byte-packed), and compile-time
+`class` (monomorphized into plain globals + functions — composition, `self.field`, no inheritance).
+`const NAME = <expr>;` folds to a literal at compile time. `include "path";` splices a file's source
+in — there's no separate linker, so two included files defining the same name is a compile error, not
+a silent clash. Full grammar: `src/parser/Parser.py`; real programs: `examples/`.
 
-`SCREEN_WIDTH`, `SCREEN_HEIGHT`, and the syscall/PPU library constants are predefined. For the full
-grammar see `src/parser/Parser.py`; for real programs see `examples/` and `lib/`.
+**Draw nothing yourself — the PPU does.** Each frame you build a small command buffer
+(`lib/ppu.lib`: scroll, sprites, text) and hand it to the PPU with `ppu_present()`; bulk art streams
+straight from the `.pak` into PPU RAM. `lib/scene.lib` reflects the resident world onto the screen —
+a follow camera, tilemap streaming for worlds bigger than one screen, Y-sorted sprites — while
+`lib/map.lib` owns the world itself: `map_load(pak_id)` swaps the whole resident world (with its own
+tileset/spawns/warps/entry points) at runtime, plus tile-collision queries (`map_solid_at`). The
+other libraries: `io.lib` (input + peek/poke), `sys.lib` (every host syscall), `game.lib` (PRNG +
+AABB collision), `event.lib` (256 save-backed flags — the spine for one-time triggers and branching
+dialog). Each library has exactly one job; full per-function reference:
+**[docs/libraries.md](docs/libraries.md)**.
 
-## Libraries (`lib/`)
+**Assets:** draw in LibreSprite (indexed mode), export PNG+JSON, list them in a `sprites.list`, run
+`tools/image_import.py` then `tools/pack_assets.py` to get a `.pak`. Paint tilemaps as an indexed PNG
+(1 pixel = 1 tile) with `tools/pixel_map.py` (one map baked into the ROM) or `tools/map_set.py`
+(a whole folder of maps, pak-loaded at runtime, linked by warps). Full tool usage, flags, and file
+formats: **[docs/tools.md](docs/tools.md)** and **[docs/file-formats.md](docs/file-formats.md)**.
 
-- **`ppu.lib`** — the graphics interface. Builds a PPU command buffer and flushes it: `cmd_reset` →
-  emit commands → `ppu_present` (submits + yields the frame). Covers **scroll** (`ppu_scroll`,
-  `ppu_backdrop`), **sprites** (an OAM shadow via `oam_clear`/`oam_set(pat,x,y,attr)`), the **text
-  plane** (`tile_text`, `tile_text_bg` opaque, `tile_fill`/`tile_clear`, `tile_number`), **asset
-  streaming** (`sys_ppu_dma`/`sys_ppu_upload`, `ppu_upload_font`), and **CPU-side tile collision**
-  (`ppu_solid_at(cmap, map_w, flags, wx, wy)` against a resident grid + `tile_flags`). Region constants
-  (`PPU_PAT`, `PPU_FONT`, `PPU_TILEMAP`, `PPU_PAL`) and glyph sentinels (`GLYPH_SOLID`, `GLYPH_BLANK`,
-  `PPU_NO_BG`) live here.
-- **`ppuscene.lib`** — a small top-down **scene layer** on top of `ppu.lib`. A **dead-zone follow
-  camera** (`scene_follow`, clamped to the world), **tilemap streaming** (`scene_stream` pushes the
-  visible window of a world larger than the 32×32 tilemap and sets the scroll), and a world-space
-  **Y-sorted sprite cast** (`scene_clear`/`scene_obj`/`scene_draw` — nearer objects drawn in front,
-  converted world→screen with the camera and emitted as OAM).
-- **`io.lib`** — minimal CPU-side I/O: `read_input` + edge helpers (`button`, `button_pressed`,
-  `button_released`), `peek`/`poke`(`_byte`), the baked-in 8×8 `font8x8` array (uploaded to the PPU
-  font region), and `draw_row8` (a low-level VRAM row primitive kept for the legacy display path).
-- **`sys.lib`** — wrappers for the host syscalls below.
-- **`game.lib`** — `rand`/`srand`/`rand_range` (xorshift PRNG) and `aabb` box collision; pulls in
-  `sys.lib` for `srand_time()`.
-- **`event.lib`** — the **event/state spine**: bit-packed **flags** (`flag_get`/`set`/`clear`,
-  `flags_reset`, 256 bits, `flags_save`/`flags_load` over a save slot) — the save state and the gate
-  for one-time events / branching dialog. Events themselves are **game functions dispatched by a
-  `switch`** on the object/zone id; dialog is drawn on the PPU text plane (`tile_text_bg`).
+**Talking to the host:** a ROM asks the host to list ROMs, save/load, stream an asset, or drive the
+PPU via a *syscall* — write a number to `SYSCALL_PORT`, get a result in `R0`. Full table:
+**[docs/syscalls.md](docs/syscalls.md)**.
 
-## Syscalls
+## Documentation
 
-A ROM asks the host to do something it can't — list/load games, drive the PPU, stream assets, pace a
-frame — by byte-storing a *syscall number* to `SYSCALL_PORT` (`0xADFE`): args in R1–R3, result in R0.
-It must be a byte store; a word write would also hit INPUT at `0xADFF`. Each host registers its own
-handler (firmware over LittleFS, `pc_emu` over `build/roms/`, the browser over dropped ROMs + `.pak`s).
+| Doc | Covers |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | The four layers in depth: hardware, firmware, the shared CPU+PPU core, the compiler pipeline. CPU ISA & instruction encoding, PPU command protocol. |
+| [docs/memory-map.md](docs/memory-map.md) | The full CPU address space (down to what's actually inside DATA and why) and the PPU's separate graphics RAM, region by region. Calling convention. |
+| [docs/syscalls.md](docs/syscalls.md) | Every syscall: args, result, per-host differences. |
+| [docs/file-formats.md](docs/file-formats.md) | `.rom`, `.pak` (EPAK), map blobs, save files — byte layouts and the build→deploy→runtime lifecycle. |
+| [docs/libraries.md](docs/libraries.md) | Every function in `lib/*.lib`, library by library. |
+| [docs/tools.md](docs/tools.md) | Every script in `tools/`: CLI usage, flags, what each one emits. |
+| [docs/simulator.md](docs/simulator.md) | The browser sim's internals: build, JS architecture, debug/memory-viewer features. |
+| [docs/pc-emulator.md](docs/pc-emulator.md) | `pc_emu.exe`'s CLI flags, output format, and how the regression suite uses it. |
+| [docs/firmware.md](docs/firmware.md) | The ESP32-S3 firmware: boot flow, main loop, storage seam, syscall handler, toggles. |
 
-| # | Wrapper | Does |
-|---|---|---|
-| 1 / 2 | `sys_list_roms` · `sys_get_rom_name` | enumerate the available ROMs |
-| 3 / 4 | `sys_load_rom` · `sys_reset` | launch a game · return to the menu |
-| 5 | `sys_present()` | display the finished frame, pace to ~60 Hz, then resume — a vblank |
-| 6 | `sys_time()` | milliseconds since boot (low 16 bits) |
-| 7 / 8 / 9 | `sys_save` · `sys_load` · `sys_save_exists` | persist/restore a per-game save slot |
-| 10 / 11 | `sys_asset_info` · `sys_asset_load` | read a pak asset's header · copy it into CPU memory |
-| 12 | `sys_set_fps(n)` | request a frame-rate cap (0 = default 60); paces the frame + sizes its instruction budget |
-| 13 | `sys_ppu_submit(buf, len)` | execute a PPU command stream; a trailing `PRESENT` yields the frame |
-| 14 | `sys_ppu_dma(pak_id, ppu_addr)` | stream a pak asset straight into PPU RAM (tilesets, sheets, palette) |
-| 15 | `sys_ppu_upload(ppu_addr, cpu_src, len)` | copy a CPU buffer into PPU RAM (baked data) |
-
-For PPU games the loop is: `cmd_reset` → build commands (scroll, OAM, text) → `ppu_present()` (which
-submits and yields), so the loop runs exactly once per displayed frame — frame-paced, no tearing.
-
-`examples/menu.txt` is the home screen: an ordinary ROM that lists games through syscalls 1–4. The
-firmware boots `/menu.rom`; drop a `.rom` into `firmware/data/`, `make uploadfs`, and it shows up.
-
-## Assets — the sprite pipeline
-
-Draw in [LibreSprite](https://libresprite.github.io/) (indexed mode), export an indexed PNG + JSON, and
-list your assets in a `sprites.list`. `tools/image_import.py` (stdlib-only PNG reader in `tools/png.py`)
-slices each tagged sheet into a pack manifest + `const` ids + a clip registry; `tools/pack_assets.py`
-builds the `.pak` (EPAK). At runtime the game **DMAs** patterns into PPU pattern slots and the palette
-into PPU PAL (`sys_ppu_dma`).
-
-One `sprites.list` row is the **master palette** — a `.gpl` (GIMP/LibreSprite palette, the editable
-source of truth) or an indexed PNG — which becomes the 256-entry PPU palette. Every sprite is
-byte-per-pixel **indices into that one shared palette**, so a color at a given index is fixed across all
-sheets: **append** new colors to the master (line order = index), never reorder or insert.
-
-Paint **tilemaps** with `tools/pixel_map.py`: an indexed PNG where each pixel is one 16×16 tile, plus a
-legend mapping palette index → tile id + solidity → a generated `world[]` + `tile_flags[]` include (the
-tilemap doubles as the collision grid). Turn ASCII art into a sprite byte array with `tools/sprite.py`.
-See [FORMATS.md](FORMATS.md).
-
-## File formats
-
-- **`.rom`** — the compiled program: a flat image of `0x0000…code_end` loaded verbatim at address 0
-  (bootstrap → DATA → CODE). Carries no art and no save state.
-- **`.pak`** — the asset pack (EPAK): patterns/palettes/tilemaps/text/data bundled by
-  `tools/pack_assets.py`, kept in storage and streamed by id (so a multi-MB pack works on a 64 KB
-  machine). One per ROM — `game.pak` beside `game.rom`.
-- **saves** — opaque per-game, per-slot blobs written/read via `sys_save`/`sys_load`.
-
-Full byte layouts, the load/stream path, and the per-platform storage map are in **[FORMATS.md](FORMATS.md)**.
-
-## Building & running
-
-```bash
-make pc_emu    # desktop emulator (GCC / MinGW)
-make wasm      # browser simulator (Emscripten)
-make test      # compile + run the regression suite
-make verify    # headless WASM cross-check (Node) — proves the browser core matches pc_emu
-make clean
-
-cd simulator && python -m http.server   # browser sim (serve over http://, not file://)
-```
-
-`pc_emu.exe` runs a ROM for N frames and writes the final framebuffer to a PPM; its `RESULT` line gives
-the return value, executed instruction count, and a checksum. The firmware, the desktop emulator, and
-the browser all run the **same `emu.cpp` + `ppu.cpp` core** compiled three ways — one ISA, no drift.
-
-The browser sim (drop a `.rom`, plus its `.pak` for art) has an **FPS cap** and a **CPU-budget slider**
-(instructions/frame — dial it down to feel a weaker device), live **FPS / instr-per-sec / instr-per-frame**
-stats, and **CPU + PPU memory viewers**.
-
-## Firmware (ESP32-S3)
-
-A PlatformIO project under `firmware/` (open that folder, not the repo root). `emu.cpp` + `ppu.cpp` are
-pulled in via `src/emu_shim.cpp` — no second copy. Pins live in `src/hw_pins.h`, build flags in
-`platformio.ini`.
-
-```bash
-make flash       # build + upload the firmware
-make uploadfs    # upload firmware/data/*.rom to LittleFS
-```
-
-Toggles in `src/main.cpp`: `ENABLE_DEBUG_LOGS` (serial output) and `ENABLE_FRAMEBUFFER_TEST` (a
-solid-color panel check). Once a ROM engages the PPU the firmware converts its composed frame and pushes
-it via `tft.pushImage`; the per-frame instruction budget is in `emu.cpp`'s `run_frame_instructions`.
-
-## Layout
+## Directory layout
 
 ```
 src/         compiler: lexer · parser · analyzer · codegen · optimization · backend
 emulator/    emu.cpp (CPU core) + ppu.cpp (PPU) + definitions.h, the PC harness, the WASM bridge
 firmware/    ESP32-S3 PlatformIO project (main.cpp, hw_pins.h, data/ ROMs)
-simulator/   browser sim — HTML/JS over the WASM core (display + CPU/PPU debug panels)
-lib/         ppu.lib · ppuscene.lib · io.lib · sys.lib · game.lib · event.lib
-tools/       sprite.py (ASCII->array) · png.py + image_import.py (LibreSprite->assets) · pack_assets.py (.pak) · pixel_map.py (tilemaps)
-examples/    arena.txt (PPU scene reference: roam a tiled world + collision + combat + a talking NPC), ppu_overworld.txt / ppu_bigworld.txt (PPU + streaming demos), menu.txt (home screen)
-tests/       regression sources      main.py · run_tests.py · Makefile · FORMATS.md
+simulator/   browser sim -- HTML/JS over the WASM core (display + CPU/PPU debug panels)
+lib/         io.lib (I/O) · sys.lib (syscalls) · ppu.lib (PPU commands + font) · map.lib (pak-loaded
+             maps + collision) · scene.lib (camera + sprite cast) · game.lib · event.lib
+tools/       sprite.py (ASCII->array, legacy) · png.py + image_import.py (LibreSprite->assets) ·
+             pack_assets.py (.pak) · pixel_map.py + map_set.py (tilemaps, single map / multi-map set)
+examples/    arena.txt (PPU scene reference: multi-map world + collision + combat + a talking NPC),
+             ppu_overworld.txt / ppu_bigworld.txt (PPU + streaming demos), menu.txt (home screen),
+             block_blast.txt / block_blast2.txt / walkdemo.txt (pre-PPU, kept for a future port --
+             see each file's own header comment); generated/ holds their compiled asset-id includes
+             (NOT source -- regenerated by the build recipe in each example's header comment)
+assets/      hand-authored source art: sprites/ (LibreSprite PNG+JSON + sprites.list + master
+             palette) and maps/ (tools/pixel_map.py / map_set.py PNG + legend + .map.txt descriptors)
+docs/        deep technical reference -- see the table above
+tests/       regression sources      main.py · run_tests.py · Makefile
 ```
-
-## Requirements
-
-Python 3.7+ · GCC/MinGW (pc_emu) · Node (WASM verify) · Emscripten (WASM) · PlatformIO (firmware)
