@@ -177,6 +177,12 @@ A vestigial `src/backend/X86Backend.py` (emits x86 assembly + a `runtime.asm`) a
 early prototyping phase, before the custom 16-bit CPU direction was chosen. It is not wired into the
 CLI (`compiler.py` only ever instantiates `EmuBackend`) and produces nothing any current host runs.
 
+This is the big-picture shape only. For the language itself (grammar, types, every syntax quirk),
+see [docs/language.md](language.md). For what happens *inside* each pipeline stage — the TAC IR's
+`Var`-identity rules, the optimizer's actual passes, the register allocator, and the backend's
+operand-aware code emission (byte/word handling, ISA addressing-mode quirks, known limitations) —
+see [docs/compiler.md](compiler.md).
+
 ### Libraries (`lib/`)
 
 `.lib` files are plain EMU16 source, `include`d like any file — there's no special library format.

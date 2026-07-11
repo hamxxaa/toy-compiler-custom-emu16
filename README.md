@@ -4,6 +4,12 @@ A homebrew game platform built from scratch: a custom 16-bit CPU, a C-like compi
 a NES-style tile/sprite PPU, an ESP32-S3 handheld, and a browser simulator — all in one repo, all
 running the same core. Write a game once; run it on real hardware, in a terminal, or in a browser tab.
 
+<p align="center">
+  <img src="docs/media/arena_gameplay.gif" alt="EMU16 arena demo — PPU-rendered combat, multi-map warps, and a talking NPC" width="380">
+  <img src="docs/media/arena-on-esp.jpeg" alt="The same arena ROM running on the real ESP32-S3 handheld" width="380">
+</p>
+<p align="center"><sub>Same <code>arena.rom</code>, unmodified — the simulator (left) and the real ESP32-S3 handheld (right).</sub></p>
+
 | | |
 |---|---|
 | **Language** | C-like: types, structs, classes, arrays, pointers, strings, bitwise/shift, `if`/`else`, `while`/`for`, `switch` (O(1) jump table), `const`, inline asm |
@@ -38,22 +44,43 @@ PlatformIO (firmware). Full command reference per target:
 Only one thing here is physical — everything else is the same emulator core wearing a different
 host shim:
 
-```
- SOFTWARE (dev machine)          compiler + libraries + asset pipeline -> game.rom + game.pak
-        │
-        ├──────────────┬──────────────────┐
-        ▼              ▼                  ▼
-   FIRMWARE        pc_emu.exe        browser sim (WASM)
-   (ESP32-S3)      (desktop CLI)     (no install needed)
-        │              │                  │
-        └──────────────┴──────────────────┘
-                        ▼
-         SHARED CORE — emu.cpp (CPU) + ppu.cpp (PPU)
-         compiled three ways from identical source, one ISA, no drift
-                        │
-                        ▼
-                   HARDWARE
-              ESP32-S3 · TFT · buttons
+```mermaid
+graph TD
+    subgraph Software ["Software & Toolchain (Dev Machine)"]
+        Compiler["Custom Compiler<br/>(main.py)"] -->|Generates| ROM[".rom (Code)"]
+        Tools["Asset Pipeline<br/>(tools/...)"] -->|Packs| PAK[".pak (Assets)"]
+    end
+
+    subgraph Core ["Shared Core (Zero Source Drift)"]
+        CPU["CPU Core<br/>(emu.cpp)"]
+        PPU["PPU Compositor<br/>(ppu.cpp)"]
+        CPU -- "Command Stream + DMA<br/>(no direct RAM access)" --> PPU
+    end
+
+    subgraph Hosts ["Host Platforms (thin shims)"]
+        WASM["Browser Simulator<br/>(WASM)"]
+        PC["Desktop Emulator<br/>(pc_emu.exe)"]
+        ESP["ESP32 Firmware<br/>(Arduino / C++)"]
+    end
+
+    ROM --> WASM
+    ROM --> PC
+    ROM --> ESP
+    PAK --> WASM
+    PAK --> PC
+    PAK --> ESP
+
+    WASM --> CPU
+    PC --> CPU
+    ESP --> CPU
+
+    subgraph Hardware ["Physical Hardware"]
+        Device["ESP32-S3 Handheld<br/>(TFT, buttons, flash)"]
+    end
+    ESP --> Device
+
+    classDef core fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
+    class CPU,PPU core;
 ```
 
 - **Hardware** — an ESP32-S3 handheld: TFT display, 8 buttons, an SD reader wired for later. Pins:
@@ -99,7 +126,8 @@ Types: `int` (16-bit), `byte`, `bool`, `void`, `struct` (data-only, byte-packed)
 `class` (monomorphized into plain globals + functions — composition, `self.field`, no inheritance).
 `const NAME = <expr>;` folds to a literal at compile time. `include "path";` splices a file's source
 in — there's no separate linker, so two included files defining the same name is a compile error, not
-a silent clash. Full grammar: `src/parser/Parser.py`; real programs: `examples/`.
+a silent clash. Full language reference (grammar, operator precedence, every quirk):
+**[docs/language.md](docs/language.md)**; real programs: `examples/`.
 
 **Draw nothing yourself — the PPU does.** Each frame you build a small command buffer
 (`lib/ppu.lib`: scroll, sprites, text) and hand it to the PPU with `ppu_present()`; bulk art streams
@@ -127,6 +155,8 @@ PPU via a *syscall* — write a number to `SYSCALL_PORT`, get a result in `R0`. 
 | Doc | Covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | The four layers in depth: hardware, firmware, the shared CPU+PPU core, the compiler pipeline. CPU ISA & instruction encoding, PPU command protocol. |
+| [docs/language.md](docs/language.md) | The full language reference: grammar, types, operator precedence (with a verified C-difference gotcha), control flow, structs/classes, inline asm — the authoritative source, not source-code comments. |
+| [docs/compiler.md](docs/compiler.md) | Compiler internals: the TAC IR and `Var` identity rules, semantic analysis, class monomorphization, the optimizer's passes, the register allocator, and the backend's operand-aware code emission (byte/word quirks, ISA constraints, known limitations). |
 | [docs/memory-map.md](docs/memory-map.md) | The full CPU address space (down to what's actually inside DATA and why) and the PPU's separate graphics RAM, region by region. Calling convention. |
 | [docs/syscalls.md](docs/syscalls.md) | Every syscall: args, result, per-host differences. |
 | [docs/file-formats.md](docs/file-formats.md) | `.rom`, `.pak` (EPAK), map blobs, save files — byte layouts and the build→deploy→runtime lifecycle. |
@@ -154,6 +184,7 @@ examples/    arena.txt (PPU scene reference: multi-map world + collision + comba
              (NOT source -- regenerated by the build recipe in each example's header comment)
 assets/      hand-authored source art: sprites/ (LibreSprite PNG+JSON + sprites.list + master
              palette) and maps/ (tools/pixel_map.py / map_set.py PNG + legend + .map.txt descriptors)
-docs/        deep technical reference -- see the table above
+docs/        deep technical reference -- see the table above; media/ holds README screenshots/gifs
+             (NOT build input -- see assets/ for that)
 tests/       regression sources      main.py · run_tests.py · Makefile
 ```
