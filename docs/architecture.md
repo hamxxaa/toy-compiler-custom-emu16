@@ -167,8 +167,8 @@ game.txt + includes ─┬─▶ Tokenizer (regex-NFA)  ─▶ Parser (recursive
 splice, not a linker step — there's no relocation or symbol resolution across translation units, so
 two included files that both define a function with the same name is a compile-time `Link Error`,
 not a silent last-one-wins. A small "hardware constant prelude" (`SCREEN_WIDTH`, `SCREEN_HEIGHT`,
-`VRAM_START`, `PRAM`, `INPUT_ADDR`) is injected as `const`s ahead of every program so they match
-`emulator/definitions.h` by construction.
+`INPUT_ADDR`) is injected as `const`s ahead of every program so they match `emulator/definitions.h`
+by construction.
 
 `main.py` → `src/compiler/compiler.py:main()` is the CLI (`python main.py game.txt --save-rom
 name`); useful debug flags: `--print-tokens/-ast/-tac/-optimized-tac/-alloc/-emit`, `--no-optimize`.

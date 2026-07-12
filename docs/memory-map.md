@@ -16,19 +16,21 @@ noted below).
 | Region | Range | Size | Purpose |
 |---|---|---|---|
 | Bootstrap | `0x0000`–`0x0007` | 8 B | `LDI SP, <stack top>` ; `JMP CODE_START` — the only bytes with a fixed meaning regardless of program |
-| DATA | `0x0008`–`0x5FFF` | 24,568 B | globals, arrays, string/array literals — see [below](#whats-actually-in-data) |
-| CODE | `0x6000`–`0xADFB` | ~19.5 KB | compiled instructions (entry block → every function) |
-| Stack | `0xADFC` downward | — | call stack, **pre-decrement** (push writes, then decrements `SP`) |
-| SYSCALL_PORT | `0xADFE` | 1 B | write-triggered host call — see [Syscalls](syscalls.md) |
-| INPUT | `0xADFF` | 1 B | button state, read-only from the guest's perspective |
-| PRAM | `0xAE00`–`0xAFFF` | 512 B | **legacy** palette (256 × RGB565) — only touched by ROMs that don't engage the PPU |
-| VRAM | `0xB000`–`0xFFFF` | 20,480 B | **legacy** indexed framebuffer (160×128) — same caveat |
+| DATA | `0x0008`–`0x7FFF` | 32,760 B | globals, arrays, string/array literals — see [below](#whats-actually-in-data) |
+| CODE | `0x8000`–`0xFFFB` | ~32.7 KB | compiled instructions (entry block → every function); shares this region with the stack |
+| Stack | `0xFFFC` downward | — | call stack, **pre-decrement** (push writes, then decrements `SP`) |
+| SYSCALL_PORT | `0xFFFE` | 1 B | write-triggered host call — see [Syscalls](syscalls.md) |
+| INPUT | `0xFFFF` | 1 B | button state, read-only from the guest's perspective |
+
+There is no VRAM/PRAM anymore — the legacy indexed-framebuffer display path was reclaimed once every
+ROM had been ported to drive the PPU (see [file-formats.md](file-formats.md) history); that freed
+~21 KB, split between a bigger DATA section and a bigger CODE+stack region.
 
 `STACK_FLOOR` (`emulator/definitions.h`) and `CODE_START_ADDRESS` (`EmuBackend.py`) are **the same
-number by construction** (`0x6000`) — `STACK_FLOOR` is the emulator core's stack-underflow sanity
+number by construction** (`0x8000`) — `STACK_FLOOR` is the emulator core's stack-underflow sanity
 check (`emu.cpp`: refuse to push below it), and it must equal wherever CODE actually starts, since
 the stack grows down from just above CODE's ceiling into unused DATA/CODE headroom... in practice the
-stack lives *above* CODE, at `0xADFC` down to (in principle) `STACK_FLOOR`, giving it roughly 19.5 KB
+stack lives *above* CODE, at `0xFFFC` down to (in principle) `STACK_FLOOR`, giving it roughly 32.7 KB
 of headroom shared with CODE's tail. If DATA is ever resized again, **both** constants move together
 — that's the one place the boundary is duplicated, and it's checked by `tests/` on every resize.
 
@@ -40,8 +42,8 @@ variable and literal (string/array initializers) the next free address, **in the
 declared across the fully-merged translation unit**. Since `include` is a textual splice processed
 depth-first (see [Architecture](architecture.md#compiler-src)), that order is:
 
-1. The hardware-constant prelude (`SCREEN_WIDTH`, `PRAM`, ... ) — these are `const`s, though, so they
-   fold to literals and take **no DATA space** at all.
+1. The hardware-constant prelude (`SCREEN_WIDTH`, `SCREEN_HEIGHT`, `INPUT_ADDR`) — these are
+   `const`s, though, so they fold to literals and take **no DATA space** at all.
 2. Each `include`d file's globals, in the order the files were first encountered (depth-first,
    dependencies before dependents) — e.g. for a PPU game including `map.lib` (which itself includes
    `ppu.lib`, which itself includes `sys.lib`) and `scene.lib` (which also includes `ppu.lib`, deduped
@@ -56,9 +58,11 @@ depth-first (see [Architecture](architecture.md#compiler-src)), that order is:
 3. The game's own top-level globals/arrays, last.
 
 There is no way to force a particular global to a particular address, and no padding/alignment
-beyond "next free byte" — a `byte` array and an `int` array pack back-to-back with no gap. This is
-why DATA was bumped from 16 KB to 24 KB when the map system landed: `map_buf` alone is 9,728 bytes,
-and it has to coexist with everything else already declared ahead of it in the include chain.
+beyond "next free byte" — a `byte` array and an `int` array pack back-to-back with no gap. DATA has
+been bumped twice: 16 KB → 24 KB when the map system landed (`map_buf` alone is 9,728 bytes, and it
+has to coexist with everything else already declared ahead of it in the include chain), then
+24 KB → 32 KB when the legacy VRAM/PRAM path was reclaimed and its freed space was split between a
+bigger DATA section and a bigger CODE+stack region.
 
 ### Calling convention
 

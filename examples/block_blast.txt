@@ -1,252 +1,314 @@
+// block_blast — brick-breaker ported to the PPU model (from the pre-PPU VRAM original; see git
+// history for that version). Fully self-contained: no .pak, all art is baked directly into the ROM
+// as tiny hand-computed 16x16 patterns (a circle for the ball/aim-dot, bordered boxes for bricks).
+//
+// Screen (160x128 = 10 cols x 8 rows of 16px tiles):
+//   row 0        HUD (text plane only; tile background stays blank)
+//   rows 1-6     brick playfield, 10x6 = 60 cells
+//   row 7        launcher zone (ball spawn + aim-trajectory preview)
+// Bricks are BACKGROUND TILES (not sprites) -- avoids the 64-slot OAM budget entirely regardless of
+// grid size. Each brick's HP number is drawn via the text plane, transparent background, in the top
+// 2x2 text-cells of its tile (a tile is exactly 2x2 text-cells, since text cells are 8px and tiles
+// are 16px). The whole grid + HUD is rebuilt from scratch every frame (cheap: ~60 tiles + a few text
+// writes, well inside the 2 KB command budget) -- unlike the original, there's no dirty-tracking,
+// since PPU command-buffer building doesn't need it the way the old VRAM path did.
+//
+// Balls (up to MAX_BALLS) and the aim-trajectory preview dots are both OAM sprites, but never at the
+// same time: dots only exist during aim (gameState 0, no balls in flight yet), balls only exist
+// during flight (gameState 1). MAX_BALLS is capped below the original's 49 purely as a safety margin
+// under the 64-sprite OAM budget, not because they'd ever coexist with dots in practice.
 include "../lib/io.lib";
-include "../lib/sys.lib";
+include "../lib/ppu.lib";
 include "../lib/game.lib";
-
 {
-    var byte bricks[99];
+    // ── Baked palette (RGB565, little-endian) -- no default PPU palette exists, so every standalone
+    // ROM bakes and uploads its own, same pattern as examples/menu.txt. ────────────────────────────
+    var byte game_pal[16] = {
+        0x00, 0x00,   // 0 black -- backdrop, tile borders, GAME OVER panel
+        0xFF, 0xFF,   // 1 white -- ball, aim label text, HUD text
+        0x10, 0x84,   // 2 gray  -- aim-trajectory preview dots
+        0xE0, 0x07,   // 3 green  -- brick tier 1 (low HP)
+        0xE0, 0xFF,   // 4 yellow -- brick tier 2
+        0x60, 0xFC,   // 5 orange -- brick tier 3
+        0x00, 0xF8,   // 6 red    -- brick tier 4 (high HP)
+        0x00, 0x00    // 7 unused
+    };
 
-    var byte numbers[50] = {
-    0xF8, 0x88, 0x88, 0x88, 0xF8,
-    0x08, 0x08, 0x08, 0x08, 0x08,
-    0xF8, 0x08, 0xF8, 0x80, 0xF8,
-    0xF8, 0x08, 0xF8, 0x08, 0xF8,
-    0x10, 0x30, 0x50, 0xF8, 0x10,
-    0xF8, 0x80, 0xF8, 0x08, 0xF8,
-    0xF8, 0x80, 0xF8, 0x88, 0xF8,
-    0x78, 0x08, 0x08, 0x08, 0x08,
-    0xF8, 0x88, 0xF8, 0x88, 0xF8,
-    0xF8, 0x88, 0xF8, 0x08, 0xF8 };
+    // ── Baked 16x16 patterns (1 byte/pixel = palette index; 0 = backdrop/border, opaque tiles) ────
+    const PAT_BALL  = 1;
+    const PAT_DOT   = 2;
+    const PAT_TIER1 = 3;
+    const PAT_TIER2 = 4;
+    const PAT_TIER3 = 5;
+    const PAT_TIER4 = 6;
+    // Pattern slot 0 is left blank (never uploaded to) and used as the "empty cell" tile id --
+    // its pixels stay all-zero, which is palette index 0 (black), the backdrop color.
 
-    var int map_width      = 11;
-    var int map_height     = 8;
-    var int brick_y_offset = 10;
-    var int brick_x_offset = 3;
+    var byte pat_ball[256] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
+        0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+        0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+        0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+        0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+        0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+        0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+        0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+        0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+        0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+        0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+        0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
 
-    var int ball_shootingx = 82;
-    var int ball_shootingy = 125;
+    var byte pat_dot[256] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+
+    var byte pat_tier1[256] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+
+    var byte pat_tier2[256] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+
+    var byte pat_tier3[256] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+
+    var byte pat_tier4[256] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+
+    // ── Grid ─────────────────────────────────────────────────────────────────────────────────────
+    const MAP_W    = 10;
+    const MAP_H    = 6;
+    const CELL     = 16;
+    const GRID_Y0  = 16;    // pixel y of the playfield's top edge (row 0 is reserved for the HUD)
+    const MAX_BALLS = 40;   // capped below the sprite budget as a safety margin (see header)
+    const MAX_DOTS   = 14;
+
+    var byte bricks[60];    // MAP_W * MAP_H
+
+    var int ball_shootingx = 80;
+    var int ball_shootingy = 120;
 
     var int gameState = 0;  // 0=aim, 1=flight, 2=game over
 
-    var byte ball_sprite[2] = { 0xC0, 0xC0 };
-
-    var byte block_sprite[28] = {
-    0xFF, 0xFC,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0x80, 0x04,
-    0xFF, 0xFC };
-
-    // Solid 14x14 sprite used to black-erase a brick cell
-    var byte erase_sprite[28] = {
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC,
-    0xFF, 0xFC };
-
-    // Aim directions: fixed-point x128, 2 px/sub-step magnitude
+    // Aim directions: fixed-point x128, 2 px/sub-step magnitude (unchanged from the original --
+    // pure direction vectors, independent of grid size)
     var int aimx[31] = { -247,-241,-232,-222,-210,-196,-181,-165,-147,-128,-108,-88,-66,-44,-22,0,22,44,66,88,108,128,147,165,181,196,210,222,232,241,247 };
     var int aimy[31] = { -66,-88,-108,-128,-147,-165,-181,-196,-210,-222,-232,-241,-247,-252,-255,-256,-255,-252,-247,-241,-232,-222,-210,-196,-181,-165,-147,-128,-108,-88,-66 };
 
-    // Ball state – up to 50 balls; positions/velocities are fixed-point x128
-    var int  ball_px[50];
-    var int  ball_py[50];
-    var int  ball_vx[50];
-    var int  ball_vy[50];
-    var byte ball_on[50];
-    var int  ball_dx[50];   // last pixel drawn (x)
-    var int  ball_dy[50];   // last pixel drawn (y)
+    // Ball state (fixed-point x128 positions/velocities)
+    var int  ball_px[40];
+    var int  ball_py[40];
+    var int  ball_vx[40];
+    var int  ball_vy[40];
+    var byte ball_on[40];
+
+    // Aim-trajectory preview (dots only exist during gameState 0 -- see header)
+    var int dot_n;
+    var int dotx[14];
+    var int doty[14];
 
     // Volley state
     var int aim          = 15;
-    var int shot_vx      = 0;
-    var int shot_vy      = 0;
-    var int balls_left   = 0;
-    var int launch_timer = 0;
+    var int shot_vx       = 0;
+    var int shot_vy       = 0;
+    var int balls_left    = 0;
+    var int launch_timer  = 0;
 
     // Progression
     var int level        = 0;
-    var int destroyed    = 0;
-    var int ball_count   = 5;
-    var int next_ball_at = 10;
-    var int landed       = 0;   // has the first ball returned?
-    var int next_x       = 82;  // x of first returned ball
+    var int destroyed     = 0;
+    var int ball_count    = 3;
+    var int next_ball_at  = 10;
+    var int landed        = 0;
+    var int next_x        = 80;
 
     // Physics
-    var int speed = 3;   // physics sub-steps per update_balls call
-    var int ff    = 1;   // fast-forward multiplier (1 or 3)
-
-    // Game-over screen strings (ASCII)
-    var byte s_gameover[9] = { 71, 65, 77, 69, 32, 79, 86, 69, 82 };  // "GAME OVER"
-    var byte s_pressa[7]   = { 80, 82, 69, 83, 83, 32, 65 };           // "PRESS A"
+    var int speed = 3;
+    var int ff    = 1;
 
     // ---------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------
 
     int cell_brick(int px, int py) {
-        var int col;
-        var int row;
-        if px < brick_x_offset { return 0; }
-        if py < brick_y_offset { return 0; }
-        col = (px - brick_x_offset) / 14;
-        row = (py - brick_y_offset) / 14;
-        if col >= map_width  { return 0; }
-        if row >= map_height { return 0; }
-        return bricks[row * map_width + col];
+        var int col; var int row;
+        if py < GRID_Y0 { return 0; }
+        col = px / CELL;
+        row = (py - GRID_Y0) / CELL;
+        if col < 0 { return 0; }
+        if col >= MAP_W { return 0; }
+        if row >= MAP_H { return 0; }
+        return bricks[row * MAP_W + col];
     }
 
     int active_count() {
         var int b = 0;
         var int c = 0;
-        while b < 50 {
+        while b < MAX_BALLS {
             if ball_on[b] == 1 { c = c + 1; }
             b = b + 1;
         }
         return c;
     }
 
-    // Draw one brick cell (uses bricks[] for current HP)
-    int draw_brick(int col, int row) {
-        var int x     = col * 14 + brick_x_offset;
-        var int y     = row * 14 + brick_y_offset;
-        var int value = bricks[row * map_width + col];
-        var int color = get_color(value);
-        var int tens  = value / 10;
-        var int ones  = value - (tens * 10);
-        draw_sprite(&block_sprite, 14, 14, x, y, color);
-        draw_sprite(&numbers + (tens * 5), 5, 5, x + 1, y + 4, color);
-        draw_sprite(&numbers + (ones * 5), 5, 5, x + 7, y + 4, color);
-        return 0;
+    int tier_pattern(int hp) {
+        if hp <= 0 { return 0; }
+        if hp < 4  { return PAT_TIER1; }
+        if hp < 8  { return PAT_TIER2; }
+        if hp < 16 { return PAT_TIER3; }
+        return PAT_TIER4;
     }
 
-    // Erase one brick cell to black
-    int erase_brick(int col, int row) {
-        draw_sprite(&erase_sprite, 14, 14, col * 14 + brick_x_offset, row * 14 + brick_y_offset, 0);
-        return 0;
-    }
-
+    // Rebuild the whole brick tilemap + per-brick HP numbers from bricks[]. Cheap enough (60 tiles)
+    // to just do every frame -- no dirty-tracking needed on the PPU model.
     int draw_bricks() {
-        var int i = 0;
-        var int j;
-        while i < map_height {
-            j = 0;
-            while j < map_width {
-                if bricks[i * map_width + j] != 0 {
-                    draw_brick(j, i);
+        var int r = 0;
+        var int c;
+        var int hp;
+        var int tx;
+        var int ty;
+        while r < MAP_H {
+            c = 0;
+            while c < MAP_W {
+                hp = bricks[r * MAP_W + c];
+                tx = c;
+                ty = r + 1;                     // +1: row 0 is the HUD
+                cu8(3); cu8(tx); cu8(ty); cu8(1); cu8(1); cu8(tier_pattern(hp));
+                // Always clear the 2-wide digit row first: tile_number only writes as many cells as
+                // the new number's digit count, so a HP drop from 2 digits to 1 (e.g. 10 -> 9) would
+                // otherwise leave the old tens digit's cell untouched (reads as "90").
+                tile_clear(tx * 2, ty * 2, 2, 1);
+                if hp > 0 {
+                    tile_number(tx * 2, ty * 2, hp, 1);
                 }
-                j = j + 1;
+                c = c + 1;
             }
-            i = i + 1;
+            r = r + 1;
         }
         return 0;
     }
 
-    int get_color(int value) {
-        if value < 5 { return 1; }
-        if value < 10 { return 2; }
-        if value < 20 { return 3; }
-        if value < 30 { return 4; }
-        if value < 40 { return 5; }
-        if value < 50 { return 6; }
-        if value < 70 { return 7; }
-        if value < 100 { return 8; }
-
-    }
-
-    // Draw n right-aligned; x is the pixel position of the ones digit
-    int draw_number(int n, int x, int y, int color) {
-        var int d;
-        var int dx    = x;
-        var int safety = 0;
-        if n == 0 {
-            draw_char(48, dx, y, color);
-            return 0;
-        }
-        while n > 0 {
-            d = n - (n / 10) * 10;
-            n = n / 10;
-            draw_char(48 + d, dx, y, color);
-            dx = dx - 8;
-            safety = safety + 1;
-            if safety > 5 { n = 0; }
-        }
-        return 0;
-    }
-
-    // HUD: ball count top-left, score top-right (drawn at y=0 on top of bricks)
     int draw_hud() {
-        draw_char(66, 0, 1, 1);            // 'B'
-        draw_char(58, 8, 1, 1);            // ':'
-        draw_number(ball_count, 36, 1, 1);
-        draw_char(83, 88, 1, 1);           // 'S'
-        draw_char(58, 96, 1, 1);           // ':'
-        draw_number(destroyed, 152, 1, 1);
+        tile_text(0, 0, "B:", 1);
+        tile_number(2, 0, ball_count, 1);
+        tile_text(12, 0, "S:", 1);
+        tile_number(14, 0, destroyed, 1);
         return 0;
     }
 
-    int draw_walls() {
-        var int i;
-        // Horizontal separator at y = brick_y_offset - 1
-        i = 0;
-        while i < 160 { plot(i, 9, 1); i = i + 1; }
-        // Left wall at x = brick_x_offset - 1
-        i = 10;
-        while i < 128 { plot(2, i, 1); i = i + 1; }
-        // Right wall at x = brick_x_offset + map_width * 14
-        i = 10;
-        while i < 128 { plot(157, i, 1); i = i + 1; }
-        return 0;
-    }
-
-    int redraw_scene() {
-        fill(0);
-        draw_bricks();
-        draw_sprite(&ball_sprite, 2, 2, ball_shootingx, ball_shootingy, 2);
-        draw_hud();
-        draw_walls();
-        return 0;
-    }
-
-    int draw_aim() {
-        var int tx   = ball_shootingx << 7;
-        var int ty   = ball_shootingy << 7;
-        var int tvx  = aimx[aim];
-        var int tvy  = aimy[aim];
-        var int done = 0;
-        var int count = 0;
-        var int px;
-        var int py;
+    // Simulate the shot's bounce physics (walls + bricks) and record up to MAX_DOTS sample points
+    // along the path. Only called during gameState 0, when no balls are on screen yet.
+    int compute_aim_dots() {
+        var int tx; var int ty; var int tvx; var int tvy;
+        var int done; var int count; var int px; var int py;
+        tx = ball_shootingx << 7;
+        ty = ball_shootingy << 7;
+        tvx = aimx[aim];
+        tvy = aimy[aim];
+        done = 0; count = 0; dot_n = 0;
         while done == 0 {
             tx = tx + tvx;
             ty = ty + tvy;
-            if tx < 384   { tx = 384;   tvx = 0 - tvx; }
-            if tx > 19840 { tx = 19840; tvx = 0 - tvx; }
-            if ty < 1280  { ty = 1280;  tvy = 0 - tvy; }
+            if tx < 0     { tx = 0;     tvx = 0 - tvx; }
+            if tx > 20352 { tx = 20352; tvx = 0 - tvx; }
+            if ty < 2048  { ty = 2048;  tvy = 0 - tvy; }
             px = tx >> 7;
             py = ty >> 7;
-            if py >= 127 { done = 1; }            // off bottom: stop (don't write OOB)
-            if cell_brick(px, py) != 0 { done = 1; }
-            if (count & 7) == 0 {
-                if py < 127 { plot(px, py, 1); }  // guard: never plot below the screen
+            if py >= 127 { done = 1; }
+            if done == 0 {
+                if cell_brick(px, py) != 0 { done = 1; }
+            }
+            if done == 0 {
+                if (count & 15) == 0 {
+                    if dot_n < MAX_DOTS {
+                        dotx[dot_n] = px;
+                        doty[dot_n] = py;
+                        dot_n = dot_n + 1;
+                    }
+                }
             }
             count = count + 1;
             if count > 300 { done = 1; }
@@ -254,19 +316,10 @@ include "../lib/game.lib";
         return 0;
     }
 
-    int draw_gameover() {
-        fill(0);
-        draw_string(&s_gameover, 9, 44, 44, 1);
-        draw_number(destroyed, 120, 64, 1);
-        draw_string(&s_pressa, 7, 52, 84, 1);
-        return 0;
-    }
-
     // ---------------------------------------------------------------
     // Progression
     // ---------------------------------------------------------------
 
-    // Fill row 0 randomly; guarantee >=1 gap and >=1 brick
     int spawn_row() {
         var int c;
         var int base_hp = 1 + level / 3;
@@ -275,7 +328,7 @@ include "../lib/game.lib";
         var int all_empty;
         var int fc;
         c = 0;
-        while c < map_width {
+        while c < MAP_W {
             if rand_range(9) < 5 {
                 hp = base_hp + rand_range(2);
                 bricks[c] = hp;
@@ -284,69 +337,61 @@ include "../lib/game.lib";
             }
             c = c + 1;
         }
-        // Guarantee at least one gap
         all_full = 1;
         c = 0;
-        while c < map_width {
+        while c < MAP_W {
             if bricks[c] == 0 { all_full = 0; }
             c = c + 1;
         }
         if all_full == 1 {
-            fc = rand_range(map_width);
+            fc = rand_range(MAP_W);
             bricks[fc] = 0;
         }
-        // Guarantee at least one brick
         all_empty = 1;
         c = 0;
-        while c < map_width {
+        while c < MAP_W {
             if bricks[c] != 0 { all_empty = 0; }
             c = c + 1;
         }
         if all_empty == 1 {
-            fc = rand_range(map_width);
+            fc = rand_range(MAP_W);
             bricks[fc] = base_hp;
         }
         return 0;
     }
 
-    // Called at end of each volley: check game over, shift rows, spawn new top row
     int advance_level() {
-        var int r;
-        var int c;
+        var int r; var int c;
         var int gameover = 0;
-        // Game over if any brick is in the death row (row map_height-1)
         c = 0;
-        while c < map_width {
-            if bricks[(map_height - 1) * map_width + c] != 0 { gameover = 1; }
+        while c < MAP_W {
+            if bricks[(MAP_H - 1) * MAP_W + c] != 0 { gameover = 1; }
             c = c + 1;
         }
         if gameover == 1 {
             gameState = 2;
             return 0;
         }
-        // Shift all rows down one (bottom to top so we don't clobber)
-        r = map_height - 1;
+        r = MAP_H - 1;
         while r >= 1 {
             c = 0;
-            while c < map_width {
-                bricks[r * map_width + c] = bricks[(r - 1) * map_width + c];
+            while c < MAP_W {
+                bricks[r * MAP_W + c] = bricks[(r - 1) * MAP_W + c];
                 c = c + 1;
             }
             r = r - 1;
         }
-        // Clear row 0 and spawn a new one
         c = 0;
-        while c < map_width {
+        while c < MAP_W {
             bricks[c] = 0;
             c = c + 1;
         }
         spawn_row();
-        // Ball rewards: one extra ball per 10 bricks destroyed
         while destroyed >= next_ball_at {
             ball_count   = ball_count + 1;
             next_ball_at = next_ball_at + 10;
         }
-        if ball_count > 49 { ball_count = 49; }
+        if ball_count > MAX_BALLS { ball_count = MAX_BALLS; }
         level = level + 1;
         return 0;
     }
@@ -354,21 +399,21 @@ include "../lib/game.lib";
     int reset_game() {
         var int i = 0;
         var int b = 0;
-        while i < 99 {
+        while i < 60 {
             bricks[i] = 0;
             i = i + 1;
         }
         level          = 0;
         destroyed      = 0;
-        ball_count     = 1;
+        ball_count     = 3;
         next_ball_at   = 10;
-        ball_shootingx = 82;
-        next_x         = 82;
+        ball_shootingx = 80;
+        next_x         = 80;
         landed         = 0;
         aim            = 15;
         balls_left     = 0;
         launch_timer   = 0;
-        while b < 50 {
+        while b < MAX_BALLS {
             ball_on[b] = 0;
             b = b + 1;
         }
@@ -378,38 +423,20 @@ include "../lib/game.lib";
     }
 
     // ---------------------------------------------------------------
-    // Ball update: erase → sub-step physics → redraw
+    // Ball physics + draw (no erase pass needed -- bricks are redrawn fresh every frame, and balls
+    // are separate OAM sprites composited on top, not pixels baked into a shared buffer)
     // ---------------------------------------------------------------
 
     int update_balls() {
-        var int b      = 0;
-        var int s;
-        var int steps  = speed * ff;
-        var int opx;
-        var int opy;
-        var int nx;
-        var int ny;
-        var int col;
-        var int row;
-        var int oldcol;
-        var int oldrow;
-        var int idx;
-        var int dx;
-        var int dy;
+        var int b = 0;
+        var int s; var int steps;
+        var int opx; var int opy; var int nx; var int ny;
+        var int col; var int row; var int idx;
+        var int oldcol; var int oldrow;
+        steps = speed * ff;
 
-        while b < 50 {
+        while b < MAX_BALLS {
             if ball_on[b] == 1 {
-
-                // 1. Erase ball at last drawn position (check each pixel to avoid
-                //    blackening brick digit pixels when ball straddles a cell edge)
-                dx = ball_dx[b];
-                dy = ball_dy[b];
-                if cell_brick(dx,     dy    ) != 0 { draw_brick((dx     - brick_x_offset) / 14, (dy     - brick_y_offset) / 14); } else { plot(dx,     dy,     0); }
-                if cell_brick(dx + 1, dy    ) != 0 { draw_brick((dx + 1 - brick_x_offset) / 14, (dy     - brick_y_offset) / 14); } else { plot(dx + 1, dy,     0); }
-                if cell_brick(dx,     dy + 1) != 0 { draw_brick((dx     - brick_x_offset) / 14, (dy + 1 - brick_y_offset) / 14); } else { plot(dx,     dy + 1, 0); }
-                if cell_brick(dx + 1, dy + 1) != 0 { draw_brick((dx + 1 - brick_x_offset) / 14, (dy + 1 - brick_y_offset) / 14); } else { plot(dx + 1, dy + 1, 0); }
-
-                // 2. Physics sub-steps (speed * ff iterations of 2 px each)
                 s = 0;
                 while s < steps {
                     opx = ball_px[b];
@@ -418,9 +445,9 @@ include "../lib/game.lib";
                     ball_px[b] = ball_px[b] + ball_vx[b];
                     ball_py[b] = ball_py[b] + ball_vy[b];
 
-                    if ball_px[b] < 384   { ball_px[b] = 384;   ball_vx[b] = 0 - ball_vx[b]; }
-                    if ball_px[b] > 19840 { ball_px[b] = 19840; ball_vx[b] = 0 - ball_vx[b]; }
-                    if ball_py[b] < 1280  { ball_py[b] = 1280;  ball_vy[b] = 0 - ball_vy[b]; }
+                    if ball_px[b] < 0     { ball_px[b] = 0;     ball_vx[b] = 0 - ball_vx[b]; }
+                    if ball_px[b] > 20352 { ball_px[b] = 20352; ball_vx[b] = 0 - ball_vx[b]; }
+                    if ball_py[b] < 2048  { ball_py[b] = 2048;  ball_vy[b] = 0 - ball_vy[b]; }
 
                     nx = ball_px[b] >> 7;
                     ny = ball_py[b] >> 7;
@@ -428,40 +455,27 @@ include "../lib/game.lib";
                     if ny >= 127 {
                         ball_on[b] = 0;
                         if landed == 0 { next_x = nx; landed = 1; }
-                        s = steps;  // exit sub-step loop
+                        s = steps;
                     } else {
-                        if nx >= brick_x_offset {
-                            col = (nx - brick_x_offset) / 14;
-                            if col < map_width {
-                                if ny >= brick_y_offset {
-                                    row = (ny - brick_y_offset) / 14;
-                                    if row < map_height {
-                                        idx = row * map_width + col;
-                                        if bricks[idx] != 0 {
-                                            bricks[idx] = bricks[idx] - 1;
-                                            erase_brick(col, row);
-                                            if bricks[idx] == 0 {
-                                                destroyed = destroyed + 1;
-                                            } else {
-                                                draw_brick(col, row);
-                                            }
-                                            // Compute old col: reuse oldcol as temp for old px
-                                            oldcol = (opx >> 7);
-                                            if oldcol < brick_x_offset {
-                                                oldcol = 0 - 1;
-                                            } else {
-                                                oldcol = (oldcol - brick_x_offset) / 14;
-                                            }
-                                            if (opy >> 7) < brick_y_offset {
-                                                oldrow = 0 - 1;
-                                            } else {
-                                                oldrow = ((opy >> 7) - brick_y_offset) / 14;
-                                            }
-                                            if oldrow != row { ball_vy[b] = 0 - ball_vy[b]; }
-                                            if oldcol != col { ball_vx[b] = 0 - ball_vx[b]; }
-                                            ball_px[b] = opx;
-                                            ball_py[b] = opy;
+                        col = nx / CELL;
+                        if col < MAP_W {
+                            if ny >= GRID_Y0 {
+                                row = (ny - GRID_Y0) / CELL;
+                                if row < MAP_H {
+                                    idx = row * MAP_W + col;
+                                    if bricks[idx] != 0 {
+                                        bricks[idx] = bricks[idx] - 1;
+                                        if bricks[idx] == 0 { destroyed = destroyed + 1; }
+                                        oldcol = (opx >> 7) / CELL;
+                                        if (opy >> 7) < GRID_Y0 {
+                                            oldrow = 0 - 1;
+                                        } else {
+                                            oldrow = ((opy >> 7) - GRID_Y0) / CELL;
                                         }
+                                        if oldrow != row { ball_vy[b] = 0 - ball_vy[b]; }
+                                        if oldcol != col { ball_vx[b] = 0 - ball_vx[b]; }
+                                        ball_px[b] = opx;
+                                        ball_py[b] = opy;
                                     }
                                 }
                             }
@@ -469,14 +483,10 @@ include "../lib/game.lib";
                         s = s + 1;
                     }
                 }
-
-                // 3. Draw ball at new position (if still alive)
                 if ball_on[b] == 1 {
                     nx = ball_px[b] >> 7;
                     ny = ball_py[b] >> 7;
-                    draw_sprite(&ball_sprite, 2, 2, nx, ny, 3);
-                    ball_dx[b] = nx;
-                    ball_dy[b] = ny;
+                    oam_set(PAT_BALL, nx - 8, ny - 8, 0);
                 }
             }
             b = b + 1;
@@ -485,37 +495,48 @@ include "../lib/game.lib";
     }
 
     // ---------------------------------------------------------------
-    // Main loop: 3-state machine
+    // Main loop: 3-state machine (aim / flight / game over)
     // ---------------------------------------------------------------
 
     int main() {
         var int b = 0;
         var int slot;
-        var int scene_dirty = 1;
-        var int old_aim;
+        var int i;
+
+        sys_ppu_upload(PPU_PAL, &game_pal, 16);
+        ppu_upload_font(&font8x8);
+        sys_ppu_upload(PPU_PAT + PAT_BALL  * 256, &pat_ball,  256);
+        sys_ppu_upload(PPU_PAT + PAT_DOT   * 256, &pat_dot,   256);
+        sys_ppu_upload(PPU_PAT + PAT_TIER1 * 256, &pat_tier1, 256);
+        sys_ppu_upload(PPU_PAT + PAT_TIER2 * 256, &pat_tier2, 256);
+        sys_ppu_upload(PPU_PAT + PAT_TIER3 * 256, &pat_tier3, 256);
+        sys_ppu_upload(PPU_PAT + PAT_TIER4 * 256, &pat_tier4, 256);
 
         srand_time();
 
-        while b < 50 {
+        while b < MAX_BALLS {
             ball_on[b] = 0;
-            ball_dx[b] = ball_shootingx;
-            ball_dy[b] = ball_shootingy;
             b = b + 1;
         }
-
         spawn_row();
 
         while (true) {
+            cmd_reset();
+            ppu_backdrop(0x0000);
+
             if gameState == 0 {
                 // ---- Aim ----
-                old_aim = aim;
                 if button_pressed(BTN_LEFT)  { if aim > 0  { aim = aim - 1; } }
                 if button_pressed(BTN_RIGHT) { if aim < 30 { aim = aim + 1; } }
 
-                if (aim != old_aim) || (scene_dirty == 1) {
-                    redraw_scene();
-                    draw_aim();
-                    scene_dirty = 0;
+                draw_bricks();
+                draw_hud();
+                compute_aim_dots();
+                oam_set(PAT_BALL, ball_shootingx - 8, ball_shootingy - 8, 0);
+                i = 0;
+                while i < dot_n {
+                    oam_set(PAT_DOT, dotx[i] - 8, doty[i] - 8, 0);
+                    i = i + 1;
                 }
 
                 if button_pressed(BTN_A) {
@@ -526,27 +547,22 @@ include "../lib/game.lib";
                     landed       = 0;
                     ff           = 1;
                     gameState    = 1;
-                    redraw_scene();
                 }
 
             } else if gameState == 1 {
                 // ---- Flight ----
-
-                // B: instant recall – end the volley now
                 if button_pressed(BTN_B) {
                     b = 0;
-                    while b < 50 {
+                    while b < MAX_BALLS {
                         ball_on[b] = 0;
                         b = b + 1;
                     }
                     balls_left = 0;
                 }
 
-                // X: fast-forward (3x sub-steps this frame)
                 ff = 1;
                 if button_pressed(BTN_X) { ff = 3; }
 
-                // Staggered launch: one ball every 4 frames
                 if balls_left > 0 {
                     if launch_timer == 0 {
                         slot = ball_count - balls_left;
@@ -555,8 +571,6 @@ include "../lib/game.lib";
                         ball_vx[slot] = shot_vx;
                         ball_vy[slot] = shot_vy;
                         ball_on[slot] = 1;
-                        ball_dx[slot] = ball_shootingx;
-                        ball_dy[slot] = ball_shootingy;
                         balls_left    = balls_left - 1;
                         launch_timer  = 4;
                     } else {
@@ -564,37 +578,47 @@ include "../lib/game.lib";
                     }
                 }
 
+                draw_bricks();
+                draw_hud();
                 update_balls();
 
-                // Check volley end
                 if balls_left == 0 {
                     if active_count() == 0 {
-                        // Reposition launcher to where first ball landed
                         if landed == 1 {
                             ball_shootingx = next_x;
-                            if ball_shootingx < 3   { ball_shootingx = 3;   }
-                            if ball_shootingx > 155 { ball_shootingx = 155; }
+                            if ball_shootingx < 8   { ball_shootingx = 8;   }
+                            if ball_shootingx > 151 { ball_shootingx = 151; }
                         }
                         advance_level();
-                        if gameState == 2 {
-                            draw_gameover();
-                        } else {
-                            scene_dirty = 1;
-                            gameState   = 0;
-                        }
+                        // advance_level() only sets gameState=2 on game over; otherwise it must
+                        // come back here so the next frame goes to aim, not straight back into
+                        // this same balls_left==0/active_count()==0 branch again (which would call
+                        // advance_level() again on EVERY subsequent frame -- shifting the grid down
+                        // dozens of times a second instead of once per volley).
+                        if gameState != 2 { gameState = 0; }
                     }
                 }
 
             } else {
                 // ---- Game Over ----
                 if button_pressed(BTN_A) {
+                    // One-time clear on the transition frame: the text plane holds whatever was
+                    // last drawn to each cell until something overwrites it, so without this the
+                    // "GAME OVER"/"PRESS A" glyphs (and the solid black curtain under them) would
+                    // sit there forever once we're back in aim/flight, since neither of those
+                    // states happens to touch every cell this screen used.
+                    tile_clear(0, 0, 20, 16);
                     reset_game();
-                    scene_dirty = 1;
+                } else {
+                    tile_fill(0, 0, 20, 16, GLYPH_SOLID, 0);
+                    tile_text_bg(5, 5, "GAME OVER", 1, 0);
+                    tile_number(9, 7, destroyed, 1);
+                    tile_text_bg(6, 9, "PRESS A", 1, 0);
                 }
             }
 
             buttons_update();
-            sys_present();
+            ppu_present();
         }
         return 0;
     }

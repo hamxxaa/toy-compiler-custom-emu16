@@ -116,17 +116,10 @@ python tools/sprite.py man.txt [name]
 `#`/`X`/`1`/`*` = a lit pixel, anything else = clear; bits packed MSB-first, rows padded to whole
 bytes. **This tool targets the legacy VRAM drawing path** (`draw_sprite`, which no longer exists in
 `io.lib` since the PPU reboot) — it still runs and still produces a correct byte array, but nothing
-in the current library set consumes that array's format directly. Useful today only if you're
-porting one of the preserved pre-PPU examples (`block_blast*.txt`, `walkdemo.txt`) or writing a new
-PPU-side consumer for hand-drawn monochrome bitmaps yourself.
-
-## `walkdemo_art.py`
-
-A one-off, stdlib-only placeholder-art generator for `examples/walkdemo.txt` (a 16-color palette + a
-2-frame 12×12 character sheet). Not a general-purpose tool — it exists so that specific demo is
-reproducible without needing LibreSprite. `python tools/walkdemo_art.py` writes into
-`assets/walkdemo/` (computed as `<repo-root>/assets/walkdemo`, not relative to the script's own
-location — worth knowing if you ever move this script again).
+in the current library set consumes that array's format directly. `examples/block_blast.txt` bakes
+its PPU-era tile/sprite art as flat 256-byte-per-pattern arrays instead (hand-computed, not run
+through this tool — see its own header comment). Useful today only if you're writing a new PPU-side
+consumer for hand-drawn monochrome bitmaps yourself.
 
 ## `png.py`
 

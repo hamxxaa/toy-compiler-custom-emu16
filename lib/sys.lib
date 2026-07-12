@@ -2,10 +2,10 @@
 // the one exception (a PC-only test diagnostic) is deliberately NOT here — see the note above
 // sys_save.
 //
-// A guest BYTE-store to SYSCALL_PORT (0xADFE) synchronously invokes the host-registered
+// A guest BYTE-store to SYSCALL_PORT (0xFFFE) synchronously invokes the host-registered
 // handler. By convention the handler reads its arguments from R1..R3 and returns its
 // result in R0; the value written to the port is the syscall *number*. A byte store is
-// required — a word store to 0xADFE would also write 0xADFF and clobber INPUT.
+// required — a word store to 0xFFFE would also write 0xFFFF and clobber INPUT.
 //
 // These are naked asm functions: parameters already arrive in R1/R2/R3 (param0->R1,
 // param1->R2, param2->R3), so the body must not disturb them before triggering the call.
@@ -18,7 +18,7 @@
     // (also dumps the available names into dest as [len][name][NUL] records)
     int sys_list_roms(int dest, int max) {
         asm { LDI R0, 1
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -26,7 +26,7 @@
     // num 2 = GET_ROM_NAME: index->R1, dest->R2  =>  R0 = length (writes name + NUL at dest)
     int sys_get_rom_name(int index, int dest) {
         asm { LDI R0, 2
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -34,7 +34,7 @@
     // num 3 = LOAD_ROM: index->R1  (host halts the CPU and queues the chosen game)
     void sys_load_rom(int index) {
         asm { LDI R0, 3
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -42,7 +42,7 @@
     // num 4 = RESET: return to the menu (host halts the CPU and queues /menu.rom)
     void sys_reset() {
         asm { LDI R0, 4
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -52,7 +52,7 @@
     // updates. Handled by the emulator core, so it behaves identically on firmware / PC / WASM.
     void sys_present() {
         asm { LDI R0, 5
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -60,7 +60,7 @@
     // num 6 = TIME: R0 = milliseconds since boot (low 16 bits; wraps every ~65 s).
     int sys_time() {
         asm { LDI R0, 6
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -75,7 +75,7 @@
     int sys_save(int src, int len, int slot) {
         asm { LDI R0, 7
               PSH R4
-              LDI R4, 0xADFE
+              LDI R4, 0xFFFE
               STR R0, [R4], byte
               POP R4
               RET }
@@ -85,7 +85,7 @@
     int sys_load(int dest, int maxlen, int slot) {
         asm { LDI R0, 8
               PSH R4
-              LDI R4, 0xADFE
+              LDI R4, 0xFFFE
               STR R0, [R4], byte
               POP R4
               RET }
@@ -94,7 +94,7 @@
     // num 9 = SAVE_EXISTS: slot->R1  =>  R0 = 1 if a save exists in that slot, else 0
     int sys_save_exists(int slot) {
         asm { LDI R0, 9
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -103,7 +103,7 @@
     // [type, w, h, reserved, len_lo, len_hi] at dest so the game can size a buffer before loading.
     int sys_asset_info(int id, int dest) {
         asm { LDI R0, 10
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -113,7 +113,7 @@
     int sys_asset_load(int id, int dest, int maxlen) {
         asm { LDI R0, 11
               PSH R4
-              LDI R4, 0xADFE
+              LDI R4, 0xFFFE
               STR R0, [R4], byte
               POP R4
               RET }
@@ -124,7 +124,7 @@
     // firmware and (best-effort) the browser; a no-op on the one-shot PC runner.
     void sys_set_fps(int fps) {
         asm { LDI R0, 12
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -133,7 +133,7 @@
     // PRESENT the host composes the frame, converts it to the display, and paces to the frame rate.
     void sys_ppu_submit(int buf, int len) {
         asm { LDI R0, 13
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -142,7 +142,7 @@
     // asset `pak_id` straight into PPU RAM at `ppu_addr` (like a cartridge) — bulk room/tileset load.
     int sys_ppu_dma(int pak_id, int ppu_addr) {
         asm { LDI R0, 14
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }
@@ -152,7 +152,7 @@
     int sys_ppu_upload(int ppu_addr, int cpu_src, int len) {
         asm { LDI R0, 15
               PSH R4
-              LDI R4, 0xADFE
+              LDI R4, 0xFFFE
               STR R0, [R4], byte
               POP R4
               RET }

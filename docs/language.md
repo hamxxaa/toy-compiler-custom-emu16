@@ -282,7 +282,7 @@ code dedicated to classes.
 ```c
 int sys_time() {
     asm { LDI R0, 6
-          LDI R3, 0xADFE
+          LDI R3, 0xFFFE
           STR R0, [R3], byte
           RET }
 }

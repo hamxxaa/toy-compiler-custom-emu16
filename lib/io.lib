@@ -6,9 +6,9 @@
     //  convention (matches the compiler): arg1 -> R1, arg2 -> R2, arg3 -> R3, return
     //  value -> R0. Scratch: R0..R3 may be clobbered freely.
     //
-    //  All actual drawing goes through the PPU now (lib/ppu.lib) -- PRAM (0xAE00) / VRAM
-    //  (0xB000) are a legacy fallback the CPU no longer writes to directly; INPUT
-    //  (0xADFF) is the one hardware address this file still touches.
+    //  All actual drawing goes through the PPU now (lib/ppu.lib). PRAM/VRAM no longer exist
+    //  (reclaimed for more usable RAM); INPUT (0xFFFF) is the one hardware address this file
+    //  still touches.
     // ====================================================================
 
     // memory[addr] = low byte of val
@@ -48,7 +48,7 @@
     int read_input() {
         asm {
             LDI R0, 0
-            LDI R1, 0xADFF
+            LDI R1, 0xFFFF
             LDR R0, [R1], byte
             RET
         }

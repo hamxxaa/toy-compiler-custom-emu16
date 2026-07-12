@@ -1,5 +1,5 @@
 // ESP32-S3 GPIO pin assignments for the handheld hardware.
-// Memory-map constants (VRAM_START_ADDRESS, etc.) are in emulator/definitions.h.
+// Memory-map constants (SYSCALL_PORT, INPUT_ADDRESS, etc.) are in emulator/definitions.h.
 #pragma once
 
 #define SD_MOSI 35

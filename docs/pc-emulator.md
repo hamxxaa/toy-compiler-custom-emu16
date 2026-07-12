@@ -49,14 +49,13 @@ once, on first asset syscall — see [file-formats.md](file-formats.md#2-pak--th
 
 Two things every run produces:
 
-1. **`<output-dir>/frame.ppm`** — the final composed frame (PPU output if the ROM engaged the PPU,
-   else the legacy VRAM+PRAM framebuffer), a plain P6 PPM (`SCREEN_WIDTH`×`SCREEN_HEIGHT`, RGB565
-   expanded to 8-bit-per-channel). Viewable in any image tool that reads PPM, or convertible with
-   `magick`/`convert`.
+1. **`<output-dir>/frame.ppm`** — the PPU's composed frame (every ROM drives the PPU now), a plain
+   P6 PPM (`SCREEN_WIDTH`×`SCREEN_HEIGHT`, RGB565 expanded to 8-bit-per-channel). Viewable in any
+   image tool that reads PPM, or convertible with `magick`/`convert`.
 2. **Two summary lines on stdout:**
    ```
-   REGS R0=0x03E7 R1=0x0020 R2=0x0020 R3=0x0000 R4=0x0000 R5=0x0000 R6=0x0000 R7=0xADFC
-   RESULT halted=1 frames=1 batches=1 return=999 pc=0x6036 flags=0x0002 instr=740 checksum=0x7A83BC47B8448383 frame=build\pc_emulator\frame.ppm
+   REGS R0=0x01AB R1=0x01AB R2=0x01AB R3=0x80B2 R4=0x0000 R5=0x0000 R6=0x0000 R7=0xFFFC
+   RESULT halted=1 frames=1 batches=1 return=427 pc=0x8026 flags=0x0000 instr=292 checksum=0x7A83BC47B8448383 frame=build\pc_emulator\frame.ppm
    ```
    - `REGS` — all 8 registers' final values, hex.
    - `halted` — 1 if the CPU stopped on a genuine `HLT` (not a `PRESENT` frame-yield) before

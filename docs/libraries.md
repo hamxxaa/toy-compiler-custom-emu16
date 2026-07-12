@@ -30,7 +30,7 @@ Calling convention (matches the compiler): arg1→R1, arg2→R2, arg3→R3, retu
 
 - `poke_byte(addr, val)` / `peek_byte(addr)` — raw single-byte memory access.
 - `poke(addr, val)` / `peek(addr)` — raw little-endian word access.
-- `read_input()` — the raw button bitmask at `INPUT` (`0xADFF`).
+- `read_input()` — the raw button bitmask at `INPUT` (`0xFFFF`).
 - `BTN_LEFT` `BTN_UP` `BTN_RIGHT` `BTN_DOWN` `BTN_A` `BTN_B` `BTN_X` `BTN_Y` — `const` bit masks for
   `read_input()`/`button()`.
 - `button(mask)` — true if the given button is currently held.

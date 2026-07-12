@@ -16,11 +16,6 @@
 
 namespace fs = std::filesystem;
 
-static uint16_t rgb565_from_rgb(uint8_t red, uint8_t green, uint8_t blue)
-{
-    return static_cast<uint16_t>(((red & 0xF8) << 8) | ((green & 0xFC) << 3) | (blue >> 3));
-}
-
 static uint8_t expand_5_to_8(uint8_t value)
 {
     return static_cast<uint8_t>((value << 3) | (value >> 2));
@@ -29,33 +24,6 @@ static uint8_t expand_5_to_8(uint8_t value)
 static uint8_t expand_6_to_8(uint8_t value)
 {
     return static_cast<uint8_t>((value << 2) | (value >> 4));
-}
-
-static void init_default_pram()
-{
-    const uint16_t defaults[8] = {
-        0x0000,
-        0xFFFF,
-        0xF800,
-        0x001F,
-        0x07E0,
-        0xF81F,
-        0x07FF,
-        0xFFE0
-    };
-
-    for (int i = 0; i < 8; ++i)
-    {
-        cpu_instance.memory[PRAM_START_ADDRESS + (i * 2)] = static_cast<uint8_t>(defaults[i] & 0xFF);
-        cpu_instance.memory[PRAM_START_ADDRESS + (i * 2) + 1] = static_cast<uint8_t>((defaults[i] >> 8) & 0xFF);
-    }
-
-    for (int i = 8; i < 256; ++i)
-    {
-        uint16_t gray = rgb565_from_rgb(static_cast<uint8_t>(i), static_cast<uint8_t>(i), static_cast<uint8_t>(i));
-        cpu_instance.memory[PRAM_START_ADDRESS + (i * 2)] = static_cast<uint8_t>(gray & 0xFF);
-        cpu_instance.memory[PRAM_START_ADDRESS + (i * 2) + 1] = static_cast<uint8_t>((gray >> 8) & 0xFF);
-    }
 }
 
 static bool load_file(const fs::path &path, std::vector<uint8_t> &bytes)
@@ -106,32 +74,11 @@ static bool save_ppm(const fs::path &path, const std::vector<uint16_t> &framebuf
     return static_cast<bool>(file);
 }
 
-static void build_framebuffer(std::vector<uint16_t> &framebuffer)
-{
-    uint16_t palette[256];
-    for (int i = 0; i < 256; ++i)
-    {
-        uint16_t low_byte = cpu_instance.memory[PRAM_START_ADDRESS + (i * 2)];
-        uint16_t high_byte = cpu_instance.memory[PRAM_START_ADDRESS + (i * 2) + 1];
-        palette[i] = static_cast<uint16_t>(low_byte | (high_byte << 8));
-    }
-
-    for (int i = 0; i < VRAM_SIZE; ++i)
-    {
-        uint8_t color_index = cpu_instance.memory[VRAM_START_ADDRESS + i];
-        framebuffer[static_cast<std::size_t>(i)] = palette[color_index];
-    }
-}
-
-// Choose the frame source: the PPU's composed output once a ROM has engaged it (convert its
-// indexed framebuffer through the PPU palette), else the legacy VRAM+PRAM path. Both coexist
-// while the PPU reboot is phased in.
+// Convert the PPU's composed indexed framebuffer through its palette. Every ROM drives the PPU
+// now (the legacy VRAM+PRAM path was reclaimed), so this is the only frame source.
 static void present_frame(std::vector<uint16_t> &framebuffer)
 {
-    if (ppu_engaged())
-        ppu_convert_rgb565(framebuffer.data());
-    else
-        build_framebuffer(framebuffer);
+    ppu_convert_rgb565(framebuffer.data());
 }
 
 static uint64_t fnv1a64(const std::vector<uint16_t> &framebuffer)
@@ -468,13 +415,8 @@ int main(int argc, char **argv)
         cpu_instance.memory[i] = rom_bytes[i];
     }
 
-    init_default_pram();
     // Font is no longer host-loaded: it lives in the ROM's DATA (io.lib's font8x8 array), so it
-    // arrived with the ROM copy above. PRAM/VRAM/INPUT are above any ROM image, so they stay host-set.
-    for (int i = 0; i < VRAM_SIZE; ++i)
-    {
-        cpu_instance.memory[VRAM_START_ADDRESS + i] = 0;
-    }
+    // arrived with the ROM copy above. INPUT is above any ROM image, so it stays host-set.
     cpu_instance.memory[INPUT_ADDRESS] = 0;
 
     std::vector<uint16_t> framebuffer(static_cast<std::size_t>(SCREEN_WIDTH * SCREEN_HEIGHT));

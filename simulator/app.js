@@ -1,10 +1,10 @@
 /**
  * App Controller — Main Simulation Loop
- * 
+ *
  * Orchestrates the exact ESP32 loop() sequence:
- *   1. Write input state to memory[0xADFF]
+ *   1. Write input state to memory[INPUT_ADDRESS]
  *   2. Run CPU batch (100k instructions)
- *   3. Build framebuffer from VRAM+PRAM and render to canvas
+ *   3. Convert the PPU's composed framebuffer and render to canvas
  *   4. Update debug panel
  *   5. Sync to ~60 FPS via requestAnimationFrame
  */
@@ -274,14 +274,10 @@ class App {
         this._updateControlState();
     }
 
-    // Draw the current frame: the PPU's composed output once a ROM engages it, else the legacy
-    // VRAM+PRAM path. Both coexist while the PPU reboot is phased in.
+    // Draw the current frame: the PPU's composed output (the only display path now -- VRAM/PRAM
+    // were reclaimed for more usable RAM).
     _renderFrame() {
-        if (this.cpu.ppuEngaged && this.cpu.ppuEngaged()) {
-            this.display.renderPPU(this.cpu.ppuFramebuffer());
-        } else {
-            this.display.render(this.cpu.memory);
-        }
+        this.display.renderPPU(this.cpu.ppuFramebuffer());
     }
 
     // Self-diagnose the #1 cause of a silent black screen: a ROM that streams its palette from an

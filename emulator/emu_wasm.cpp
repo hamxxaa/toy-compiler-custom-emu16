@@ -8,7 +8,7 @@
 //        -s MODULARIZE -s EXPORT_NAME=createEmu -s EXPORTED_RUNTIME_METHODS=['ccall','cwrap'] ...
 //
 // JS-side flow: emu_init() → write ROM bytes into the heap at emu_mem() → emu_run_frame()
-// → read VRAM/registers back through the same heap pointer.
+// → read the PPU's composed framebuffer (emu_ppu_framebuffer) / registers back through the heap.
 
 #include <cstdint>
 #include <cstring>
@@ -22,33 +22,6 @@
 // Defined in emu.cpp (not exposed via emu.h, but non-static globals).
 uint16_t read_word_le(uint16_t address);
 void decode_and_execute(uint16_t instruction);
-
-static uint16_t rgb565_from_rgb(uint8_t red, uint8_t green, uint8_t blue)
-{
-    return static_cast<uint16_t>(((red & 0xF8) << 8) | ((green & 0xFC) << 3) | (blue >> 3));
-}
-
-// Mirrors init_default_pram() in pc_emulator_main.cpp: 8 named colors + a grayscale ramp.
-static void init_default_pram()
-{
-    const uint16_t defaults[8] = {
-        0x0000, 0xFFFF, 0xF800, 0x001F,
-        0x07E0, 0xF81F, 0x07FF, 0xFFE0
-    };
-
-    for (int i = 0; i < 8; ++i)
-    {
-        cpu_instance.memory[PRAM_START_ADDRESS + (i * 2)]     = static_cast<uint8_t>(defaults[i] & 0xFF);
-        cpu_instance.memory[PRAM_START_ADDRESS + (i * 2) + 1] = static_cast<uint8_t>((defaults[i] >> 8) & 0xFF);
-    }
-
-    for (int i = 8; i < 256; ++i)
-    {
-        uint16_t gray = rgb565_from_rgb(static_cast<uint8_t>(i), static_cast<uint8_t>(i), static_cast<uint8_t>(i));
-        cpu_instance.memory[PRAM_START_ADDRESS + (i * 2)]     = static_cast<uint8_t>(gray & 0xFF);
-        cpu_instance.memory[PRAM_START_ADDRESS + (i * 2) + 1] = static_cast<uint8_t>((gray >> 8) & 0xFF);
-    }
-}
 
 // Browser syscall handler. Mirrors the desktop handler (pc_emulator_main.cpp): it serves the ROM
 // names the JS frontend feeds in (LIST/GET) and signals which ROM to load via g_pending (JS holds
@@ -260,23 +233,20 @@ static void wasm_syscall_handler(uint16_t num)
 
 extern "C" {
 
-// Reset CPU + memory and lay down the default palette / cleared VRAM / zero input.
-// Call this, THEN write the ROM bytes into the heap (initialize_cpu zeroes all memory).
+// Reset CPU + memory and zero INPUT. Call this, THEN write the ROM bytes into the heap
+// (initialize_cpu zeroes all memory).
 EMSCRIPTEN_KEEPALIVE
 void emu_init()
 {
     initialize_cpu();                 // zeroes all 64 KB, resets regs/pc/flags, SP = STACK_START_ADDRESS
     emu_set_syscall_handler(wasm_syscall_handler);
-    init_default_pram();
     // Font is not host-loaded — it ships inside the ROM (io.lib's font8x8 array), written into the
-    // heap by JS after this call. PRAM/VRAM/INPUT live above any ROM image, so they stay host-set.
-    for (int i = 0; i < VRAM_SIZE; ++i)
-        cpu_instance.memory[VRAM_START_ADDRESS + i] = 0;
+    // heap by JS after this call. INPUT lives above any ROM image, so it stays host-set.
     cpu_instance.memory[INPUT_ADDRESS] = 0;
 }
 
 // Pointer to the 64 KB guest memory inside the WASM heap. JS reads/writes it directly
-// (ROM load, INPUT writes, VRAM/PRAM readback) via Module.HEAPU8.
+// (ROM load, INPUT writes, CPU memory-viewer readback) via Module.HEAPU8.
 EMSCRIPTEN_KEEPALIVE
 uint8_t *emu_mem()
 {
@@ -305,9 +275,9 @@ EMSCRIPTEN_KEEPALIVE int      emu_flags()      { return cpu_instance.flags; }
 EMSCRIPTEN_KEEPALIVE int      emu_running()    { return cpu_instance.running ? 1 : 0; }
 
 // ---- PPU display bridge ----
-// Once a ROM engages the PPU, the browser draws its composed output instead of the VRAM path.
-// emu_ppu_framebuffer() converts the PPU's indexed frame through its palette into a static RGB565
-// buffer and returns it; JS reads SCREEN_WIDTH*SCREEN_HEIGHT uint16 from that pointer each frame.
+// Every ROM drives the PPU now (the legacy VRAM+PRAM path was reclaimed). emu_ppu_framebuffer()
+// converts the PPU's indexed frame through its palette into a static RGB565 buffer and returns it;
+// JS reads SCREEN_WIDTH*SCREEN_HEIGHT uint16 from that pointer each frame.
 EMSCRIPTEN_KEEPALIVE int emu_ppu_engaged() { return ppu_engaged() ? 1 : 0; }
 EMSCRIPTEN_KEEPALIVE uint16_t *emu_ppu_framebuffer()
 {

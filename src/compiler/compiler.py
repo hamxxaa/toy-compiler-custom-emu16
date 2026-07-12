@@ -15,11 +15,10 @@ from analyzer.class_expander import expand_classes
 INCLUDE_RE = re.compile(r'include\s+"([^"]+)"\s*;')
 
 # Hardware addresses injected as global constants ("prelude") so games and the IO
-# library can reference them by name. Matches definitions.h.
+# library can reference them by name. Matches definitions.h. (VRAM_START/PRAM were removed when
+# the legacy VRAM/PRAM path was reclaimed for more usable RAM -- every ROM drives the PPU now.)
 HW_CONSTANTS = {
-    "VRAM_START": 0xB000,
-    "PRAM": 0xAE00,
-    "INPUT_ADDR": 0xADFF,
+    "INPUT_ADDR": 0xFFFF,
     "SCREEN_WIDTH": 160,
     "SCREEN_HEIGHT": 128,
 }

@@ -12,13 +12,9 @@
 
 // CPU memory-map constants (from definitions.h) — kept here so the rest of the
 // frontend keeps reading window.EMU_CONSTANTS exactly as before.
-const INPUT_ADDRESS       = 0xADFF;
-const VRAM_START_ADDRESS  = 0xB000;
-const VRAM_SIZE           = 20480;   // 160×128
-const PRAM_START_ADDRESS  = 0xAE00;
-const PRAM_SIZE           = 512;     // 256 colors × 2 bytes
+const INPUT_ADDRESS       = 0xFFFF;
 const MAX_RAM_ADDRESS     = 0xFFFF;
-const STACK_START_ADDRESS = 0xADFE;
+const STACK_START_ADDRESS = 0xFFFC;
 const SCREEN_WIDTH        = 160;
 const SCREEN_HEIGHT       = 128;
 const PIXELS              = SCREEN_WIDTH * SCREEN_HEIGHT;   // composed-framebuffer length
@@ -59,7 +55,7 @@ class EmuCore {
         this._assetBuf      = module.cwrap('emu_asset_buf',         'number', []);
         this._assetCap      = module.cwrap('emu_asset_capacity',    'number', []);
         this._commitAsset   = module.cwrap('emu_commit_asset_pack', null,     ['number']);
-        // PPU display bridge (PPU reboot): drawn instead of VRAM once a ROM engages the PPU.
+        // PPU display bridge: the only display path (VRAM/PRAM were reclaimed for more RAM).
         this._ppuEngaged  = module.cwrap('emu_ppu_engaged',     'number', []);
         this._ppuFbPtr    = module.cwrap('emu_ppu_framebuffer', 'number', []);
         // Debug / perf bridge. Wrapped in _opt so a stale cached wasm missing these exports degrades
@@ -80,8 +76,7 @@ class EmuCore {
         return () => 0;
     }
 
-    // Reset core + lay down default palette / cleared VRAM (all done in C), then
-    // cache the guest-memory base pointer in the WASM heap.
+    // Reset core (all done in C), then cache the guest-memory base pointer in the WASM heap.
     initialize() {
         this._init();
         this.memPtr = this._memPtrF();
@@ -120,10 +115,10 @@ class EmuCore {
     getRegWord(i) { return this._reg(i & 7); }
 
     // --- PPU display ---
-    // True once the running ROM has driven the PPU (submitted a PRESENT). The app then draws the
-    // PPU's composed frame instead of the legacy VRAM+PRAM path. The try/catch means a STALE cached
-    // emu.wasm (built before these exports existed) degrades to the VRAM path instead of throwing and
-    // bricking the whole sim — if the PPU demo shows black, hard-refresh to pick up the fresh wasm.
+    // True once the running ROM has driven the PPU (submitted a PRESENT) -- every ROM does now.
+    // Used to gate the palette-warning check (below) on "has the game started presenting yet".
+    // The try/catch guards a STALE cached emu.wasm (built before this export existed): it returns
+    // false instead of throwing and bricking the whole sim -- if the demo shows black, hard-refresh.
     ppuEngaged() {
         try { return this._ppuEngaged() === 1; } catch (e) { return false; }
     }
@@ -175,10 +170,6 @@ class EmuCore {
 window.EmuCore = EmuCore;
 window.EMU_CONSTANTS = {
     INPUT_ADDRESS,
-    VRAM_START_ADDRESS,
-    VRAM_SIZE,
-    PRAM_START_ADDRESS,
-    PRAM_SIZE,
     MAX_RAM_ADDRESS,
     STACK_START_ADDRESS,
     SCREEN_WIDTH,

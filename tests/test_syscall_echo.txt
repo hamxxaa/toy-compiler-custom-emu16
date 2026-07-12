@@ -8,7 +8,7 @@
 {
     int test_echo(int a, int b) {
         asm { LDI R0, 0x7F
-              LDI R3, 0xADFE
+              LDI R3, 0xFFFE
               STR R0, [R3], byte
               RET }
     }

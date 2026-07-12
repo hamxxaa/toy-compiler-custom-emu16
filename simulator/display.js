@@ -1,10 +1,9 @@
 /**
- * Display Renderer — VRAM + Palette RAM → Canvas
- * 
- * Replicates the framebuffer building from ESP32 main.cpp loop():
- *   1. Read 256-entry palette from PRAM (RGB565, little-endian)
- *   2. For each VRAM byte: lookup palette[color_index] → RGB565
- *   3. Convert RGB565 → RGB888 → canvas pixel
+ * Display Renderer — the PPU's composed framebuffer → Canvas
+ *
+ * The PPU composites tiles/sprites/text and converts through its own palette in C
+ * (ppu_convert_rgb565); this class just expands the resulting RGB565 pixels to RGB888
+ * and blits them to the canvas. There is no CPU-side VRAM/PRAM path anymore.
  */
 
 class Display {
@@ -55,45 +54,13 @@ class Display {
     }
 
     /**
-     * Render the current VRAM state to the canvas.
-     * Reads directly from CPU memory.
-     */
-    render(memory) {
-        const { VRAM_START_ADDRESS, PRAM_START_ADDRESS, VRAM_SIZE } = window.EMU_CONSTANTS;
-
-        // 1. Build palette from PRAM (256 entries, each 2 bytes LE → RGB565)
-        const palette = new Uint16Array(256);
-        for (let i = 0; i < 256; i++) {
-            const lo = memory[PRAM_START_ADDRESS + (i * 2)];
-            const hi = memory[PRAM_START_ADDRESS + (i * 2) + 1];
-            palette[i] = lo | (hi << 8);
-        }
-
-        // 2. Map VRAM → palette → RGB888 → canvas pixels
-        for (let i = 0; i < VRAM_SIZE; i++) {
-            const colorIndex = memory[VRAM_START_ADDRESS + i];
-            const rgb565 = palette[colorIndex];
-            const [r, g, b] = Display.rgb565toRGB888(rgb565);
-
-            const pixelOffset = i * 4;
-            this.pixels[pixelOffset]     = r;
-            this.pixels[pixelOffset + 1] = g;
-            this.pixels[pixelOffset + 2] = b;
-            this.pixels[pixelOffset + 3] = 255;  // Alpha = opaque
-        }
-
-        // 3. Draw to canvas
-        this.ctx.putImageData(this.imageData, 0, 0);
-    }
-
-    /**
-     * Render a pre-composed RGB565 framebuffer straight to the canvas (the PPU path).
-     * `fb565` is a Uint16Array of SCREEN_WIDTH*SCREEN_HEIGHT already-palette-mapped colors,
-     * so there is no VRAM/PRAM lookup — the PPU did the compositing.
+     * Render a pre-composed RGB565 framebuffer straight to the canvas. `fb565` is a
+     * Uint16Array of SCREEN_WIDTH*SCREEN_HEIGHT already-palette-mapped colors — the PPU
+     * did the compositing in C, this just expands and blits.
      */
     renderPPU(fb565) {
-        const { VRAM_SIZE } = window.EMU_CONSTANTS;
-        for (let i = 0; i < VRAM_SIZE; i++) {
+        const PIXEL_COUNT = fb565.length;
+        for (let i = 0; i < PIXEL_COUNT; i++) {
             const [r, g, b] = Display.rgb565toRGB888(fb565[i]);
             const o = i * 4;
             this.pixels[o]     = r;

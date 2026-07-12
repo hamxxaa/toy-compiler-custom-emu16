@@ -31,42 +31,33 @@ All 8 button pins are `INPUT_PULLUP` (active-low: pressed reads `LOW`). Display 
 3. Init the TFT (or, if `ENABLE_FRAMEBUFFER_TEST` is set, run a solid-green panel self-test and
    return early — bypasses the emulator entirely, useful for isolating "is it the display or the ROM"
    when the screen stays black).
-4. `initialize_cpu()` + `init_default_pram()` — reset CPU/PPU state and seed a small default legacy
-   palette (8 named colors + a grayscale ramp). The **font is not host-loaded** — it ships inside
-   every ROM (`io.lib`'s `font8x8` array, part of DATA), so there's no load-order dependency between
-   "font present" and "ROM present."
+4. `initialize_cpu()` — resets CPU/PPU state. The **font is not host-loaded** — it ships inside every
+   ROM (`io.lib`'s `font8x8` array, part of DATA), so there's no load-order dependency between "font
+   present" and "ROM present." (There is no default-palette seeding step anymore — the legacy VRAM/PRAM
+   path that needed one was reclaimed; the PPU has no default palette either, so a ROM that boots
+   standalone must upload its own, same as `examples/menu.txt` does.)
 5. `build_rom_list()` — mount LittleFS, enumerate `*.rom` files at the root.
 6. `emu_set_syscall_handler(handle_syscall)`.
 7. `load_rom_from_flash("/menu.rom")` — the firmware always boots the menu; games are reached by the
    menu calling `sys_load_rom`.
-8. Zero VRAM, force the legacy dirty-check state to an impossible value (`0xFF`) so the very first
-   frame always rebuilds and pushes (there's nothing "previous" to diff against yet).
 
 ## Main loop (`loop()`)
 
 Per iteration: read buttons into the guest `INPUT` byte → `run_frame_instructions()` (one budgeted
 batch of CPU execution) → if a `sys_load_rom`/`sys_reset` syscall set a pending ROM, swap it in
-(reset CPU/PPU, reload, re-arm the dirty-check sentinels, `have_prev_frame = false`) → otherwise
+(reset CPU, reload, `have_prev_frame = false` so the new ROM's first frame always pushes) → otherwise
 display.
 
-**Display path picks one of two branches, mutually exclusive per ROM:**
-
-- **PPU engaged** (`ppu_engaged()` — true once a ROM has submitted at least one `PRESENT`): convert
-  the PPU's composed indexed framebuffer to RGB565, then **only push to the TFT if the converted
-  pixels differ from the last pushed frame** (`memcmp` against `prev_frame_buffer`). Games call
-  `sys_present()`/`ppu_present()` every loop regardless of whether anything changed, so "did the PPU
-  produce a new frame" is always true — the real dirty signal is whether the *pixels* changed. A
-  `pushImage` SPI transfer is the expensive part (~8 ms), so skipping it on a static frame (a paused
-  menu, an idle dialog) is a real win; an animating/scrolling game still pushes every frame, same as
-  it always would.
-- **Legacy VRAM/PRAM path** (no PPU engagement): separate dirty-checks for the palette (`PRAM`, 512 B)
-  and the framebuffer (`VRAM`, 20,480 B) — rebuild the cached RGB565 palette only if `PRAM` changed,
-  rebuild+push the framebuffer only if `VRAM` changed. Per-phase timing (emulate / pram-check /
-  pram-build / vram-check / vram-build / push) is averaged and printed to `Serial` every 60 frames
-  when `ENABLE_DEBUG_LOGS` is on — this is the firmware's own built-in profiler, useful for judging
-  whether a game is CPU-bound or push-bound. `examples/perftest.txt` was a dedicated benchmark ROM
-  for exactly this path (since retired — see the [README](../README.md)'s directory-layout note on
-  retired examples).
+**Display is unconditionally the PPU path** (every ROM drives the PPU now — the legacy VRAM/PRAM
+path was reclaimed for more usable RAM once nothing needed it anymore, see
+[memory-map.md](memory-map.md)): convert the PPU's composed indexed framebuffer to RGB565, then
+**only push to the TFT if the converted pixels differ from the last pushed frame** (`memcmp` against
+`prev_frame_buffer`). Games call `sys_present()`/`ppu_present()` every loop regardless of whether
+anything changed, so "did the PPU produce a new frame" is always true — the real dirty signal is
+whether the *pixels* changed. A `pushImage` SPI transfer is the expensive part (~8 ms), so skipping
+it on a static frame (a paused menu, an idle dialog) is a real win; an animating/scrolling game still
+pushes every frame, same as it always would. Rolling average timings (emulate / convert+compare+push)
+print to `Serial` every 60 frames when `ENABLE_DEBUG_LOGS` is on.
 
 Frame pacing: after the emulate+display work, `loop()` sleeps out the remainder of
 `g_frame_target_ms` (set by `sys_set_fps`, default 16 ms ≈ 60 Hz) if the frame finished early.

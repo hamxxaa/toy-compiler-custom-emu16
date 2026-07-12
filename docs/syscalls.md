@@ -2,7 +2,7 @@
 
 A ROM asks the host to do something outside the CPU's own power — list/load games, persist a save,
 stream an asset, drive the PPU, pace a frame — by **byte-storing** a syscall number to
-`SYSCALL_PORT` (`0xADFE`). It must be a byte store: a word store would also write `0xADFF`
+`SYSCALL_PORT` (`0xFFFE`). It must be a byte store: a word store would also write `0xFFFF`
 (`INPUT`) and clobber the button state. Arguments go in `R1`-`R3`; the result comes back in `R0`.
 Every host (firmware, `pc_emu`, the browser) registers its own handler for the same numbers — the
 *meaning* of each syscall is fixed, but *how* it's fulfilled (LittleFS vs. a CLI-arg file vs.

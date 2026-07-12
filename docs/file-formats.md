@@ -9,8 +9,7 @@ how the host reads it at runtime.
 Two different "spaces," and the formats live in different ones:
 
 - **The 64 KB CPU address space** — what the CPU sees (RAM at runtime): `bootstrap · DATA · CODE ·
-  stack · PRAM · VRAM` (see [memory-map.md](memory-map.md)). It is *volatile* and re-created every
-  boot.
+  stack` (see [memory-map.md](memory-map.md)). It is *volatile* and re-created every boot.
 - **Storage** — ESP32 flash (LittleFS, → SD later) · PC disk · browser `localStorage`. Files live
   here, *outside* the address space, and are moved in/out by **loading** (a `.rom` becomes RAM) or by
   **syscalls** (`.pak`/save bytes ↔ guest buffers — see [syscalls.md](syscalls.md)).
@@ -24,9 +23,9 @@ A **flat image of low memory, with no header**. The compiler
 onto addresses `0x0000 … code_end`:
 
 ```
-0x0000–0x0007   Bootstrap   LDI SP ; JMP CODE_START (0x6000)
-0x0008–0x5FFF   DATA        globals, arrays, the 8×8 font, baked array-literals + string literals
-0x6000–…        CODE        entry block (run global initializers → call main) + every function
+0x0000–0x0007   Bootstrap   LDI SP ; JMP CODE_START (0x8000)
+0x0008–0x7FFF   DATA        globals, arrays, the 8×8 font, baked array-literals + string literals
+0x8000–…        CODE        entry block (run global initializers → call main) + every function
 ```
 
 - **Built:** `python main.py game.txt --save-rom game` → `build/roms/game.rom`.
@@ -34,9 +33,8 @@ onto addresses `0x0000 … code_end`:
   *is* the RAM image of `0x0000…code_end`.
 - **Booted:** the CPU starts at `pc = 0`; the bootstrap sets the stack pointer and jumps to
   `CODE_START`, whose entry block initializes globals and calls `main`.
-- **Limits:** must fit below the stack (`size < 0xADFC`). PRAM/VRAM/INPUT are **not** in the ROM —
-  they sit above the image and the host initializes them (default palette, cleared VRAM/PPU state,
-  zero input).
+- **Limits:** must fit below the stack (`size < 0xFFFC`). INPUT is **not** in the ROM — it sits above
+  the image and the host initializes it (zero input) before the ROM's first frame runs.
 
 A `.rom` is self-contained code + data. It carries **no** art and **no** save state. Full layout
 rationale (why DATA is sized the way it is, what's actually inside it): see
