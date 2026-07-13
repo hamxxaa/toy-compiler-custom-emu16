@@ -1,8 +1,9 @@
 # EMU16
 
 A homebrew game platform built from scratch: a custom 16-bit CPU, a C-like compiler that targets it,
-a NES-style tile/sprite PPU, an ESP32-S3 handheld, and a browser simulator — all in one repo, all
-running the same core. Write a game once; run it on real hardware, in a terminal, or in a browser tab.
+a NES-style tile/sprite PPU, a 4-voice chiptune APU with its own music language, an ESP32-S3
+handheld, and a browser simulator — all in one repo, all running the same core. Write a game once;
+run it on real hardware, in a terminal, or in a browser tab.
 
 <p align="center">
   <img src="docs/media/arena_gameplay.gif" alt="EMU16 arena demo — PPU-rendered combat, multi-map warps, and a talking NPC" width="380">
@@ -32,6 +33,7 @@ cd simulator && python -m http.server                   # or: play it in a brows
 ```bash
 make test      # compile + run the full regression suite
 make verify    # headless WASM cross-check -- proves the browser core matches pc_emu bit-for-bit
+make song_render && python tools/mml.py assets/music/showcase.mml --preview   # hear the APU
 make flash && make uploadfs   # build + flash the real handheld (needs PlatformIO)
 ```
 
@@ -55,7 +57,9 @@ graph TD
     subgraph Core ["Shared Core (Zero Source Drift)"]
         CPU["CPU Core<br/>(emu.cpp)"]
         PPU["PPU Compositor<br/>(ppu.cpp)"]
+        APU["APU Synth<br/>(apu.cpp)"]
         CPU -- "Command Stream + DMA<br/>(no direct RAM access)" --> PPU
+        CPU -- "Command Stream<br/>(no direct state access)" --> APU
     end
 
     subgraph Hosts ["Host Platforms (thin shims)"]
@@ -81,22 +85,22 @@ graph TD
     ESP --> Device
 
     classDef core fill:#e1f5fe,stroke:#0288d1,stroke-width:2px;
-    class CPU,PPU core;
+    class CPU,PPU,APU core;
 ```
 
 - **Hardware** — an ESP32-S3 handheld: TFT display, 8 buttons, an SD reader wired for later. Pins:
   [`firmware/src/hw_pins.h`](firmware/src/hw_pins.h).
 - **Firmware** — a PlatformIO/Arduino project (`firmware/`) that boots the shared core on the ESP32.
-  It doesn't contain a second emulator: `emu_shim.cpp`/`ppu_shim.cpp` `#include` the real
-  `emulator/emu.cpp`/`ppu.cpp` directly.
-- **The shared core** (`emulator/emu.cpp` + `ppu.cpp`) — the actual CPU + PPU emulation, compiled
-  three ways (native for `pc_emu`, Arduino for firmware, Emscripten for the browser) with zero source
-  drift. This is *why* one `.rom` runs identically everywhere.
+  It doesn't contain a second emulator: `emu_shim.cpp`/`ppu_shim.cpp`/`apu_shim.cpp` `#include` the
+  real `emulator/*.cpp` directly.
+- **The shared core** (`emulator/emu.cpp` + `ppu.cpp` + `apu.cpp`) — the actual CPU + PPU + APU
+  emulation, compiled three ways (native for `pc_emu`, Arduino for firmware, Emscripten for the
+  browser) with zero source drift. This is *why* one `.rom` runs — and sounds — identical everywhere.
 - **Software** — the compiler (`src/`), the libraries (`lib/`), and the asset pipeline (`tools/`) that
   run on your dev machine and produce a `game.rom` + `game.pak`.
 
-Full depth — the CPU ISA and instruction encoding, the PPU's command-stream protocol and the
-"never touches CPU memory" invariant, the compiler's pipeline stage by stage — is in
+Full depth — the CPU ISA and instruction encoding, the PPU's and APU's command-stream protocols and
+the "never touches CPU memory" invariant, the compiler's pipeline stage by stage — is in
 **[docs/architecture.md](docs/architecture.md)**.
 
 ## Making a game
@@ -112,8 +116,8 @@ include "lib/io.lib";
     int main() {
         var int x = 0;
         while x < SCREEN_WIDTH {             // parens around conditions are optional
-            if (x & 1) == 0 {               // & | ^ bind looser than == (unlike C)
-                x = x + 1;
+            if (x & 1) == 0 {               // bitwise binds TIGHTER than == (no C gotcha;
+                x = x + 1;                   // the parens are convention, not required)
             }
             x = x + 1;
         }
@@ -146,7 +150,11 @@ as per-frame macro tables (volume/duty/arpeggio) plus vibrato and slides, and tr
 `lib/music.lib` plays whole songs — a sequencer with a groove/swing table and an SFX arbiter (effects
 "duck" a music channel, then it resumes). You don't hand-write note data: compose in **MML** text and
 compile it with `tools/mml.py` into a `.song` blob, pack it, and `music_load_song(pak_id, …)` streams
-a track from the `.pak` — so a map theme and a fight theme are one call apart.
+a track from the `.pak` — so a map theme and a fight theme are one call apart. Composing has a
+zero-compile loop: `python tools/mml.py song.mml --preview` renders through the *real* synth core and
+plays it instantly. Learn the whole format from
+**[assets/music/showcase.mml](assets/music/showcase.mml)** — a song where every line is a commented
+demonstration of one feature.
 
 **Assets:** draw in LibreSprite (indexed mode), export PNG+JSON, list them in a `sprites.list`, run
 `tools/image_import.py` then `tools/pack_assets.py` to get a `.pak`. Paint tilemaps as an indexed PNG
@@ -162,7 +170,7 @@ PPU via a *syscall* — write a number to `SYSCALL_PORT`, get a result in `R0`. 
 
 | Doc | Covers |
 |---|---|
-| [docs/architecture.md](docs/architecture.md) | The four layers in depth: hardware, firmware, the shared CPU+PPU core, the compiler pipeline. CPU ISA & instruction encoding, PPU command protocol. |
+| [docs/architecture.md](docs/architecture.md) | The four layers in depth: hardware, firmware, the shared CPU+PPU+APU core, the compiler pipeline. CPU ISA & instruction encoding, PPU/APU command protocols. |
 | [docs/language.md](docs/language.md) | The full language reference: grammar, types, operator precedence (with a verified C-difference gotcha), control flow, structs/classes, inline asm — the authoritative source, not source-code comments. |
 | [docs/compiler.md](docs/compiler.md) | Compiler internals: the TAC IR and `Var` identity rules, semantic analysis, class monomorphization, the optimizer's passes, the register allocator, and the backend's operand-aware code emission (byte/word quirks, ISA constraints, known limitations). |
 | [docs/memory-map.md](docs/memory-map.md) | The full CPU address space (down to what's actually inside DATA and why) and the PPU's separate graphics RAM, region by region. Calling convention. |
@@ -178,20 +186,26 @@ PPU via a *syscall* — write a number to `SYSCALL_PORT`, get a result in `R0`. 
 
 ```
 src/         compiler: lexer · parser · analyzer · codegen · optimization · backend
-emulator/    emu.cpp (CPU core) + ppu.cpp (PPU) + definitions.h, the PC harness, the WASM bridge
-firmware/    ESP32-S3 PlatformIO project (main.cpp, hw_pins.h, data/ ROMs)
-simulator/   browser sim -- HTML/JS over the WASM core (display + CPU/PPU debug panels)
+emulator/    the shared core -- emu.cpp (CPU) + ppu.cpp (PPU) + apu.cpp (APU) + definitions.h --
+             plus the PC harness, the WASM bridge, and song_render.cpp (native .song->.wav preview)
+firmware/    ESP32-S3 PlatformIO project (main.cpp, hw_pins.h, the *_shim.cpp includes, data/ ROMs)
+simulator/   browser sim -- HTML/JS over the WASM core (display, CPU/PPU debug panels, and the
+             AudioWorklet streaming path: apu.js + apu-worklet.js)
 lib/         io.lib (I/O) · sys.lib (syscalls) · ppu.lib (PPU commands + font) · map.lib (pak-loaded
-             maps + collision) · scene.lib (camera + sprite cast) · game.lib · event.lib
+             maps + collision) · scene.lib (camera + sprite cast) · game.lib · event.lib ·
+             apu.lib (sound-chip commands) · music.lib (song sequencer + SFX arbiter)
 tools/       sprite.py (ASCII->array, legacy) · png.py + image_import.py (LibreSprite->assets) ·
-             pack_assets.py (.pak) · pixel_map.py + map_set.py (tilemaps, single map / multi-map set)
+             pack_assets.py (.pak) · pixel_map.py + map_set.py (tilemaps, single map / multi-map
+             set) · mml.py (MML text -> .song, with --preview playback)
 examples/    arena.txt (PPU scene reference: multi-map world + collision + combat + a talking NPC),
-             menu.txt (home screen), block_blast.txt (brick-breaker: baked tile/sprite art, no .pak
-             needed); generated/ holds arena's compiled asset-id includes (NOT source -- regenerated
-             by the build recipe in its own header comment)
-assets/      hand-authored source art: sprites/ (LibreSprite PNG+JSON + sprites.list + master
-             palette) and maps/ (tools/pixel_map.py / map_set.py PNG + legend + .map.txt descriptors)
+             menu.txt (home screen), block_blast.txt (brick-breaker: baked tile/sprite art, plus a
+             pak-loaded song + SFX -- the audio-integration reference); generated/ holds arena's
+             compiled asset-id includes (NOT source -- regenerated by the build recipe in its own
+             header comment)
+assets/      hand-authored sources: sprites/ (LibreSprite PNG+JSON + sprites.list + master palette),
+             maps/ (painted PNG + legend + .map.txt descriptors), music/ (MML songs -- start with
+             showcase.mml, the commented feature tour)
 docs/        deep technical reference -- see the table above; media/ holds README screenshots/gifs
              (NOT build input -- see assets/ for that)
-tests/       regression sources      main.py · run_tests.py · Makefile
+tests/       regression sources      main.py · run_tests.py · verify_wasm.js · Makefile
 ```
