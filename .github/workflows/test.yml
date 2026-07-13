@@ -1,0 +1,29 @@
+name: tests
+
+# Runs the full regression suite on every push and pull request. The suite compiles each
+# tests/*.txt ROM with the Python compiler, runs it through pc_emu, and checks the return value
+# (see docs/pc-emulator.md). Needs only g++ and Python — both preinstalled on GitHub's runners —
+# so there's nothing to install. The WASM cross-check (make verify) needs Emscripten and is left
+# out here on purpose; add a second job for it later if you want the full three-host check in CI.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Build the desktop emulator
+        run: make pc_emu
+
+      - name: Run the regression suite
+        run: python run_tests.py

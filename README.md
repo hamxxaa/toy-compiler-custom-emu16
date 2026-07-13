@@ -1,5 +1,10 @@
 # EMU16
 
+[![tests](https://github.com/hamxxaa/toy-compiler-custom-emu16/actions/workflows/test.yml/badge.svg)](https://github.com/hamxxaa/toy-compiler-custom-emu16/actions/workflows/test.yml)
+![license](https://img.shields.io/badge/license-MIT-blue)
+![dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+![runs on](https://img.shields.io/badge/runs%20on-ESP32%20%C2%B7%20WASM%20%C2%B7%20native-orange)
+
 A homebrew game platform built from scratch: a custom 16-bit CPU, a C-like compiler that targets it,
 a NES-style tile/sprite PPU, a 4-voice chiptune APU with its own music language, an ESP32-S3
 handheld, and a browser simulator — all in one repo, all running the same core. Write a game once;
