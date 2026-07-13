@@ -64,15 +64,24 @@ class EmuCore {
         this._ppuMemSize  = this._opt('emu_ppu_mem_size', 'number');
         this._didPresent  = this._opt('emu_did_present',  'number');
         this._instrCount  = this._opt('emu_instr_count',  'number');
+        // APU audio bridge (Phase 2, see plans/buzzy-streaming-tanaka.md) -- optional like the debug/
+        // perf bridges above, since it's brand new and a stale cached wasm won't have it yet.
+        this._apuRenderPtr = this._opt('emu_apu_render', 'number', ['number']);
+        this._apuRateF      = this._opt('emu_apu_rate',   'number');
 
         this.memPtr = 0;
     }
 
     // cwrap only if the export exists (older cached wasm may lack it); else a stub returning 0.
-    _opt(name, ret) {
+    // A silent fallback here looks exactly like a completely different bug downstream (a caller
+    // getting all-zero results with no error), so warn loudly when it happens.
+    _opt(name, ret, args = []) {
         try {
-            if (this.m['_' + name]) return this.m.cwrap(name, ret, []);
+            if (this.m['_' + name]) return this.m.cwrap(name, ret, args);
         } catch (e) { /* fall through */ }
+        console.warn(`EmuCore._opt: export _${name} NOT FOUND on the loaded module -- falling back ` +
+            `to a stub that always returns 0. This usually means a stale cached emu.wasm predating ` +
+            `this export; hard-refresh (and consider "Empty Cache and Hard Reload" in DevTools).`);
         return () => 0;
     }
 
@@ -128,6 +137,21 @@ class EmuCore {
     ppuFramebuffer() {
         const ptr = this._ppuFbPtr();
         return new Uint16Array(this.m.HEAPU8.buffer, ptr, SCREEN_WIDTH * SCREEN_HEIGHT);
+    }
+
+    // --- APU audio bridge (Phase 2, see plans/buzzy-streaming-tanaka.md) ---
+    // The APU's sample rate (fixed at build time; see emulator/apu.h APU_RATE).
+    apuRate() { return this._apuRateF(); }
+
+    // Render `n` samples from the APU's CURRENT voice state (a pure function of state at call
+    // time -- independent of runBatch's cadence, see apu.h) and return an Int16Array VIEW into the
+    // WASM heap. The view is only valid until the next emu_apu_render call (the C side reuses one
+    // static buffer) -- callers that need to hold onto it (e.g. handing samples to an
+    // AudioWorklet) must copy out before rendering again.
+    apuRender(n) {
+        const ptr = this._apuRenderPtr(n | 0);
+        if (!ptr) return new Int16Array(0);
+        return new Int16Array(this.m.HEAPU8.buffer, ptr, n | 0);
     }
 
     get pc()      { return this._pcF(); }

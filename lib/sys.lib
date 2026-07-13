@@ -157,4 +157,14 @@
               POP R4
               RET }
     }
+
+    // num 16 = APU_SUBMIT: buf->R1, len->R2. Applies an APU command stream IMMEDIATELY (no
+    // PRESENT-style latch -- unlike sys_ppu_submit, there is no "audio present"; voice state
+    // updates take effect the instant this returns). See lib/apu.lib for the command builder.
+    void sys_apu_submit(int buf, int len) {
+        asm { LDI R0, 16
+              LDI R3, 0xFFFE
+              STR R0, [R3], byte
+              RET }
+    }
 }

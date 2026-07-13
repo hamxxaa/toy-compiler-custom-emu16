@@ -29,6 +29,8 @@
 #define SYSCALL_PPU_SUBMIT  13     // R1=buf R2=len -> execute a PPU command stream; PRESENT yields the frame
 #define SYSCALL_PPU_DMA     14     // (Phase 1) R1=pak_id R2=target R3=dst_off -> DMA pak asset -> PPU region
 #define SYSCALL_PPU_UPLOAD  15     // (Phase 1) bulk copy CPU buffer -> PPU region (baked test data, no pak)
+// ── Audio / APU prototype (see plans/buzzy-streaming-tanaka.md) ──
+#define SYSCALL_APU_SUBMIT  16     // R1=buf R2=len -> apply an APU command stream IMMEDIATELY (no PRESENT-style latch)
 #define INPUT_ADDRESS      0xFFFF
 #define MAX_RAM_ADDRESS    0xFFFF
 #define STACK_START_ADDRESS 0xFFFC

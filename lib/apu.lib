@@ -1,0 +1,179 @@
+// lib/apu.lib — CPU-side command-buffer builder for the APU (a software synth, the PPU's twin).
+// See plans/buzzy-streaming-tanaka.md for the full design discussion. The CPU never produces a
+// sample: it posts sparse voice-state updates (a handful of bytes, a few times a frame) via a
+// command stream flushed with sys_apu_submit (lib/sys.lib); the APU free-runs at audio rate from
+// that resident state between submits. The exact same bytes work whether the APU is a function
+// call (one chip) or across a wire to a second chip -- so nothing here knows which.
+//
+// ONE KEY DIFFERENCE FROM ppu.lib: there is no PRESENT / latch concept. Every command here takes
+// effect the INSTANT sys_apu_submit returns -- apu_submit() is not tied to ppu_present() and can
+// be called on its own schedule (typically once per game frame, but empty/skipped submits are
+// fine; the synth keeps sounding whatever the last submit left it at regardless).
+//
+// Usage shape (typically once per frame, alongside but independent of the PPU's cmd_reset/present):
+//     au_reset();
+//     ... note_on / note_off / set_vol / set_duty for whatever changed this frame ...
+//     apu_submit();
+//
+// Command wire format (see emulator/apu.cpp for the decoder — no PRESENT terminator; a stream can
+// end at any length since every op here is fixed-size and self-contained):
+//     0x00 NOP        []                          0x03 SET_VOL  [chan][vol]
+//     0x01 NOTE_ON    [chan][freq_lo][freq_hi][vol]   0x04 SET_DUTY [chan][duty]
+//     0x02 NOTE_OFF   [chan]
+// 4 voices: chan 0,1 = pulse (duty 0..3 = 12.5/25/50/75%), chan 2 = triangle (duty ignored),
+// chan 3 = noise (duty ignored; freq sets the LFSR clock rate, not a musical pitch as such).
+include "../lib/sys.lib";     // sys_apu_submit
+{
+    var byte apu_cmd[256];    // per-batch command buffer (audio submits are tiny vs the PPU's 2 KB)
+    var int  apu_clen;        // bytes filled so far
+
+    // Start a fresh batch of audio commands (empties the command buffer only -- does not touch any
+    // voice's current state; voices keep sounding whatever they were last told until told otherwise).
+    void au_reset() { apu_clen = 0; }
+
+    // Append one byte / one little-endian 16-bit word to the command buffer.
+    void au8(int v) {
+        apu_cmd[apu_clen] = v;
+        apu_clen = apu_clen + 1;
+    }
+    void au16(int v) {
+        au8(v);
+        au8(v >> 8);
+    }
+
+    // Start (or retrigger) a voice: sets its frequency + volume and gates it on. `freq` is in Hz
+    // for voices 0-2 (pulse/triangle); for voice 3 (noise) it sets the LFSR clock rate, which reads
+    // as pitch/character (low = a rumble, high = a hiss) rather than a musical note.
+    void note_on(int chan, int freq, int vol) {
+        au8(1); au8(chan); au16(freq); au8(vol);
+    }
+
+    // Silence a voice (gate off). Its phase/LFSR state is preserved, not reset.
+    void note_off(int chan) {
+        au8(2); au8(chan);
+    }
+
+    // Change a voice's volume without retriggering it (no phase reset) -- e.g. a decay envelope
+    // driven by the game's own per-frame tick, since the prototype has no hardware envelopes yet.
+    void set_vol(int chan, int vol) {
+        au8(3); au8(chan); au8(vol);
+    }
+
+    // Change a pulse voice's duty cycle (0=12.5%, 1=25%, 2=50%, 3=75%). Harmless no-op on the
+    // triangle/noise voices (the decoder still accepts it; apu.cpp's synth just ignores it there).
+    void set_duty(int chan, int duty) {
+        au8(4); au8(chan); au8(duty);
+    }
+
+    // Overall output volume applied to the WHOLE mix (every voice): 128 = normal (the default, no
+    // change), 64 = half, 0 = mute, up to 255 = ~2x (may clip). Applies immediately and PERSISTS
+    // across song loads / swaps -- drive it from a settings menu, or just call it once at boot to set
+    // a comfortable level (e.g. apu_master_vol(80) if the default feels too loud on the speaker).
+    void apu_master_vol(int v) {
+        au8(5); au8(v);
+    }
+
+    // Read one byte of guest memory at `addr` (kept local so apu.lib stays io.lib-independent,
+    // same pattern as ppu.lib's ppu_rdbyte). Used to copy an instrument's volume table into the
+    // command stream.
+    int apu_rdbyte(int addr) {
+        asm { LDI R0, 0
+              LDR R0, [R1], byte
+              RET }
+    }
+
+    // Private: emit a macro-definition command -- [op][id][loop][len] then `len` bytes read from the
+    // guest array `table`. `loop` is the index to jump back to when the macro reaches its end, or 255
+    // = hold the last value. Shared by the vol/duty/arp definers below.
+    void apu_emit_macro(int op, int id, int loop, int table, int len) {
+        var int i;
+        au8(op); au8(id); au8(loop); au8(len);
+        i = 0;
+        while i < len {
+            au8(apu_rdbyte(table + i));
+            i = i + 1;
+        }
+    }
+
+    // VOLUME macro for instrument `id` (0..15): a byte array of levels 0..15, one per 60Hz frame-tick
+    // -- the note's LOUDNESS SHAPE. loop 255 = hold the last value. Examples: pluck = {15,12,9,7,5,4,
+    // 3,2,1,0} loop 255 (strike + decay to silence); pad = {2,5,8,11,13,15} loop 5 (swell + sustain);
+    // tremolo = {15,15,10,6,10,15} loop 0 (a repeating wobble).
+    void apu_inst_vol(int id, int loop, int table, int len) { apu_emit_macro(16, id, loop, table, len); }
+
+    // DUTY macro (pulse voices 0/1 only): a byte array of duty values 0..3 (0=12.5% thin/reedy,
+    // 1=25%, 2=50% full/hollow, 3=75%), one per frame-tick -- the note's TIMBRE SHAPE. Sweeping it
+    // gives a "wah"/shimmer. Example: {0,0,1,2,2,1} loop 0.
+    void apu_inst_duty(int id, int loop, int table, int len) { apu_emit_macro(18, id, loop, table, len); }
+
+    // ARPEGGIO macro: a byte array of SIGNED semitone offsets (0=root; +4=major 3rd; +7=5th; a byte
+    // of 256-n encodes -n), stepped one per frame-tick and ADDED to the note's pitch. Cycling e.g.
+    // {0,4,7} makes ONE channel flicker through a chord so fast the ear hears it as a chord (the
+    // iconic chiptune sound). Also used for tiny pitch "blip" attacks. loop 0 to repeat forever.
+    void apu_inst_arp(int id, int loop, int table, int len) { apu_emit_macro(19, id, loop, table, len); }
+
+    // VIBRATO for instrument `id`: a gentle repeating pitch wobble (the "singing"/expressive quality).
+    // `depth` = how far the pitch wavers (pitch-fp units; 256 = a whole semitone, so ~16-48 is a
+    // tasteful few-cents-to-quarter-tone waver); `speed` = how fast (roughly Hz*11 at 60fps -- ~40-90
+    // is musical); `delay` = frame-ticks to wait after note-on before it fades in (a held-then-waver
+    // feel, like a real singer). depth 0 = off.
+    void apu_inst_vibrato(int id, int depth, int speed, int delay) {
+        au8(20); au8(id); au8(depth); au8(speed); au8(delay);
+    }
+
+    // NOISE TIMBRE for instrument `id` (noise voice, channel 3 only): mode 0 = normal white-noise
+    // hiss (snares, hats, wind); mode 1 = "short/periodic" mode -- a much shorter cycle that sounds
+    // buzzy, metallic, almost-pitched (clangy percussion, weird basses).
+    void apu_inst_noise(int id, int mode) {
+        au8(22); au8(id); au8(mode);
+    }
+
+    // Musical note-on: play MIDI note-number `note` (60 = middle C4, 69 = A4) on `chan` using
+    // instrument `inst`. Pitch comes from the note; VOLUME is driven by the instrument's envelope,
+    // so there is no vol argument here (unlike the raw note_on above). Resets the instrument's
+    // macro cursors so the note starts at the envelope's beginning.
+    void note_on_inst(int chan, int note, int inst) {
+        au8(17); au8(chan); au8(note); au8(inst);
+    }
+
+    // PORTAMENTO: glide the note currently sounding on `chan` toward MIDI note `note` (instead of
+    // jumping). `rate` = pitch-fp units moved per frame-tick (256 = one semitone/frame, so small
+    // values ~4-32 give a smooth audible glide; 0 stops the slide). Does NOT retrigger the envelope
+    // -- it bends the pitch of the note that's already playing.
+    void note_slide(int chan, int note, int rate) {
+        au8(21); au8(chan); au8(note); au8(rate);
+    }
+
+    // Flush the current batch to the APU. Commands apply IMMEDIATELY (see the header note above) --
+    // this does NOT clear apu_clen; call au_reset() to start the next batch.
+    void apu_submit() {
+        sys_apu_submit(&apu_cmd, apu_clen);
+    }
+
+    // ── Note-name -> Hz consts (equal temperament, A4=440Hz), enough for a test tune. A full
+    // note table / MML-style authoring is future tooling, not needed for the sim prototype. ───────
+    const AN_C3 = 131;
+    const AN_C4 = 262;
+    const AN_CS4 = 277;
+    const AN_D4 = 294;
+    const AN_DS4 = 311;
+    const AN_E4 = 330;
+    const AN_F4 = 349;
+    const AN_FS4 = 370;
+    const AN_G4 = 392;
+    const AN_GS4 = 415;
+    const AN_A4 = 440;
+    const AN_AS4 = 466;
+    const AN_B4 = 494;
+    const AN_C5 = 523;
+    const AN_C6 = 1047;
+
+    // ── MIDI note numbers for note_on_inst (60 = middle C4, 69 = A4 = 440Hz). Add 12 per octave;
+    // semitone order is C, C#, D, D#, E, F, F#, G, G#, A, A#, B. ──────────────────────────────────
+    const N_C3 = 48;
+    const N_C4 = 60;  const N_CS4 = 61; const N_D4 = 62;  const N_DS4 = 63;
+    const N_E4 = 64;  const N_F4 = 65;  const N_FS4 = 66; const N_G4 = 67;
+    const N_GS4 = 68; const N_A4 = 69;  const N_AS4 = 70; const N_B4 = 71;
+    const N_C5 = 72;  const N_D5 = 74;  const N_E5 = 76;  const N_G5 = 79;
+    const N_C6 = 84;
+}

@@ -16,6 +16,7 @@ running the same core. Write a game once; run it on real hardware, in a terminal
 | **Compiler** | Hand-written: regex-NFA lexer → recursive-descent parser → TAC IR → linear-scan allocator → `.rom` |
 | **CPU** | Custom 16-bit, 8 registers, 64 KB little-endian address space |
 | **PPU** | Separate NES-2C02-style tile + sprite + text unit with its own graphics RAM |
+| **APU** | Separate NES-2A03-style 4-voice sound unit: pulse × 2 + triangle + noise, instrument macros (volume/duty/arpeggio), vibrato & slides, a song sequencer, and an MML text compiler |
 | **Targets** | ESP32-S3 handheld · desktop emulator (`pc_emu`) · browser WebAssembly sim |
 | **Assets** | Draw in [LibreSprite](https://libresprite.github.io/), paint tilemaps as PNGs, stream everything from a `.pak` |
 
@@ -139,6 +140,13 @@ other libraries: `io.lib` (input + peek/poke), `sys.lib` (every host syscall), `
 AABB collision), `event.lib` (256 save-backed flags — the spine for one-time triggers and branching
 dialog). Each library has exactly one job; full per-function reference:
 **[docs/libraries.md](docs/libraries.md)**.
+
+**Make noise — the APU does.** A separate 4-voice sound unit (`lib/apu.lib`): define **instruments**
+as per-frame macro tables (volume/duty/arpeggio) plus vibrato and slides, and trigger notes.
+`lib/music.lib` plays whole songs — a sequencer with a groove/swing table and an SFX arbiter (effects
+"duck" a music channel, then it resumes). You don't hand-write note data: compose in **MML** text and
+compile it with `tools/mml.py` into a `.song` blob, pack it, and `music_load_song(pak_id, …)` streams
+a track from the `.pak` — so a map theme and a fight theme are one call apart.
 
 **Assets:** draw in LibreSprite (indexed mode), export PNG+JSON, list them in a `sprites.list`, run
 `tools/image_import.py` then `tools/pack_assets.py` to get a `.pak`. Paint tilemaps as an indexed PNG

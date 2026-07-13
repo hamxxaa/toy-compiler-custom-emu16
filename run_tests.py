@@ -91,6 +91,10 @@ TESTS = [
     ("tests/test_map_buf_smoke.txt",  "test_map_buf_smoke",  234),
     # ── map system Phase 6: map_load end-to-end on a real 2-map pak (arena + a 2nd larger map) ──
     ("tests/test_map_load.txt",       "test_map_load",       2576),
+    # ── APU / music engine: apu.lib's command-stream encoding (raw voices, instrument macros,
+    #    vibrato, noise mode, portamento, master volume) + music.lib's sequencer and SFX arbiter ──
+    ("tests/test_apu_cmdstream.txt",    "test_apu_cmdstream",    14045),
+    ("tests/test_music_sequencer.txt",  "test_music_sequencer",  8191),
 ]
 
 # Pure-Python tool tests (no ROM): run as subprocesses, must exit 0.
@@ -99,6 +103,7 @@ TOOL_TESTS = [
     "tests/test_image_import.py",
     "tests/test_pixel_map.py",
     "tests/test_map_set.py",
+    "tests/test_mml.py",
 ]
 
 

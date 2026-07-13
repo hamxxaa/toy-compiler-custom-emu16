@@ -45,10 +45,10 @@ Calling convention (matches the compiler): arg1→R1, arg2→R2, arg3→R3, retu
 ## `sys.lib` — host syscall wrappers
 
 Every real host syscall, wrapper-per-number, and nothing else. Thin naked-`asm` bodies around
-syscalls 1-15; see [syscalls.md](syscalls.md#reference) for full semantics of each.
+syscalls 1-16; see [syscalls.md](syscalls.md#reference) for full semantics of each.
 `sys_list_roms` `sys_get_rom_name` `sys_load_rom` `sys_reset` `sys_present` `sys_time` `sys_save`
 `sys_load` `sys_save_exists` `sys_asset_info` `sys_asset_load` `sys_set_fps` `sys_ppu_submit`
-`sys_ppu_dma` `sys_ppu_upload`.
+`sys_ppu_dma` `sys_ppu_upload` `sys_apu_submit`.
 
 **Deliberate exception:** syscall `0x7F` (ECHO, a PC-only test diagnostic — see
 [syscalls.md](syscalls.md#notes--per-host-differences)) has **no wrapper here**. No shipped game
@@ -234,3 +234,56 @@ A dialog box on the PPU model is just a text-plane rectangle (`tile_fill` + `til
   `sys_save`/`sys_load`. This is the simplest possible save format — no header, no versioning; a game
   that saves more than flags wraps its own struct around this (or writes a separate blob to a
   different slot).
+
+## `apu.lib` — the sound-chip interface
+
+The CPU-side command builder for the **APU** (the audio unit, the PPU's twin — see
+[architecture.md](architecture.md)). The APU has 4 voices (0,1 = pulse, 2 = triangle, 3 = noise);
+you build a small command batch and flush it. Unlike the PPU there is **no present/latch** — commands
+apply the instant `apu_submit()` returns.
+
+- `au_reset()` / `au8(v)` / `au16(v)` / `apu_submit()` — start a batch, append bytes, flush it.
+- **Raw voices** (fixed pitch + volume, for SFX/sweeps): `note_on(chan, freq, vol)` (freq in Hz),
+  `note_off(chan)`, `set_vol(chan, vol)`, `set_duty(chan, duty)`.
+- **Instruments** (the expressive path): define per-frame **macro tables** once, then trigger notes
+  that reference them. `apu_inst_vol(id, loop, &table, len)` (levels 0–15 — the loudness shape),
+  `apu_inst_duty(id, loop, &table, len)` (0–3 — pulse timbre), `apu_inst_arp(id, loop, &table, len)`
+  (signed semitone offsets — one-channel chords/blips), `apu_inst_vibrato(id, depth, speed, delay)`,
+  `apu_inst_noise(id, mode)` (0 = hiss, 1 = metallic). `loop` = the macro index to jump to at the end,
+  or `255` = hold the last value.
+- `note_on_inst(chan, note, inst)` — play MIDI `note` (60 = middle C, 69 = A4) with instrument `inst`;
+  volume comes from the instrument's envelope. `note_slide(chan, note, rate)` — portamento glide.
+- `apu_master_vol(v)` — overall output multiplier, `0`-`255` (`128` = unity, the default). One knob
+  for "everything's too loud" rather than re-tuning every instrument's volume macro; persists across
+  `music_load_song` calls (it isn't part of a song's state).
+- `N_C4`, `N_A4`, … — MIDI note-number consts (add 12 per octave). `AN_*` are the Hz consts for the
+  raw path.
+
+You rarely call this directly for music — `music.lib` (below) drives it. Full conceptual walkthrough:
+the raw music format is documented in [file-formats.md](file-formats.md#4-song-blobs-song).
+Regression coverage: `tests/test_apu_cmdstream.txt` builds one batch through every encoder above and
+checksums the exact bytes emitted (the command-stream analogue of `test_ppu_backdrop.txt`).
+
+## `music.lib` — song sequencer + SFX arbiter
+
+The CPU-side music driver: it walks a song and drives `apu.lib`, and lets sound effects borrow a
+voice from the music. Call `music_frame()` **once per frame** — it owns that frame's APU batch.
+
+- `music_play(&order, &patterns, rows, speed)` — play a baked song. `order` = pattern indices
+  (255-terminated, loops); `patterns` = cells of `[note, inst]` (`(((p*rows)+row)*4 + ch)*2`; note
+  0 = hold, 1 = off, ≥2 = MIDI); `speed` = frames per row.
+- `music_play_groove(&order, &patterns, rows, order_loop, &groove, groove_len)` — same, but with a
+  **groove table**: a byte array of per-row frame counts cycled one per row (a 2-entry `{7,5}` =
+  swing; longer tables fine-tune tempo). `order_loop` = where the order list restarts.
+- `music_load_song(pak_id, &buf, maxlen)` — **load a packed song from the `.pak`** into `buf`, upload
+  its instruments, and play. Self-contained: different songs carry different instruments, so swapping
+  a track (map theme ↔ fight theme) is one call with a different `pak_id`. Returns bytes loaded (0 =
+  fail). Songs are authored in MML and compiled by [`tools/mml.py`](tools.md#mmlpy).
+- `music_stop()`.
+- `sfx_play(chan, note, inst, dur, prio)` — fire a sound effect: it steals `chan` for `dur` frames at
+  priority `prio` (the music on that channel "ducks"), then the interrupted music note resumes.
+
+Regression coverage: `tests/test_music_sequencer.txt` drives a hand-baked 2-row song through
+`music_play_groove`/`music_frame` and checks, bit by bit, that row/order advance, groove-table
+cycling, the order-list loop point, and the full SFX steal-then-resume lifecycle (including that the
+lock is per-channel, not global) all land correctly.

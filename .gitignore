@@ -29,5 +29,6 @@ Thumbs.db
 
 # Build artifacts (regenerated from source — see README)
 pc_emu.exe
+song_render.exe
 simulator/emu.js
 simulator/emu.wasm

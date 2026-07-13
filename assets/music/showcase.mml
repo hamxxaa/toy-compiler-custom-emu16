@@ -1,0 +1,185 @@
+# showcase.mml -- an MML feature showcase for EMU16's music engine.
+#
+# This isn't meant to be a great song -- it exists so every MML language
+# feature shows up at least once, with a comment on nearly every line
+# explaining exactly what that line does and why. Compile + listen with:
+#     python tools/mml.py assets/music/showcase.mml --preview
+# (needs `make song_render` once, first time -- see docs/tools.md#mmlpy).
+#
+# Two things you will NOT find here, because they don't exist at the MML
+# level (only in the raw lib/apu.lib / .song format underneath it):
+#   - portamento/slide (note_slide) -- no MML syntax calls this yet.
+#   - multiple patterns or a custom order list -- v1 of the .song format is
+#     always exactly one pattern that loops to itself; tools/mml.py always
+#     writes order = [0, 255] for you. One long pattern IS the whole song.
+
+# ---- TEMPO ------------------------------------------------------------
+# `speed N` would be a one-line tempo: every row takes exactly N frame-ticks.
+# `groove` is the richer form used here: a table of per-row frame counts
+# that CYCLES, so rows don't all take equal time -- that's swing/shuffle
+# instead of perfectly mechanical timing. This 2-entry table alternates a
+# 7-frame row then a 5-frame row, forever (average tempo ~= speed 6).
+groove 7 5
+
+# ---- INSTRUMENTS --------------------------------------------------------
+# An instrument is nothing but three optional per-frame-tick "macro" tables
+# (vol/duty/arp) plus an optional vibrato and a noise mode. Every macro
+# either STOPS (no `|` anywhere -> hold the last value forever) or LOOPS (a
+# `|` marks the index playback jumps back to once it runs off the end).
+# WHERE you put the `|` changes the shape completely -- "lead" vs "shimmer"
+# and "stab" vs "shimmer" below are the two ends of that spectrum.
+
+inst lead
+    # Attack rises 8 -> 12 -> 15, then `|` marks index 3 (the "13" right
+    # after it) as the loop point: the macro plays 8,12,15,13 once, then
+    # jumps back to index 3 and just replays "13" forever. Net shape: a
+    # quick attack settling into a sustained volume -- an "organ" envelope.
+    vol 8 12 15 | 13
+    # No `|` at all here -> duty sweeps 1 -> 2 -> 3 once, then HOLDS at 3
+    # (the widest/brightest pulse) forever. A one-shot brightening attack.
+    duty 1 2 3
+    # vib DEPTH SPEED DELAY. depth is in the same 8.8 fixed-point units as
+    # pitch (256 = one semitone), so 32 is a gentle ~1/8-semitone waver, not
+    # a cartoon wobble. delay=12 means 12 frame-ticks (12/60s @ 60Hz) of
+    # dead-straight pitch before vibrato kicks in -- real singers and
+    # violinists do the same thing, they don't shake from the first instant.
+    vib 32 8 12
+
+inst pluck
+    # No loop -> decays 15 -> 9 -> 4 -> 0 once and then STAYS at 0 (silent).
+    # That silence-at-the-end is what makes this read as a short "pluck"
+    # instead of a sustained tone, purely from the volume macro's shape.
+    vol 15 9 4 0
+    # A single value with no loop is the simplest possible macro: duty is
+    # just fixed at 0 (the thinnest pulse) for the instrument's whole life.
+    duty 0
+
+inst bass
+    # Same "decay to silence" idea as pluck, just a touch longer -- gives
+    # the bass a plucked, percussive character instead of a held tone.
+    vol 15 11 7 4 0
+    # Putting `|` FIRST, before any value, sets the loop point to index 0 --
+    # the loop covers the ENTIRE macro, so it just cycles 1,3,1,3,... from
+    # the start, forever. That's the idiom for "this whole macro repeats
+    # indefinitely", as opposed to "play once then hold the tail" above.
+    # Alternating a narrow (1) and wide (3) duty each tick gives the bass a
+    # gritty, buzzing PWM-like timbre instead of one static pulse shape.
+    duty | 1 3
+
+inst stab
+    vol 15 12 10 | 10   # attack then sustain-hold at 10 -- same idiom as "lead"'s vol
+    duty 0              # fixed thin pulse (arp voices care about pitch, not duty, but it's cheap to set)
+    # A MAJOR triad written as semitone offsets: root, +4, +7. The `|` comes
+    # AFTER all three offsets, with "7" repeated once more after it -- so
+    # the loop point is the LAST value. Net effect: the chord rolls
+    # root -> third -> fifth ONCE, then holds on the fifth. A quick "stab".
+    arp 0 4 7 | 7
+
+inst shimmer
+    vol 8 10 12 | 12    # soft attack, sustains quietly -- meant to sit under the lead, not over it
+    duty 0
+    # A MINOR triad: root, +3, +7. This time `|` comes FIRST, before any
+    # value -- the whole macro loops, so it plays root->third->fifth, then
+    # root->third->fifth again, forever, for as long as the note holds.
+    # This is the "sustained shimmering chord" trick: trigger ONE long note
+    # and let this macro do all the movement underneath it by itself.
+    arp | 0 3 7
+
+inst kick
+    noise 0            # mode 0 = the full 15-bit hiss tap -- lower and more "thump"-like
+    vol 15 9 4 0        # sharp decay to silence, no loop -- one hit, not a drone
+
+inst snare
+    noise 1             # mode 1 = the short/periodic tap -- brighter, metallic "snap"
+    vol 15 10 6 3 0      # a slightly longer decay than the kick -- gives the snare more "body"
+
+inst hat
+    noise 1   # hats are bright too, so this reuses mode 1 (the kick alone is the odd one out tonally,
+              # which is exactly why it's the one instrument that gets mode 0 above)
+    vol 9 4 0  # quiet and very short -- a closed hi-hat "tick", not a hiss
+
+# ---- DRUM SHORTCUTS -------------------------------------------------------
+# `drum LETTER INST NOTE` lets a track use a single letter (chosen outside
+# a-g, so it can never be confused with a pitched note) to trigger a
+# specific instrument at a specific MIDI note. Octave has NO effect on
+# these -- a drum letter always plays at exactly the note number given
+# here, so setting o4/o5/etc. on a drum channel is a harmless no-op.
+drum k kick 30
+drum s snare 50
+drum h hat 70
+
+# ---- CH0: LEAD MELODY ------------------------------------------------------
+# The header line only names the channel's default instrument ("lead");
+# every note lives on the continuation lines below so each line can carry
+# its own comment. Blank lines and full-line comments never break a
+# track's continuation -- only recognized directive keywords do.
+ch0 lead
+
+    o5 c4 d8 e8    # o5 = octave 5 (one above middle C). c4 = quarter C5; d8+e8 = two eighths D5,E5
+    f4. g8         # f4. = DOTTED quarter (1.5x an ordinary quarter) F5, then eighth G5 -- 1 whole note so far
+
+    c+4 a-8        # c+4 = quarter C#5 (sharp, `+`/`#` both work); a-8 = eighth Ab5 (flat, `-`)
+    e12 f12 g12    # three EIGHTH-TRIPLETS (length 12) back to back -- fills exactly one quarter-note beat
+    > c8 <         # `>` = octave up (now o6) for one eighth C6, then `<` brings it straight back to o5
+    l8 a b         # `l8` sets the DEFAULT note length to an eighth; "a" and "b" then need no length digit
+
+    @pluck         # mid-track instrument switch -- everything from here plays on "pluck", not "lead"
+    [c8 r8]2       # a repeat bracket: "c8 r8" (a staccato note, then a rest) played twice back to back
+    d4 r4          # a plain quarter note, then a quarter REST -- closes the phrase exactly on the beat
+
+# ---- CH1: BASS --------------------------------------------------------------
+ch1 bass
+
+    o2 [c8 c8 g8 g8]2   # o2 = octave 2 (down in bass range). Same [ ]N syntax as ch0, now on a
+                        # genuine "walking" rhythm -- proof it works for any note content, not just rests
+
+    f6 g6 a6            # three QUARTER-TRIPLETS (length 6) -- three notes fill a half note, not one beat
+    f8 f8 f4             # two eighths then a quarter -- fills out the rest of this whole-note measure
+
+    d16 d16 d16 d16      # four SIXTEENTH notes (length 16) -- a quick flourish
+    c16 c16 c16 c16      # four more sixteenths
+    g4 r4                # a quarter note, then a quarter rest -- closes the bassline exactly on the beat
+
+# ---- CH2: CHORDS / PAD -------------------------------------------------------
+ch2 stab
+
+    o3 c2 c2      # o3 = octave 3 (chord register, between bass and lead). Two HALF notes on the same
+                  # pitch: each retriggers "stab"'s roll-once arpeggio from scratch, since a fresh
+                  # NOTE_ON_INST always resets a macro back to its first value -- so you get two quick
+                  # "chord stabs" a half-note apart, not one continuous roll.
+
+    @shimmer a1   # switch instruments, then ONE whole note. Because "shimmer"'s arp macro loops from
+                  # its very first value, this single held note is enough for the whole root-third-fifth
+                  # cycle to repeat underneath it for the entire whole note -- the "sustained shimmering
+                  # chord" effect.
+
+    @stab f4 f4 g4 g4   # back to the roll-once-and-hold instrument, now as four quick quarter-note
+                        # stabs instead of half notes -- same instrument, a completely different rhythm
+
+# ---- CH3: DRUMS ---------------------------------------------------------------
+ch3 unused   # every note on this channel is a drum LETTER (not an a-g pitch), and drum letters carry
+             # their own instrument via the `drum` lines above -- so this default-instrument name is
+             # never actually consulted. Any placeholder word here is harmless; "unused" says so plainly.
+
+    [[k16 h16]2 s8]2 r4   # NESTED repeat brackets: the inner [k16 h16]2 doubles a fast kick-hat pair;
+                          # the outer *2 doubles that whole snare-punctuated group again -- a small
+                          # drum-fill shape from four characters of bracket syntax. Then a quarter rest.
+
+    [k8 h8 s8 h8]2        # the familiar boom-chick-snap-chick pattern, written once and repeated
+                          # instead of typed out twice by hand
+
+    h12 h12 h12 r8 k8      # three EIGHTH-TRIPLET hats (a quick flutter), an eighth rest, then a kick
+    h16 h16 h16 h16 k4     # four sixteenth hats, then a closing quarter kick -- lands back on beat
+                          # one exactly, for a seamless loop back to the top of the pattern
+
+# ---- FEATURE CHECKLIST (everything above, for quick reference) --------------
+# groove (swing table)                     | ch2: whole/half notes (c2, a1)
+# vol macro: attack-then-hold  (lead/stab) | ch2: @inst mid-track switch (again)
+# vol macro: decay-to-silence  (pluck/bass)| ch3: drum letters (k/s/h), octave-is-a-no-op
+# duty macro: one-shot-then-hold (lead)    | ch3: single repeat bracket  [ ]N
+# duty macro: infinite loop      (bass)    | ch3: NESTED repeat brackets [[ ]N ]N
+# arp macro: roll-once-then-hold (stab)    | note lengths: 4,8,16 (straight), 6,12 (triplets), dotted (.)
+# arp macro: infinite cycle      (shimmer) | accidentals: c+ / c# (sharp), c- (flat)
+# vib DEPTH SPEED DELAY          (lead)    | octave: o5 (absolute), > / < (relative)
+# noise mode 0 vs 1              (kick vs snare/hat) | default length: l8, then bare notes
+# ch0: @inst mid-track switch (lead->pluck)| rests: r4, r8

@@ -32,9 +32,11 @@ after their arguments are already in place.
 | 13 | `sys_ppu_submit(buf, len)` | buf, len | — | Executes a PPU command stream; a trailing `PRESENT` composes + yields the frame |
 | 14 | `sys_ppu_dma(pak_id, ppu_addr)` | pak_id, ppu_addr | bytes streamed | Streams a `.pak` asset straight into PPU RAM (tilesets, sheets, palettes) — no CPU-side buffer |
 | 15 | `sys_ppu_upload(ppu_addr, cpu_src, len)` | ppu_addr, cpu_src, len | bytes copied | Copies a CPU buffer into PPU RAM (baked/computed data, no pak involved) |
+| 16 | `sys_apu_submit(buf, len)` | buf, len | — | Executes an APU command stream — applies **immediately** (no `PRESENT`-style latch), since audio is a continuous stream, not a per-frame image |
 
-Wrappers live in `lib/sys.lib` (1-9, 12) and `lib/ppu.lib` (13-15); asset-related wrappers (10-11)
-are also in `sys.lib` since they're used regardless of whether a game touches the PPU.
+Wrappers live in `lib/sys.lib` (1-9, 12, 16) and `lib/ppu.lib` (13-15); asset-related wrappers (10-11)
+are also in `sys.lib` since they're used regardless of whether a game touches the PPU. `sys_apu_submit`
+sits in `sys.lib` too — `lib/apu.lib` builds the command batch CPU-side and just calls it to flush.
 
 ## Notes & per-host differences
 
@@ -63,6 +65,11 @@ are also in `sys.lib` since they're used regardless of whether a game touches th
 - **`examples/menu.txt`** is an ordinary ROM, not special-cased by the host — it just happens to be
   the one the firmware boots by default and the one `sys_reset`/syscall 4 returns to. It lists and
   launches other ROMs purely through syscalls 1-4.
+- **`sys_apu_submit` has no frame boundary**, unlike `sys_ppu_submit`. The APU free-runs at audio rate
+  from resident voice state; the CPU just pokes register-style commands a few times a frame (usually
+  once, from `music_frame()`) and they take effect the instant the syscall returns — see
+  [Architecture → APU](architecture.md#apu).
 
 For the byte-level PPU command stream that `sys_ppu_submit` executes, see
-[Architecture → PPU](architecture.md#ppu).
+[Architecture → PPU](architecture.md#ppu). For the APU's command stream, see
+[libraries.md → apu.lib](libraries.md#apulib--the-sound-chip-interface).

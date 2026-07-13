@@ -1,0 +1,72 @@
+// music.lib regression: drive a tiny hand-baked song through the real sequencer (music_play_groove /
+// music_frame) and the SFX arbiter (sfx_play), then check the resulting sequencer state one fact at
+// a time -- each correct behavior adds a distinct bit to `sum`, all correct -> every bit set. Same
+// "one bit per assertion" idiom as test_flags.txt.
+//
+// The song: 1 pattern, 2 rows, 4 channels, groove {3,2} (row0 lasts 3 frames, row1 lasts 2 -- a
+// 5-frame loop), order {0, 255} (plays pattern 0, then the 255 sentinel loops back to order_loop=0).
+//   row0: ch0=note-on 60/inst0   ch1=note-off   ch2=hold   ch3=note-on 64/inst1
+//   row1: ch0=hold               ch1=note-on 62/inst0   ch2=note-off   ch3=hold
+//
+// Frame-by-frame (see lib/music.lib's music_frame comment for the tick/groove/advance mechanics):
+//   frame1: tick 0->1, row0 plays (its notes land in mus_last_note/mus_last_inst).
+//   frame2: tick 1->2 (row0's groove entry is 3; nothing new plays yet).
+//   frame3: tick 2->3 >= groove[0]=3 -> tick resets to 0, row advances to 1, groove_idx -> 1.
+//   frame4: tick 0->1, row1 plays.
+//   -- sfx_play(ch0, note 72/inst2, 2 frames, prio 5) steals channel 0 here --
+//   frame5: tick 1->2 >= groove[1]=2 -> row wraps 1->0, order hits the 255 sentinel -> loops to
+//           order_loop=0, groove_idx wraps 2->0. The pending SFX note-on is issued this frame; its
+//           2-frame lock starts counting down (now at 1).
+//   frame6: row0 plays again (tick was reset to 0 by frame5) -- channel 0 is still SFX-locked, so its
+//           note is remembered but NOT re-triggered; channel 1's note-off DOES fire (proves the lock
+//           is per-channel). The SFX lock ages 1->0 and expires, so channel 0's remembered note (60)
+//           resumes automatically.
+include "../lib/music.lib";
+
+{
+    var byte song_order[2]    = {0, 255};
+    var byte song_groove[2]   = {3, 2};
+    var byte song_patterns[16] = {
+        60, 0,   1, 0,   0, 0,   64, 1,     // row0: ch0 on(60,i0) ch1 off ch2 hold ch3 on(64,i1)
+         0, 0,  62, 0,   1, 0,    0, 0       // row1: ch0 hold      ch1 on(62,i0) ch2 off ch3 hold
+    };
+
+    int main() {
+        var int sum;
+        sum = 0;
+
+        music_play_groove(&song_order, &song_patterns, 2, 0, &song_groove, 2);
+
+        music_frame();   // frame1: row0 plays
+        if mus_last_note[0] == 60 { if mus_last_inst[0] == 0 { sum = sum + 1; } }   // ch0 note-on landed
+        if mus_last_note[1] == 0  { sum = sum + 2; }                                 // ch1 note-off landed
+        if mus_last_note[3] == 64 { if mus_last_inst[3] == 1 { sum = sum + 4; } }   // ch3 note-on landed
+
+        music_frame();   // frame2: still mid row0 (groove entry 3 hasn't elapsed)
+        if mus_row == 0 { sum = sum + 8; }
+
+        music_frame();   // frame3: groove elapses -> row advances to 1
+        if mus_row == 1 { sum = sum + 16; }
+
+        music_frame();   // frame4: row1 plays
+        if mus_last_note[1] == 62 { sum = sum + 32; }   // row1's own data, not row0's leftovers
+
+        sfx_play(0, 72, 2, 2, 5);                        // steal channel 0 for 2 frames
+        if sfx_lock[0] == 2 { sum = sum + 64; }           // the steal reserved the lock immediately
+
+        music_frame();   // frame5: row wraps 1->0 via the order-list's 255 sentinel; SFX note fires
+        if mus_row == 0 { if mus_orderidx == 0 { sum = sum + 128; } }   // order_loop wrap-around worked
+        if sfx_lock[0] == 1 { sum = sum + 256; }                        // lock aged down by one frame
+
+        music_frame();   // frame6: channel 0 still locked (remembered, not retriggered); channel 1
+                          // is free so its note-off replays; the lock then expires and resumes ch0
+        if mus_last_note[1] == 0 { sum = sum + 512; }     // per-channel gating: ch1 wasn't affected by ch0's lock
+        if sfx_lock[0] == 0 { sum = sum + 1024; }         // the 2-frame lock fully expired
+        if mus_last_note[0] == 60 { sum = sum + 2048; }   // the interrupted music note was remembered correctly
+
+        music_stop();
+        if mus_playing == 0 { sum = sum + 4096; }         // stop actually stops the sequencer
+
+        return sum;   // all bits set -> 1+2+4+8+16+32+64+128+256+512+1024+2048+4096 = 8191
+    }
+}

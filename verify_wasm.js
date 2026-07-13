@@ -39,6 +39,10 @@ const TESTS = [
     // Map system Phase 6: map_load end-to-end on a real 2-map pak (needs test_map_load.pak,
     // auto-loaded below like the browser sim does — see the pak-loading block in the runner).
     ['test_map_load', 2576],
+    // APU / music engine: apu.lib's command-stream encoding + music.lib's sequencer/SFX arbiter.
+    // Neither needs a .pak (no music_load_song here, just baked byte arrays), so both run as-is.
+    ['test_apu_cmdstream', 14045],
+    ['test_music_sequencer', 8191],
 ];
 
 (async () => {

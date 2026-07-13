@@ -21,8 +21,8 @@ CXX      := g++
 CXXFLAGS := -std=c++17 -O2 -static
 
 EMU_OUT  := pc_emu.exe
-EMU_SRCS := emulator/emu.cpp emulator/ppu.cpp emulator/pc_emulator_main.cpp
-EMU_HDRS := emulator/emu.h emulator/definitions.h emulator/ppu.h
+EMU_SRCS := emulator/emu.cpp emulator/ppu.cpp emulator/apu.cpp emulator/pc_emulator_main.cpp
+EMU_HDRS := emulator/emu.h emulator/definitions.h emulator/ppu.h emulator/apu.h
 
 WASM_OUT  := simulator/emu.js
 EMCC      := emcc
@@ -31,7 +31,7 @@ EMCC      := emcc
 # the browser can show live instructions/second + instructions/frame (negligible per-instruction cost;
 # firmware still omits it for zero production overhead).
 EMCC_FLAGS := -O2 -DEMU_COUNT_INSTRUCTIONS -s MODULARIZE=1 -s EXPORT_NAME=createEmu \
-              -s "EXPORTED_RUNTIME_METHODS=['cwrap','ccall','HEAPU8']" \
+              -s "EXPORTED_RUNTIME_METHODS=['cwrap','ccall','HEAPU8','HEAP16']" \
               -s ALLOW_MEMORY_GROWTH=0 -s INITIAL_MEMORY=16777216 -s ENVIRONMENT=web,node
 
 PIO ?= pio
@@ -47,12 +47,12 @@ endif
 
 # ── Clean shims ──────────────────────────────────────────────────────────────
 # POSIX rm (Git Bash on Windows, or any Unix shell). rm -f / -rf tolerate missing paths.
-RM_FILES = rm -f $(EMU_OUT) $(WASM_OUT) simulator/emu.wasm
+RM_FILES = rm -f $(EMU_OUT) $(SONGREND_OUT) $(WASM_OUT) simulator/emu.wasm
 RM_BUILD = rm -rf build/roms
 RM_PCEMU = rm -rf build/pc_emulator
 RM_PIO   = rm -rf firmware/.pio
 
-.PHONY: all pc_emu wasm test verify flash uploadfs monitor clean clean-roms
+.PHONY: all pc_emu song_render wasm test verify flash uploadfs monitor clean clean-roms
 
 all: pc_emu wasm
 
@@ -65,14 +65,21 @@ pc_emu: $(EMU_OUT)
 $(EMU_OUT): $(EMU_SRCS) $(EMU_HDRS)
 	$(CXX) $(CXXFLAGS) -DEMU_COUNT_INSTRUCTIONS $(EMU_SRCS) -o $@
 
+# ── Music preview renderer (.song -> .wav, no ROM) ───────────────────────────
+# Fast write->hear loop for MML music: `tools/mml.py song.mml --preview` uses this under the hood.
+SONGREND_OUT := song_render.exe
+song_render: $(SONGREND_OUT)
+$(SONGREND_OUT): emulator/apu.cpp emulator/apu.h emulator/song_render.cpp
+	$(CXX) $(CXXFLAGS) emulator/apu.cpp emulator/song_render.cpp -o $@
+
 # ── WebAssembly simulator ────────────────────────────────────────────────────
 # Calls emcc directly (no bash) so it runs from cmd/PowerShell too. emcc must be on PATH
 # (Windows: run emsdk_env first). emcc accepts forward-slash paths on every platform.
 
 wasm: $(WASM_OUT)
 
-$(WASM_OUT): emulator/emu.cpp emulator/ppu.cpp emulator/emu_wasm.cpp $(EMU_HDRS)
-	$(EMCC) emulator/emu.cpp emulator/ppu.cpp emulator/emu_wasm.cpp $(EMCC_FLAGS) -o $(WASM_OUT)
+$(WASM_OUT): emulator/emu.cpp emulator/ppu.cpp emulator/apu.cpp emulator/emu_wasm.cpp $(EMU_HDRS)
+	$(EMCC) emulator/emu.cpp emulator/ppu.cpp emulator/apu.cpp emulator/emu_wasm.cpp $(EMCC_FLAGS) -o $(WASM_OUT)
 
 # ── Firmware (ESP32) ─────────────────────────────────────────────────────────
 # `cd x && y` works in both cmd.exe and sh.

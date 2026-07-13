@@ -1,0 +1,23 @@
+# battle.mml -- a fast, driving original loop in A minor (contrast to town's calm C major)
+speed 6
+
+inst lead
+  vol 15 13 11 10 | 10
+  duty 2
+inst bass
+  vol 15 12 9 7 | 7
+inst kick
+  noise 1
+  vol 15 10 5 0
+inst snare
+  vol 15 11 6 3 0
+inst hat
+  vol 9 3 0
+
+drum k kick 30
+drum s snare 50
+drum h hat 70
+
+ch0 lead  o4 a8 >c8 e8 d8  <a8 >c8 <a8 f8  g8 >c8 e8 <c8  g8 b8 >d8 <g8
+ch2 bass  o2 [a8 a8]2  [f8 f8]2  [c8 c8]2  [g8 g8]2
+ch3 drums [k8 h8 s8 h8]4

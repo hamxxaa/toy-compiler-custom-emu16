@@ -5,6 +5,7 @@
 #include <cstdio>
 #include "definitions.h"
 #include "ppu.h"
+#include "apu.h"
 
 // Calling-convention trace output. OFF by default (keeps the browser console and
 // pc_emu.exe stdout clean and avoids a printf on every PSH/POP/CAL/RET). Build with
@@ -267,6 +268,7 @@ void initialize_cpu()
         cpu_instance.memory[i] = 0;
     }
     ppu_reset();   // reset the PPU unit alongside the CPU (every host routes through here)
+    apu_reset();   // reset the APU unit alongside the CPU (same reasoning)
 }
 
 void decode_and_execute(uint16_t instruction)

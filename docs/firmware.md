@@ -6,10 +6,16 @@ root) that boots the shared emulator core on the real handheld. See
 
 ## No second emulator copy
 
-`firmware/src/emu_shim.cpp` and `firmware/src/ppu_shim.cpp` `#include` the real
-`emulator/emu.cpp`/`ppu.cpp` directly — there is no forked or hand-ported copy of the CPU/PPU for
-Arduino. If you ever need to touch core emulation behavior, you're editing the one shared file, and
-firmware picks it up automatically on next build.
+`firmware/src/emu_shim.cpp`, `firmware/src/ppu_shim.cpp`, and `firmware/src/apu_shim.cpp` `#include`
+the real `emulator/emu.cpp`/`ppu.cpp`/`apu.cpp` directly — there is no forked or hand-ported copy of
+the CPU/PPU/APU for Arduino. If you ever need to touch core emulation behavior, you're editing the
+one shared file, and firmware picks it up automatically on next build.
+
+**The APU core compiles into firmware but isn't wired up yet**: `handle_syscall`'s `switch` (below)
+has no `SYSCALL_APU_SUBMIT` case, and there's no I2S/DAC output path — a ROM that calls
+`sys_apu_submit`/`music_frame()` runs fine on real hardware, it's just silent. Getting real sound out
+needs an amp + speaker wired to an I2S pin and a syscall case that feeds `apu_receive`/`apu_render`
+into it; not done yet.
 
 ## Hardware
 

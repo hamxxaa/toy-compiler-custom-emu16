@@ -1,0 +1,23 @@
+# town.mml -- a calm original loop in C major
+speed 10
+
+inst lead
+  vol 13 12 11 10 | 10
+  duty 2
+inst bass
+  vol 15 13 11 9 | 9
+inst kick
+  noise 1
+  vol 15 10 5 0
+inst snare
+  vol 14 9 5 2 0
+inst hat
+  vol 8 3 0
+
+drum k kick 30
+drum s snare 50
+drum h hat 70
+
+ch0 lead  o5 c8 e8 g8 e8  f8 a8 g8 e8  d8 f8 a8 f8  g8 e8 c8 e8
+ch2 bass  o3 [c8 g8]2  [f8 c8]2  [d8 a8]2  [g8 d8]2
+ch3 drums [k8 h8 s8 h8]4

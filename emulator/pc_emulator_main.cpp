@@ -13,6 +13,7 @@
 #include "emu.h"
 #include "definitions.h"
 #include "ppu.h"
+#include "apu.h"
 
 namespace fs = std::filesystem;
 
@@ -79,6 +80,38 @@ static bool save_ppm(const fs::path &path, const std::vector<uint16_t> &framebuf
 static void present_frame(std::vector<uint16_t> &framebuffer)
 {
     ppu_convert_rgb565(framebuffer.data());
+}
+
+// Offline audio render (Phase 1 of the APU prototype, see plans/buzzy-streaming-tanaka.md): unlike
+// the browser, pc_emu has no real-time clock to stream against, so it renders the whole run's audio
+// into one buffer and writes a standard 16-bit PCM mono .wav at exit -- the audio twin of frame.ppm.
+// This is deterministic and checksummable (unlike the browser's live AudioWorklet path in Phase 2).
+static bool save_wav(const fs::path &path, const std::vector<int16_t> &samples, int rate)
+{
+    std::ofstream file(path, std::ios::binary);
+    if (!file) return false;
+
+    auto put_u32 = [&file](uint32_t v) { file.write(reinterpret_cast<const char *>(&v), 4); };
+    auto put_u16 = [&file](uint16_t v) { file.write(reinterpret_cast<const char *>(&v), 2); };
+
+    uint32_t data_bytes = static_cast<uint32_t>(samples.size()) * 2;
+    file.write("RIFF", 4);
+    put_u32(36 + data_bytes);
+    file.write("WAVE", 4);
+    file.write("fmt ", 4);
+    put_u32(16);                                   // fmt chunk size
+    put_u16(1);                                    // PCM
+    put_u16(1);                                    // mono
+    put_u32(static_cast<uint32_t>(rate));
+    put_u32(static_cast<uint32_t>(rate) * 2);       // byte rate = rate * block align
+    put_u16(2);                                     // block align (1 channel * 16 bits)
+    put_u16(16);                                    // bits per sample
+    file.write("data", 4);
+    put_u32(data_bytes);
+    if (!samples.empty())
+        file.write(reinterpret_cast<const char *>(samples.data()), data_bytes);
+
+    return static_cast<bool>(file);
 }
 
 static uint64_t fnv1a64(const std::vector<uint16_t> &framebuffer)
@@ -321,6 +354,13 @@ static void pc_syscall_handler(uint16_t num)
             static_cast<uint16_t>(ppu_write(r1, &cpu_instance.memory[r2], len));
         break;
     }
+    case SYSCALL_APU_SUBMIT: // 16: R1=buf R2=len -> apply an APU command stream IMMEDIATELY (no PRESENT/latch)
+    {
+        uint32_t len = r2;
+        if (static_cast<uint32_t>(r1) + len > 65536u) len = 65536u - r1;
+        apu_receive(&cpu_instance.memory[r1], static_cast<int>(len));
+        break;
+    }
     default:
         break;
     }
@@ -423,6 +463,18 @@ int main(int argc, char **argv)
     int completed_frames = 0;
     int instruction_batches = 0;
 
+    // Offline audio render (see save_wav above): pc_emu has no real-time clock, so it renders
+    // exactly APU_RATE/apu_fps samples per completed game frame, assuming apu_fps=60 (the
+    // project's default -- sys_set_fps is a no-op here since this runner isn't real-time paced).
+    // 22050/60 isn't an integer (367.5), so a remainder accumulator distributes the extra half a
+    // sample evenly (alternating 367/368 samples/frame) to average out exactly over time.
+    std::vector<int16_t> audio_samples;
+    const int apu_fps  = 60;
+    const int apu_rate_hz = apu_rate();
+    const int apu_base = apu_rate_hz / apu_fps;
+    const int apu_rem  = apu_rate_hz % apu_fps;
+    int apu_carry = 0;
+
     while (completed_frames < frame_limit)
     {
         if (hold_input >= 0)
@@ -431,6 +483,14 @@ int main(int argc, char **argv)
         ++instruction_batches;
         present_frame(framebuffer);
         ++completed_frames;
+
+        int n = apu_base;
+        apu_carry += apu_rem;
+        if (apu_carry >= apu_fps) { n += 1; apu_carry -= apu_fps; }
+        std::size_t old_size = audio_samples.size();
+        audio_samples.resize(old_size + static_cast<std::size_t>(n));
+        apu_render(audio_samples.data() + old_size, n);
+
         if (!cpu_instance.running && !emu_present_pending())
             break;   // genuine HLT, not a frame yield
     }
@@ -442,6 +502,13 @@ int main(int argc, char **argv)
     if (!save_ppm(ppm_path, framebuffer))
     {
         std::cerr << "Failed to write framebuffer image: " << ppm_path.string() << "\n";
+        return 1;
+    }
+
+    fs::path wav_path = output_dir / "apu.wav";
+    if (!save_wav(wav_path, audio_samples, apu_rate_hz))
+    {
+        std::cerr << "Failed to write audio: " << wav_path.string() << "\n";
         return 1;
     }
 
@@ -470,7 +537,8 @@ int main(int argc, char **argv)
               << "flags=" << hex16(cpu_instance.flags) << ' '
               << "instr=" << emu_instruction_count() << ' '
               << "checksum=" << hex64(checksum) << ' '
-              << "frame=" << ppm_path.string() << '\n';
+              << "frame=" << ppm_path.string() << ' '
+              << "audio=" << wav_path.string() << " (" << audio_samples.size() << " samples)" << '\n';
 
     return 0;
 }

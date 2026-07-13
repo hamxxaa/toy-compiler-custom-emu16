@@ -59,14 +59,18 @@ a real win since a `pushImage` SPI transfer is the most expensive part of a fram
 
 ## The shared core
 
-`emulator/emu.cpp` (the CPU) and `emulator/ppu.cpp` (the PPU) are the actual emulator. They compile
-three ways with **zero source drift**:
+`emulator/emu.cpp` (the CPU), `emulator/ppu.cpp` (the PPU), and `emulator/apu.cpp` (the APU) are the
+actual emulator. They compile three ways with **zero source drift**:
 
 | Build | Entry point | Used by |
 |---|---|---|
 | Native C++ (static) | `emulator/pc_emulator_main.cpp` | `pc_emu.exe` — desktop dev/test harness |
-| Native C++ (Arduino) | `firmware/src/emu_shim.cpp` (includes `emu.cpp`) | the ESP32-S3 handheld |
+| Native C++ (Arduino) | `firmware/src/emu_shim.cpp` / `ppu_shim.cpp` / `apu_shim.cpp` (each just `#include`s the real `.cpp`) | the ESP32-S3 handheld |
 | Emscripten/WASM | `emulator/emu_wasm.cpp` | the browser simulator |
+
+(The APU's syscall isn't wired into the firmware's handler yet — see
+[firmware.md](firmware.md#no-second-emulator-copy) — so on real hardware the core compiles in but
+stays silent; the other two hosts drive it fully.)
 
 Each entry point supplies its own thin **host shim**: a syscall handler (ROM listing, save/load,
 asset streaming — see [Syscalls](syscalls.md)), a way to load a `.rom` into `memory[0]`, and a way
@@ -132,6 +136,25 @@ is deliberately **not** part of the PPU: the CPU keeps its own resident tile gri
 property table and queries it directly (`map_solid_at`, in `lib/map.lib`) — the PPU's tilemap is a
 *rendering* structure, the CPU's grid is the *simulation* structure, and they're allowed to describe
 the same world differently (e.g. one tile id per PPU slot vs. a coarser solid/not-solid bit).
+
+### APU
+
+A NES-2A03-inspired sound unit (`emulator/apu.cpp` / `apu.h`) — the PPU's twin. It owns its own state
+(4 voices: two pulse, a triangle, a noise), and the CPU drives it the same way: a byte **command
+stream** submitted via the `sys_apu_submit` syscall. One deliberate difference from the PPU: audio
+commands apply **immediately** on submit (they write live voice registers) — there is no "present"
+latch, because audio is a continuous stream, not a per-frame image.
+
+The APU is a **software synthesizer**: given the resident voice state, it renders 16-bit mono samples
+(22050 Hz) on demand — the CPU never computes a waveform, it only pokes registers a few times a frame,
+and the synth free-runs between pokes. Everything is integer/fixed-point, so a rendered second of audio
+is byte-identical across hosts (the audio analogue of the PPU's checksummed framebuffer). Expression
+lives in **instruments** — per-frame macro tables (volume / duty / arpeggio) plus vibrato and slides —
+stepped on a 60 Hz frame-tick inside the APU. The *song sequencer* and the SFX channel arbiter are
+CPU-side (`lib/music.lib`), not in the APU: the split mirrors real hardware (a sound chip + a software
+music driver) and keeps the hot per-sample work native while the light per-row sequencing stays in the
+game. Same portability story as the PPU — on a two-chip split the APU rides the CPU chip's spare core
+and feeds an I2S DAC; the command stream is designed to cross a wire if it ever moves.
 
 ## Software (the dev-machine side)
 

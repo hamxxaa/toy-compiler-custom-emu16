@@ -1,0 +1,56 @@
+// APU regression: exercise every apu.lib command encoder in one batch -- raw voice control,
+// instrument macros (vol/duty/arp), vibrato, noise mode, musical note-on, portamento, and the
+// master-volume knob -- submit it to the real APU (proves SYSCALL_APU_SUBMIT reaches the host
+// handler without crashing), then return a checksum of the exact bytes apu.lib built. Same idiom
+// as test_ppu_backdrop.txt, just for the APU's command stream instead of the PPU's.
+//
+// Byte-for-byte trace (one line per call below, in order):
+//   note_on(0,440,12)            -> 01 00 B8 01 0C        (5 bytes)
+//   note_off(1)                  -> 02 01                 (2 bytes)
+//   set_vol(0,8)                 -> 03 00 08               (3 bytes)
+//   set_duty(0,2)                -> 04 00 02               (3 bytes)
+//   apu_master_vol(96)           -> 05 60                  (2 bytes)
+//   apu_inst_vol(3,2,{10,12,15}) -> 10 03 02 03 0A 0C 0F   (7 bytes)
+//   apu_inst_duty(3,255,{1,3})   -> 12 03 FF 02 01 03      (6 bytes)
+//   apu_inst_arp(3,0,{0,4,7})    -> 13 03 00 03 00 04 07   (7 bytes)
+//   apu_inst_vibrato(3,32,8,12)  -> 14 03 20 08 0C         (5 bytes)
+//   apu_inst_noise(5,1)          -> 16 05 01               (3 bytes)
+//   note_on_inst(2,60,3)         -> 11 02 3C 03            (4 bytes)
+//   note_slide(2,67,16)          -> 15 02 43 10            (4 bytes)
+// Total: apu_clen = 51, byte-sum = 989.
+//   return = (apu_clen << 8) + sum = (51 << 8) + 989 = 14045.
+include "../lib/apu.lib";
+
+{
+    var byte vol_tbl[3]  = {10, 12, 15};
+    var byte duty_tbl[2] = {1, 3};
+    var byte arp_tbl[3]  = {0, 4, 7};
+
+    int main() {
+        var int i;
+        var int sum;
+
+        au_reset();
+        note_on(0, 440, 12);                   // raw voice 0: 440 Hz, vol 12
+        note_off(1);                            // silence voice 1
+        set_vol(0, 8);                          // re-volume voice 0 without retriggering it
+        set_duty(0, 2);                         // voice 0 duty -> 50%
+        apu_master_vol(96);                     // overall mix multiplier (not 128 -- prove it's not hardcoded)
+        apu_inst_vol(3, 2, &vol_tbl, 3);        // instrument 3's volume envelope, loop at index 2
+        apu_inst_duty(3, 255, &duty_tbl, 2);    // instrument 3's duty macro, no loop (255 = hold last)
+        apu_inst_arp(3, 0, &arp_tbl, 3);        // instrument 3's arpeggio, loop at index 0 (cycles forever)
+        apu_inst_vibrato(3, 32, 8, 12);         // instrument 3's vibrato: depth 32, speed 8, delay 12
+        apu_inst_noise(5, 1);                   // instrument 5 = metallic/short noise mode
+        note_on_inst(2, 60, 3);                 // musical note-on: middle C (60) on chan 2 with instrument 3
+        note_slide(2, 67, 16);                  // portamento: glide that note toward MIDI 67 (G4)
+        apu_submit();                           // flush to the real APU -- proves the syscall seam works end to end
+
+        sum = 0;
+        i = 0;
+        while i < apu_clen {
+            sum = sum + apu_cmd[i];
+            i = i + 1;
+        }
+        return (apu_clen << 8) + sum;           // 14045
+    }
+}

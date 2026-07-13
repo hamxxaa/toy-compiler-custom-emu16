@@ -1,0 +1,219 @@
+// lib/music.lib — the song sequencer + SFX channel arbiter (the CPU-side music driver). It sits on
+// top of lib/apu.lib: the APU is the sound chip (instruments + per-note modulation); THIS is the
+// "tape player" that walks a song and drives the chip, and the traffic cop that lets a sound effect
+// borrow a channel from the music. See plans/warbling-sequencing-kondo.md (phases D + E).
+//
+// SONG DATA (the game bakes these as byte arrays):
+//   order[]    -- pattern indices to play in sequence, terminated by 255 (loops back to 0 at the end)
+//   patterns[] -- cells of 2 bytes [note, inst], laid out pattern-major, then row, then channel:
+//                 offset = (((p * ROWS) + row) * 4 + ch) * 2
+//                 note: 0 = empty (hold whatever's playing), 1 = note-OFF, >=2 = MIDI note number
+//   rows       -- rows per pattern     speed -- frames per row (the tempo). 4 channels (all voices).
+//
+// USAGE: music_play(&order, &patterns, rows, speed) once; music_frame() ONCE per frame (it owns the
+// whole frame's APU batch); sfx_play(...) whenever a sound effect should fire (before music_frame).
+// An SFX temporarily steals its channel from the music -- the melody "ducks" -- then the interrupted
+// music note resumes automatically when the effect ends. This is the classic 4-voice-console trick.
+include "../lib/apu.lib";
+{
+    const MUSIC_CHANNELS = 4;
+
+    var int mus_order      = 0;   // &order[]
+    var int mus_patterns   = 0;   // &patterns[]
+    var int mus_rows       = 0;
+    var int mus_order_loop = 0;   // order index to jump to when the order list ends (usually 0)
+    var int mus_groove     = 0;   // &groove[] -- per-row frame counts, cycled (the "speed table")
+    var int mus_groove_len = 1;
+    var int mus_groove_idx = 0;
+    var int mus_orderidx   = 0;
+    var int mus_row        = 0;
+    var int mus_tick       = 0;
+    var int mus_playing    = 0;
+    var byte mus_speed1[1];       // holds the single speed for the simple music_play() form
+
+    var int mus_last_note[4];   // last note the sequencer set per channel (to resume after an SFX)
+    var int mus_last_inst[4];
+
+    var int sfx_lock[4];        // frames an SFX still owns this channel (0 = music owns it)
+    var int sfx_prio[4];
+    var int sfx_pending[4];     // a queued SFX to trigger this frame
+    var int sfx_pnote[4];
+    var int sfx_pinst[4];
+
+    void mus_reset_channels() {
+        var int c;
+        c = 0;
+        while c < MUSIC_CHANNELS {
+            mus_last_note[c] = 0;
+            mus_last_inst[c] = 0;
+            sfx_lock[c]      = 0;
+            sfx_prio[c]      = 0;
+            sfx_pending[c]   = 0;
+            c = c + 1;
+        }
+    }
+
+    // Start playing a song with a GROOVE table: `groove` is a &byte-array of per-row frame counts
+    // that the sequencer cycles through, one per row. A 2-entry groove like {7,5} makes every other
+    // row longer -> SWING/shuffle; a longer table fine-tunes the average tempo (since a single speed
+    // only gives 60/N rows-per-second). `order_loop` is where the order list restarts when it ends.
+    void music_play_groove(int order, int patterns, int rows, int order_loop, int groove, int groove_len) {
+        mus_order      = order;
+        mus_patterns   = patterns;
+        mus_rows       = rows;
+        mus_order_loop = order_loop;
+        mus_groove     = groove;
+        mus_groove_len = groove_len;
+        mus_orderidx   = 0;
+        mus_row        = 0;
+        mus_tick       = 0;
+        mus_groove_idx = 0;
+        mus_playing    = 1;
+        mus_reset_channels();
+    }
+
+    // Start playing a song at a single fixed `speed` (frames per row). The common case; internally
+    // just a 1-entry groove. order/patterns are &-addresses of the baked byte arrays.
+    void music_play(int order, int patterns, int rows, int speed) {
+        mus_speed1[0] = speed;
+        music_play_groove(order, patterns, rows, 0, &mus_speed1, 1);
+    }
+
+    // Load a PACKED song from the .pak (asset `pak_id`) into the game-provided buffer `buf` (capacity
+    // `maxlen`), upload its instruments to the APU, and start playing. Returns bytes loaded (0 = fail).
+    // The blob is SELF-CONTAINED -- it carries its own instrument definitions -- so different songs can
+    // use completely different sounds. This is the whole "a map plays one theme, a fight plays another"
+    // mechanism: call music_load_song with a different pak id to swap the track. Blob layout (produced
+    // by tools/mml.py):
+    //   [0]=version [1]=channels [2]=rows [3]=num_patterns [4]=order_len [5]=order_loop
+    //   [6]=groove_len [7,8]=instr_len (u16, little-endian)
+    //   then, in order: groove bytes, order bytes, instrument command-stream, pattern bytes.
+    int music_load_song(int pak_id, int buf, int maxlen) {
+        var int n;
+        var int rows; var int order_len; var int order_loop; var int groove_len; var int instr_len;
+        var int groove_off; var int order_off; var int instr_off; var int pat_off;
+        n = sys_asset_load(pak_id, buf, maxlen);
+        if n == 0 { return 0; }
+        rows       = apu_rdbyte(buf + 2);
+        order_len  = apu_rdbyte(buf + 4);
+        order_loop = apu_rdbyte(buf + 5);
+        groove_len = apu_rdbyte(buf + 6);
+        instr_len  = apu_rdbyte(buf + 7) + (apu_rdbyte(buf + 8) * 256);
+        groove_off = 9;
+        order_off  = groove_off + groove_len;
+        instr_off  = order_off + order_len;
+        pat_off    = instr_off + instr_len;
+        sys_apu_submit(buf + instr_off, instr_len);   // upload this song's instruments in one shot
+        music_play_groove(buf + order_off, buf + pat_off, rows, order_loop, buf + groove_off, groove_len);
+        return n;
+    }
+
+    void music_stop() {
+        var int c;
+        mus_playing = 0;
+        au_reset();
+        c = 0;
+        while c < MUSIC_CHANNELS { note_off(c); c = c + 1; }
+        apu_submit();
+    }
+
+    // Request a sound effect on channel `ch`: play MIDI `note` with instrument `inst` for `dur`
+    // frames at priority `prio`. It steals the channel from the music (or from a lower-priority SFX);
+    // when it ends the music note that was playing there resumes. Call before music_frame().
+    void sfx_play(int ch, int note, int inst, int dur, int prio) {
+        var int take;
+        take = 0;
+        if sfx_lock[ch] == 0 { take = 1; }
+        if prio >= sfx_prio[ch] { take = 1; }
+        if take == 1 {
+            sfx_pending[ch] = 1;
+            sfx_pnote[ch]   = note;
+            sfx_pinst[ch]   = inst;
+            sfx_lock[ch]    = dur;
+            sfx_prio[ch]    = prio;
+        }
+    }
+
+    // Emit the note events on the current row. A channel owned by an SFX is skipped (its note is
+    // still remembered, so the RIGHT note resumes when the SFX ends).
+    void mus_play_row() {
+        var int p; var int base; var int c; var int off; var int note; var int inst;
+        p    = apu_rdbyte(mus_order + mus_orderidx);
+        base = ((((p * mus_rows) + mus_row) * MUSIC_CHANNELS) * 2);
+        c = 0;
+        while c < MUSIC_CHANNELS {
+            off  = base + (c * 2);
+            note = apu_rdbyte(mus_patterns + off);
+            inst = apu_rdbyte(mus_patterns + off + 1);
+            if note >= 2 {
+                mus_last_note[c] = note;
+                mus_last_inst[c] = inst;
+                if sfx_lock[c] == 0 { note_on_inst(c, note, inst); }
+            }
+            if note == 1 {                      // note-OFF
+                mus_last_note[c] = 0;
+                if sfx_lock[c] == 0 { note_off(c); }
+            }
+            c = c + 1;
+        }
+    }
+
+    void mus_advance() {
+        var int p;
+        mus_row = mus_row + 1;
+        if mus_row >= mus_rows {
+            mus_row      = 0;
+            mus_orderidx = mus_orderidx + 1;
+            p = apu_rdbyte(mus_order + mus_orderidx);
+            if p == 255 { mus_orderidx = mus_order_loop; }   // end of the order list -> loop point
+        }
+    }
+
+    // Call ONCE per frame. Owns the APU command batch for this frame (au_reset .. apu_submit).
+    void music_frame() {
+        var int c;
+        var int spd;
+        au_reset();
+
+        // Sequencer: play the current row on its first frame, then tick. This row's length comes from
+        // the groove table (cycled per row); when it elapses, advance the row AND the groove cursor.
+        if mus_playing == 1 {
+            if mus_tick == 0 { mus_play_row(); }
+            mus_tick = mus_tick + 1;
+            spd = apu_rdbyte(mus_groove + mus_groove_idx);
+            if spd < 1 { spd = 1; }
+            if mus_tick >= spd {
+                mus_tick = 0;
+                mus_advance();
+                mus_groove_idx = mus_groove_idx + 1;
+                if mus_groove_idx >= mus_groove_len { mus_groove_idx = 0; }
+            }
+        }
+
+        // Trigger any SFX requested this frame (they already reserved their channel in sfx_play).
+        c = 0;
+        while c < MUSIC_CHANNELS {
+            if sfx_pending[c] == 1 {
+                note_on_inst(c, sfx_pnote[c], sfx_pinst[c]);
+                sfx_pending[c] = 0;
+            }
+            c = c + 1;
+        }
+
+        // Age the SFX locks; when one expires, hand the channel back to the music (resume the note
+        // that was interrupted, or silence the effect's tail if there wasn't one).
+        c = 0;
+        while c < MUSIC_CHANNELS {
+            if sfx_lock[c] > 0 {
+                sfx_lock[c] = sfx_lock[c] - 1;
+                if sfx_lock[c] == 0 {
+                    if mus_last_note[c] >= 2 { note_on_inst(c, mus_last_note[c], mus_last_inst[c]); }
+                    else { note_off(c); }
+                }
+            }
+            c = c + 1;
+        }
+
+        apu_submit();
+    }
+}

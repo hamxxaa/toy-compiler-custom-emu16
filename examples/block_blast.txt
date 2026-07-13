@@ -20,7 +20,25 @@
 include "../lib/io.lib";
 include "../lib/ppu.lib";
 include "../lib/game.lib";
+include "../lib/apu.lib";
+include "../lib/music.lib";
 {
+    // ── SFX Macro Tables ─────────────────────────────────────────────────────────────
+
+    // Shoot sound
+    var byte sfx_shoot_vol[7] = {15, 12, 9, 6, 3, 0, 0};
+    var byte sfx_shoot_arp[7] = {0, 254, 251, 247, 244, 232, 232}; // 0, -2, -5, -9, -12, -24 (Signed byte encoding: 256 - n)
+
+    // Hit Sound
+    var byte sfx_hit_vol[5]  = {15, 10, 5, 2, 0};
+
+    // SFX inst ids
+    const INST_SFX_SHOOT = 11;
+    const INST_SFX_HIT   = 12;
+
+    // Song Buffer
+    var byte song_buf[2048];
+
     // ── Baked palette (RGB565, little-endian) -- no default PPU palette exists, so every standalone
     // ROM bakes and uploads its own, same pattern as examples/menu.txt. ────────────────────────────
     var byte game_pal[16] = {
@@ -465,6 +483,7 @@ include "../lib/game.lib";
                                     idx = row * MAP_W + col;
                                     if bricks[idx] != 0 {
                                         bricks[idx] = bricks[idx] - 1;
+                                        sfx_play(3, N_C4, INST_SFX_HIT, 6, 2);
                                         if bricks[idx] == 0 { destroyed = destroyed + 1; }
                                         oldcol = (opx >> 7) / CELL;
                                         if (opy >> 7) < GRID_Y0 {
@@ -520,14 +539,28 @@ include "../lib/game.lib";
         }
         spawn_row();
 
+        au_reset();
+
+        apu_inst_vol(INST_SFX_SHOOT, 255, &sfx_shoot_vol, 7);
+        apu_inst_arp(INST_SFX_SHOOT, 255, &sfx_shoot_arp, 7);
+
+        apu_inst_vol(INST_SFX_HIT, 255, &sfx_hit_vol, 5);
+        apu_inst_noise(INST_SFX_HIT, 0); 
+
+        apu_master_vol(40);
+
+        apu_submit();
+
+        music_load_song(0, &song_buf, 2048);
+
         while (true) {
             cmd_reset();
             ppu_backdrop(0x0000);
 
             if gameState == 0 {
                 // ---- Aim ----
-                if button_pressed(BTN_LEFT)  { if aim > 0  { aim = aim - 1; } }
-                if button_pressed(BTN_RIGHT) { if aim < 30 { aim = aim + 1; } }
+                if button_pressed(BTN_LEFT)  { if aim > 0  { aim = aim - 1;} }
+                if button_pressed(BTN_RIGHT) { if aim < 30 { aim = aim + 1;} }
 
                 draw_bricks();
                 draw_hud();
@@ -540,6 +573,7 @@ include "../lib/game.lib";
                 }
 
                 if button_pressed(BTN_A) {
+                    sfx_play(1, N_C5, INST_SFX_SHOOT, 15, 2);
                     shot_vx      = aimx[aim];
                     shot_vy      = aimy[aim];
                     balls_left   = ball_count;
@@ -618,6 +652,7 @@ include "../lib/game.lib";
             }
 
             buttons_update();
+            music_frame();
             ppu_present();
         }
         return 0;

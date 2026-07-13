@@ -18,6 +18,7 @@
 #include "emu.h"
 #include "definitions.h"
 #include "ppu.h"
+#include "apu.h"
 
 // Defined in emu.cpp (not exposed via emu.h, but non-static globals).
 uint16_t read_word_le(uint16_t address);
@@ -226,6 +227,13 @@ static void wasm_syscall_handler(uint16_t num)
         cpu_instance.registers[0].word = static_cast<uint16_t>(ppu_write(r1, &cpu_instance.memory[r2], len));
         break;
     }
+    case SYSCALL_APU_SUBMIT: // 16: R1=buf R2=len -> apply an APU command stream IMMEDIATELY (no PRESENT/latch)
+    {
+        uint32_t len = r2;
+        if ((uint32_t)r1 + len > 65536u) len = 65536u - r1;
+        apu_receive(&cpu_instance.memory[r1], static_cast<int>(len));
+        break;
+    }
     default:
         break;
     }
@@ -285,6 +293,24 @@ EMSCRIPTEN_KEEPALIVE uint16_t *emu_ppu_framebuffer()
     ppu_convert_rgb565(fb);
     return fb;
 }
+
+// ---- APU audio bridge (Phase 2, see plans/buzzy-streaming-tanaka.md) ----
+// emu_apu_render(n) renders n samples from the APU's CURRENT voice state into a static buffer and
+// returns a pointer; JS reads n int16 samples from it (via Module.HEAP16) on its own audio-rate
+// cadence, independent of emu_run_frame's RAF cadence -- this is the whole point: the synth is a
+// pure function of voice state at call time, so a bursty/stalled game loop can't starve it, only
+// the JS pump's OWN scheduling can (see simulator/apu-worklet.js for the ring buffer that guards
+// against that).
+#define APU_RENDER_CAP 4096
+EMSCRIPTEN_KEEPALIVE int16_t *emu_apu_render(int nframes)
+{
+    static int16_t buf[APU_RENDER_CAP];
+    if (nframes < 0) nframes = 0;
+    if (nframes > APU_RENDER_CAP) nframes = APU_RENDER_CAP;
+    apu_render(buf, nframes);
+    return buf;
+}
+EMSCRIPTEN_KEEPALIVE int emu_apu_rate() { return apu_rate(); }
 
 // ---- debug / perf bridges (simulator) ----
 // emu_ppu_mem() exposes the PPU's raw graphics RAM for the memory viewer; emu_did_present() lets the

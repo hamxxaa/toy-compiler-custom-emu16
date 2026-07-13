@@ -121,6 +121,36 @@ its PPU-era tile/sprite art as flat 256-byte-per-pattern arrays instead (hand-co
 through this tool — see its own header comment). Useful today only if you're writing a new PPU-side
 consumer for hand-drawn monochrome bitmaps yourself.
 
+## `mml.py`
+
+Compiles a song written in **MML** (Music Macro Language — music as text) into a packed `.song` blob.
+
+```
+python tools/mml.py <in.mml> <out.song>
+```
+
+The blob is loaded at runtime by `music_load_song()` (pack it as a `raw` asset with `pack_assets.py`).
+It is **self-contained** — it carries its own instrument definitions — so different songs can use
+completely different sounds; that's what makes runtime track-swapping (overworld theme vs fight theme)
+one call with a different pak id.
+
+MML in brief: directives `speed N` / `groove A B C` (the tempo / swing table); `inst NAME` blocks with
+`vol`/`duty`/`arp` macros (`|` marks the loop point), `vib DEPTH SPD DELAY`, `noise M`; `drum LETTER
+INST NOTE` one-letter drum shortcuts; and per-channel tracks `chN NAME <notes>`. Notes are `a`–`g`
+(`+`/`#` sharp, `-` flat), `r` rest, octave `o4`/`>`/`<`, lengths `c4`/`c8.`/`c12` (triplet), default
+length `l`, `@inst` to switch, `[ … ]N` to repeat. The **row-grid resolution is chosen automatically**
+(the LCM of the note lengths used) so triplets and straight notes coexist with the fewest rows; one
+pattern, ≤255 rows. Output byte layout: [file-formats.md](file-formats.md#4-song-blobs-song). Sources
+live in `assets/music/*.mml` — start with `showcase.mml`, a heavily-commented reference file that
+demonstrates every feature above; `examples/block_blast.txt` is the real in-game consumer
+(pak-loaded song + SFX over it).
+
+**Fast preview (no ROM):** `python tools/mml.py song.mml --preview` compiles the song and **plays it**
+straight away — no ROM, no pak, no EMU16 compile. It renders through `song_render` (a tiny native tool
+that links the real `emulator/apu.cpp`, so the preview is byte-identical to the game's audio; build it
+with `make song_render`). Also: `--wav out.wav` writes the audio instead of playing, `--seconds N` /
+`--loops N` set the length. This is the write→hear loop for composing.
+
 ## `png.py`
 
 Not run directly. A minimal stdlib-only indexed-PNG (PLTE-mode) reader/writer used internally by

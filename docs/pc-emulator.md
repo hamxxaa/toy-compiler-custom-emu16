@@ -1,10 +1,10 @@
 # Desktop emulator (`pc_emu`)
 
-`pc_emu.exe` is a native, one-shot CLI harness around the shared `emu.cpp`+`ppu.cpp` core
+`pc_emu.exe` is a native, one-shot CLI harness around the shared `emu.cpp`+`ppu.cpp`+`apu.cpp` core
 (`emulator/pc_emulator_main.cpp`): load a ROM, run a fixed number of frames, write the final
-framebuffer to a `.ppm`, print a summary line. No display window, no interactivity, no real-time
-pacing — it exists for scripted regression testing (`run_tests.py`) and for headless debugging, not
-for playing games.
+framebuffer to a `.ppm` and the rendered audio to a `.wav`, print a summary line. No display window,
+no interactivity, no real-time pacing — it exists for scripted regression testing (`run_tests.py`)
+and for headless debugging, not for playing games.
 
 ## Build
 
@@ -12,7 +12,7 @@ for playing games.
 make pc_emu
 # equivalent to:
 g++ -std=c++17 -O2 -static -DEMU_COUNT_INSTRUCTIONS \
-    emulator/emu.cpp emulator/ppu.cpp emulator/pc_emulator_main.cpp -o pc_emu.exe
+    emulator/emu.cpp emulator/ppu.cpp emulator/apu.cpp emulator/pc_emulator_main.cpp -o pc_emu.exe
 ```
 
 `-DEMU_COUNT_INSTRUCTIONS` is set for this build only (a desktop dev/metrics build) — firmware and
@@ -47,15 +47,22 @@ once, on first asset syscall — see [file-formats.md](file-formats.md#2-pak--th
 
 ## Output
 
-Two things every run produces:
+Three things every run produces:
 
 1. **`<output-dir>/frame.ppm`** — the PPU's composed frame (every ROM drives the PPU now), a plain
    P6 PPM (`SCREEN_WIDTH`×`SCREEN_HEIGHT`, RGB565 expanded to 8-bit-per-channel). Viewable in any
    image tool that reads PPM, or convertible with `magick`/`convert`.
-2. **Two summary lines on stdout:**
+2. **`<output-dir>/apu.wav`** — the whole run's audio, rendered offline. There's no real-time clock
+   here, so each completed game frame renders exactly `apu_rate/60` samples (assuming the project's
+   default `apu_fps=60`; `sys_set_fps` is a no-op in this runner) — `22050/60` isn't an integer
+   (367.5), so a remainder accumulator alternates 367/368 samples per frame to average out exactly.
+   Bit-identical to the same ROM's audio on every other host, by the same integer-determinism
+   guarantee as the framebuffer checksum below. This is what the `song_render`/`mml.py --preview`
+   fast-iteration path cross-checks against (see [tools.md](tools.md#mmlpy)).
+3. **Two summary lines on stdout:**
    ```
    REGS R0=0x01AB R1=0x01AB R2=0x01AB R3=0x80B2 R4=0x0000 R5=0x0000 R6=0x0000 R7=0xFFFC
-   RESULT halted=1 frames=1 batches=1 return=427 pc=0x8026 flags=0x0000 instr=292 checksum=0x7A83BC47B8448383 frame=build\pc_emulator\frame.ppm
+   RESULT halted=1 frames=1 batches=1 return=427 pc=0x8026 flags=0x0000 instr=292 checksum=0x7A83BC47B8448383 frame=build\pc_emulator\frame.ppm audio=build\pc_emulator\apu.wav (367 samples)
    ```
    - `REGS` — all 8 registers' final values, hex.
    - `halted` — 1 if the CPU stopped on a genuine `HLT` (not a `PRESENT` frame-yield) before
@@ -67,16 +74,24 @@ Two things every run produces:
    - `instr` — total executed-instruction count (needs `-DEMU_COUNT_INSTRUCTIONS`, always on for this
      build).
    - `checksum` — FNV-1a 64-bit hash of the final framebuffer (every RGB565 pixel, low byte then high
-     byte). This is what `run_tests.py` and `verify_wasm.js` diff against an expected value per test —
-     a **deterministic** proxy for "the screen looks right" without needing pixel-level image
-     comparison or a human to look at anything.
+     byte). A **deterministic** proxy for "the screen looks right" without needing pixel-level image
+     comparison or a human to look at anything — printed for manual side-by-side diffing during
+     development (e.g. comparing a `pc_emu` run against the same ROM's WASM output by hand), but
+     `run_tests.py`/`verify_wasm.js` don't assert on it automatically (see below for what they do
+     check).
    - `frame` — the `.ppm` path.
+   - `audio` — the `.wav` path and total sample count.
 
 This is the mechanism the whole regression suite is built on: every `tests/*.txt` has a known-good
-`(return, checksum)` pair; `run_tests.py` compiles it, runs `pc_emu.exe`, and compares both. See
-`run_tests.py` and, for the WASM side of the same idea, `verify_wasm.js`
-(`node verify_wasm.js` — proves the browser core reproduces the *same* checksums as `pc_emu`,
-which is the strongest evidence the three hosts haven't drifted).
+`return` value, and the ROM computes that value **itself** — usually by folding some internal state
+into one number (a byte-sum-and-length checksum of a command buffer it just built, a bitmask where
+each bit is one passing assertion, etc. — see e.g. `test_ppu_backdrop.txt`, `test_flags.txt`,
+`test_apu_cmdstream.txt`). `run_tests.py` compiles each test, runs it through `pc_emu.exe`, and
+compares only that `return` value against the expected constant hard-coded next to it in
+`run_tests.py`'s own `TESTS` list. `verify_wasm.js` (`node verify_wasm.js`) runs the same ROMs through
+the browser's WASM core instead and checks the identical `return` values — proving the WASM and
+native builds agree, which is the strongest evidence the hosts haven't drifted. Neither script reads
+or compares the framebuffer checksum or the rendered audio.
 
 ## Not implemented here
 

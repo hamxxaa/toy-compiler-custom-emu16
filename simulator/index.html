@@ -158,6 +158,14 @@
                                 <span class="status-label">CPU budget</span>
                                 <span id="stat-budget" class="status-value">60K/f</span>
                             </div>
+                            <div class="status-item">
+                                <span class="status-label">Audio buffer</span>
+                                <span id="stat-audio-buffer" class="status-value">off</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="status-label">Audio underruns</span>
+                                <span id="stat-audio-underruns" class="status-value">-</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -308,6 +316,7 @@
     <script>document.write('<script src="display.js?v=' + Date.now() + '"><\/script>');</script>
     <script>document.write('<script src="input.js?v=' + Date.now() + '"><\/script>');</script>
     <script>document.write('<script src="debug.js?v=' + Date.now() + '"><\/script>');</script>
+    <script>document.write('<script src="apu.js?v=' + Date.now() + '"><\/script>');</script>
     <script>document.write('<script src="app.js?v=' + Date.now() + '"><\/script>');</script>
 </body>
 </html>

@@ -136,7 +136,42 @@ Body (sections in this fixed order):
 
 ---
 
-## 4. Save files
+## 4. Song blobs (`.song`)
+
+A packed song for the music engine (`lib/music.lib`, `music_load_song`), produced by
+[`tools/mml.py`](../tools/mml.py) from an MML source and packed as a `raw` `.pak` asset. Like a map
+blob, it is **self-contained** — it carries its own instrument definitions — so different songs use
+different sounds and swapping a track is one `music_load_song(pak_id, …)` call.
+
+Layout (little-endian):
+
+```
+Header (9 bytes):
+  0  version (=1)
+  1  channels (=4)
+  2  rows          (rows in the single pattern; <=255)
+  3  num_patterns  (=1 in v1)
+  4  order_len
+  5  order_loop    (order index to restart at when the order list ends)
+  6  groove_len
+  7  instr_len     (u16: byte 7 low, byte 8 high)
+Sections, in order, immediately after the header:
+  groove[groove_len]     per-row frame counts, cycled (the tempo / swing table)
+  order[order_len]       pattern indices, 255-terminated (loops to order_loop)
+  instruments[instr_len] a ready-made APU DEF_INST_* command stream (see below)
+  patterns               rows * channels * 2 bytes: cells [note, inst]
+                         note 0 = hold, 1 = note-off, >=2 = MIDI note
+```
+
+The clean trick: the **instrument section is a pre-built APU command stream** (`DEF_INST_VOL`/`DUTY`/
+`ARP`/`VIB`/`NOISE` bytes, the same the `apu_inst_*` helpers emit), so the loader just
+`sys_apu_submit`s it — no runtime instrument parsing. (The APU's inbound buffer is 2 KB to fit a whole
+song's instruments in one submit.) The row grid is chosen by the tool (LCM of the note lengths) so
+triplets and straight rhythms coexist with the fewest rows.
+
+---
+
+## 5. Save files
 
 Per-ROM, per-slot, and **format-less from the engine's view** — the byte layout is the game's
 business.

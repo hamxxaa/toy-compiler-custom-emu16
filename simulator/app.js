@@ -15,6 +15,7 @@ class App {
         this.display = new Display('screen');
         this.input = new InputHandler();
         this.debug = new DebugPanel();
+        this.audio = new AudioEngine(core);   // Phase 2 APU prototype (see plans/buzzy-streaming-tanaka.md)
 
         // Simulation state
         this.isRunning = false;
@@ -45,9 +46,28 @@ class App {
         this._bindControls();
         this._bindROMLoader();
         this._bindSpeedControl();
+        this._bindVisibilityWarning();
 
         // Initial debug update (core already initialized by the bootstrap).
         this.debug.update(this.cpu, this.isRunning);
+    }
+
+    // The game loop rides on requestAnimationFrame (see _frame()), which browsers throttle heavily
+    // when a tab is hidden/backgrounded (often to ~1Hz). So a backgrounded tab makes frame-counted
+    // game timers crawl and button-input polling miss presses. Audio is on the pull model now (the
+    // audio thread requests refills on its own, independent of RAF), but the AudioEngine ANSWERS
+    // those requests on the main thread -- which is also throttled when hidden -- so the worklet
+    // starves and underruns climb while backgrounded too. All of it recovers on refocus. This is a
+    // real confound for the Phase 2 latency test (see plans/buzzy-streaming-tanaka.md), so surface it
+    // directly instead of leaving "everything got weird for a while" a mystery.
+    _bindVisibilityWarning() {
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                this._showStatus('Tab backgrounded -- timing/audio will be inaccurate until it\'s focused again (this is a browser throttling effect, not a bug).', 'warning');
+            } else if (this.isRunning) {
+                this._showStatus('Tab focused again -- audio recovering.', 'info');
+            }
+        });
     }
 
     // --- ROM loading ---
@@ -155,6 +175,7 @@ class App {
         this.cpu.initialize();                                  // zero mem + default palette (C side)
         this.cpu.setRomLibrary(this.library.map(e => e.name)); // feed names to the syscall handler
         this.cpu.memory.set(entry.bytes, 0);                   // load ROM at address 0
+        this.audio.reset();   // drop any queued audio from whatever ROM was running before
 
         // Pieces A/B: namespace saves to this game, and feed its asset pack if one was dropped.
         const base = entry.name.replace(/\.rom$/i, '');
@@ -262,6 +283,8 @@ class App {
         this._updateControlState();
         this._nextStep = undefined;          // reset the FPS-cap deadline accumulator
         this._resetStatsWindow();
+        this.audio.ensureStarted();          // fire-and-forget: a button click is the user gesture
+                                              // autoplay policy needs; CPU/PPU don't wait on it
         this._frame();
     }
 
@@ -335,6 +358,11 @@ class App {
     _frame() {
         if (!this.isRunning) return;
         const now = performance.now();
+
+        // NOTE: audio is NOT driven from here. In the pull model (see plans/buzzy-streaming-tanaka.md),
+        // the AudioWorklet requests refills on its own audio-thread cadence and AudioEngine answers
+        // them via a port message handler -- fully decoupled from this RAF loop and the FPS cap, which
+        // is exactly the two-clock behavior we want (and it can't be starved by a 30fps-capped game).
 
         // 0. FPS cap. RAF keeps firing at the MONITOR'S refresh rate (60/120/144Hz); we only step the
         //    emulator when the next deadline is due, so gameplay runs at the target rate on any
@@ -419,6 +447,11 @@ class App {
         set('stat-ips', this._fmt(this.ips) + '/s');
         set('stat-ipf', this._fmt(this.ipf) + '/f');
         set('stat-budget', this._fmt(this.instructionsPerFrame) + '/f');
+        // Audio (Phase 2 prototype): buffer depth (the real worklet queue, in ms) is the latency
+        // knob's effect; underruns is the glitch counter. Watch both while dragging the CPU-budget
+        // slider down to stress-test streaming; lower app.audio.setTargetMs(N) to reduce latency.
+        set('stat-audio-buffer', this.audio.ready ? `${this.audio.bufferMs}ms` : 'off');
+        set('stat-audio-underruns', this.audio.ready ? String(this.audio.underruns) : '-');
     }
 
     // --- UI helpers ---
