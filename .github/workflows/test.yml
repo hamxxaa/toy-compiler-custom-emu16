@@ -1,10 +1,13 @@
 name: tests
 
-# Runs the full regression suite on every push and pull request. The suite compiles each
-# tests/*.txt ROM with the Python compiler, runs it through pc_emu, and checks the return value
-# (see docs/pc-emulator.md). Needs only g++ and Python — both preinstalled on GitHub's runners —
-# so there's nothing to install. The WASM cross-check (make verify) needs Emscripten and is left
-# out here on purpose; add a second job for it later if you want the full three-host check in CI.
+# Runs the full regression suite on every push and pull request:
+#   1. Native suite -- compile each tests/*.txt ROM, run it through pc_emu, check the return value
+#      (see docs/pc-emulator.md). Needs only g++ and Python.
+#   2. WASM cross-check -- build the same core with Emscripten and re-run the ROMs run_tests.py
+#      just produced (build/roms/*.rom + any .pak) through the browser's WASM module via Node,
+#      checking they return the SAME values as pc_emu. This is the strongest evidence the native
+#      and browser builds haven't drifted, so it must run in this same job, after run_tests.py --
+#      verify_wasm.js doesn't compile ROMs itself, it expects them already sitting in build/roms/.
 
 on:
   push:
@@ -22,8 +25,17 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+
       - name: Build the desktop emulator
         run: make pc_emu
 
       - name: Run the regression suite
         run: python run_tests.py
+
+      - name: Build the WASM core
+        run: make wasm
+
+      - name: Cross-check the WASM core against pc_emu
+        run: node verify_wasm.js
