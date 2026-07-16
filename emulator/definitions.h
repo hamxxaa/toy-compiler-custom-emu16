@@ -25,12 +25,15 @@
 #define SYSCALL_ASSET_INFO  10     // R1=id   R2=dest           -> R0 = length; writes 6-byte header at dest
 #define SYSCALL_ASSET_LOAD  11     // R1=id   R2=dest R3=maxlen -> R0 = bytes copied (0 = fail/too big)
 #define SYSCALL_SET_FPS     12     // R1=target fps (0=default 60); host paces frames to ~1000/fps ms
-// ── PPU reboot (see tiling-scrolling-ricoh.md) ──
+// ── PPU ──
 #define SYSCALL_PPU_SUBMIT  13     // R1=buf R2=len -> execute a PPU command stream; PRESENT yields the frame
-#define SYSCALL_PPU_DMA     14     // (Phase 1) R1=pak_id R2=target R3=dst_off -> DMA pak asset -> PPU region
-#define SYSCALL_PPU_UPLOAD  15     // (Phase 1) bulk copy CPU buffer -> PPU region (baked test data, no pak)
-// ── Audio / APU prototype (see plans/buzzy-streaming-tanaka.md) ──
+#define SYSCALL_PPU_DMA     14     // R1=pak_id R2=target R3=dst_off -> DMA pak asset -> PPU region
+#define SYSCALL_PPU_UPLOAD  15     // bulk copy CPU buffer -> PPU region (baked test data, no pak)
+// ── Audio / APU ──
 #define SYSCALL_APU_SUBMIT  16     // R1=buf R2=len -> apply an APU command stream IMMEDIATELY (no PRESENT-style latch)
+#define SYSCALL_APU_TICKS   17     // -> R0 = the APU's free-running 60 Hz frame-tick counter (low 16 bits).
+                                    //   The clock lib/music.lib sequences on, so the song's tempo is tied to
+                                    //   the AUDIO clock rather than to the game's frame rate. See apu.h.
 #define INPUT_ADDRESS      0xFFFF
 #define MAX_RAM_ADDRESS    0xFFFF
 #define STACK_START_ADDRESS 0xFFFC

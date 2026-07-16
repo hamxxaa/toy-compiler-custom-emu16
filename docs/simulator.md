@@ -42,7 +42,7 @@ samples (`emu_apu_render`'s buffer) as an `Int16Array` view.
 |---|---|
 | `wasm.js` | `EmuCore` — a thin JS class wrapping the `cwrap`'d C exports (`emu_init`, `emu_run_frame`, `emu_reg`, `emu_ppu_*`, `emu_asset_*`, `emu_apu_render`/`emu_apu_rate`, ...). Deliberately mirrors an older hand-ported `cpu.js`'s surface (`memory`, `getRegWord`, `pc`, `flags`, `running`, `runBatch`, `initialize`) so the rest of the frontend needed no changes when the hand-rolled CPU was replaced by the real WASM core. |
 | `app.js` | `App` — the main controller: drop-zone / file-input handling (multi-file, so a ROM + its `.pak` can be dropped together), run/pause/step/reset, the FPS-cap `<select>`, the CPU-instruction-budget slider, the deadline-accumulator frame-pacing loop. |
-| `display.js` | Canvas rendering of the PPU's converted RGB565 framebuffer (the only display path — the legacy VRAM+PRAM path was reclaimed). |
+| `display.js` | Canvas rendering of the PPU's converted RGB565 framebuffer. |
 | `debug.js` | `DebugPanel` — CPU register/flag/PC display, the CPU memory hex viewer, and the PPU memory hex viewer (`#mem-viewer`/`#ppu-mem-viewer`, jump-to-address inputs) plus PPU state (scroll x/y, OAM count) decoded from the PPU's REGS region. |
 | `input.js` | Keyboard + on-screen d-pad/action-button input, written into the guest `INPUT` byte each frame. |
 | `apu.js` | `AudioEngine` — sets up the `AudioContext` + `AudioWorkletNode`, and renders samples on demand via `EmuCore.apuRender()` (see below). |

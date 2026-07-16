@@ -1,6 +1,5 @@
 // EMU16 PPU — a NES-2C02-style tile + sprite compositor that owns all graphics RAM and the
-// display, driven by a serializable command stream the CPU fills each frame (see the plan
-// tiling-scrolling-ricoh.md). It is a SEPARATE unit from the CPU: it never touches the CPU's
+// display, driven by a serializable command stream the CPU fills each frame. It is a SEPARATE unit from the CPU: it never touches the CPU's
 // memory[] (invariant I1) — the host/bus copies command bytes IN, the PPU only reads its own
 // state. On one chip this is a function call; on two chips the same bytes cross SPI.
 //

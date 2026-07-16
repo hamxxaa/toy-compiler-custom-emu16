@@ -45,10 +45,10 @@ Calling convention (matches the compiler): arg1→R1, arg2→R2, arg3→R3, retu
 ## `sys.lib` — host syscall wrappers
 
 Every real host syscall, wrapper-per-number, and nothing else. Thin naked-`asm` bodies around
-syscalls 1-16; see [syscalls.md](syscalls.md#reference) for full semantics of each.
+syscalls 1-17; see [syscalls.md](syscalls.md#reference) for full semantics of each.
 `sys_list_roms` `sys_get_rom_name` `sys_load_rom` `sys_reset` `sys_present` `sys_time` `sys_save`
 `sys_load` `sys_save_exists` `sys_asset_info` `sys_asset_load` `sys_set_fps` `sys_ppu_submit`
-`sys_ppu_dma` `sys_ppu_upload` `sys_apu_submit`.
+`sys_ppu_dma` `sys_ppu_upload` `sys_apu_submit` `sys_apu_ticks`.
 
 **Deliberate exception:** syscall `0x7F` (ECHO, a PC-only test diagnostic — see
 [syscalls.md](syscalls.md#notes--per-host-differences)) has **no wrapper here**. No shipped game

@@ -74,6 +74,7 @@ struct APUState
     Voice       voices[APU_NUM_VOICES];
     Instrument  instruments[APU_MAX_INSTRUMENTS];
     uint32_t    tick_accum;             // += APU_FPS per sample; on >= APU_RATE, one frame-tick fires
+    uint32_t    tick_count;             // free-running count of those frame-ticks -- see apu_ticks()
     uint8_t     master_vol;             // overall output gain: 128 = unity, 64 = half, 0 = mute, 255 ~= 2x
 };
 static APUState apu_instance;
@@ -250,6 +251,7 @@ int apu_render(int16_t *out, int nframes)
         if (apu_instance.tick_accum >= (uint32_t)APU_RATE)
         {
             apu_instance.tick_accum -= (uint32_t)APU_RATE;
+            apu_instance.tick_count++;
             step_macros();
         }
 
@@ -268,6 +270,10 @@ int apu_render(int16_t *out, int nframes)
 }
 
 int apu_rate() { return APU_RATE; }
+
+// The APU's own 60 Hz clock, exposed so the CPU-side sequencer (lib/music.lib) can time itself off
+// the SAME tick that drives instrument macros -- see apu.h for why this is the right clock to use.
+uint32_t apu_ticks() { return apu_instance.tick_count; }
 
 // Load a macro from the command stream: [loop][len][data...]. Advances `i` by the DECLARED length so
 // the stream stays aligned even if the table was clamped to APU_MACRO_MAXLEN. `mask` clamps each

@@ -49,13 +49,20 @@ flash stands in for now — see [Firmware](firmware.md)). Pin assignments:
 ## Firmware
 
 A PlatformIO/Arduino project (`firmware/`) that boots the shared core on the ESP32-S3. It does not
-contain a second copy of the emulator — `firmware/src/emu_shim.cpp` and `ppu_shim.cpp` `#include`
-the real `emulator/emu.cpp` / `ppu.cpp` directly, so firmware and the desktop/browser hosts compile
+contain a second copy of the emulator — `firmware/src/emu_shim.cpp` / `ppu_shim.cpp` / `apu_shim.cpp`
+`#include` the real `emulator/*.cpp` directly, so firmware and the desktop/browser hosts compile
 from **one source file each**, not a fork. `main.cpp` is the Arduino `setup()`/`loop()`: mounts
-LittleFS, lists `.rom` files, boots `/menu.rom`, reads buttons, runs one frame of CPU emulation, and
+LittleFS, lists `.rom` files, boots `/menu.rom`, reads buttons, runs one frame of CPU emulation,
 pushes the result to the display (skipping the push when the frame is unchanged from the last one —
-a real win since a `pushImage` SPI transfer is the most expensive part of a frame). Full detail:
-[docs/firmware.md](firmware.md).
+a real win since a `pushImage` SPI transfer is the most expensive part of a frame), and drives real
+audio out an I2S amp on a dedicated core.
+
+**One or two chips.** The firmware runs on either one ESP32-S3 or two. As one board it does everything
+(CPU + PPU + APU). As a pair it splits into a `cpu` board (game logic, audio, inputs) and a `ppu` board
+(display), linked by SPI. The CPU→PPU command stream (see [PPU](#ppu)) is the same bytes on either
+setup — a function call on one board, an SPI transfer on two. On the two-chip setup the `ppu` board
+composes and pushes each frame while the `cpu` board runs the next frame's logic, so the two overlap.
+Full detail: [docs/firmware.md](firmware.md).
 
 ## The shared core
 
@@ -68,9 +75,10 @@ actual emulator. They compile three ways with **zero source drift**:
 | Native C++ (Arduino) | `firmware/src/emu_shim.cpp` / `ppu_shim.cpp` / `apu_shim.cpp` (each just `#include`s the real `.cpp`) | the ESP32-S3 handheld |
 | Emscripten/WASM | `emulator/emu_wasm.cpp` | the browser simulator |
 
-(The APU's syscall isn't wired into the firmware's handler yet — see
-[firmware.md](firmware.md#no-second-emulator-copy) — so on real hardware the core compiles in but
-stays silent; the other two hosts drive it fully.)
+(All three units are live on all three hosts — including real audio on the ESP32, out an I2S amp. On
+a two-chip firmware build, the `Arduino` row splits: the `cpu` board runs `emu.cpp` + `apu.cpp`, the
+`ppu` board runs `ppu.cpp`, and the command stream that linked them crosses an SPI wire — see
+[firmware.md](firmware.md#one-or-two-chips-the-build-configs).)
 
 Each entry point supplies its own thin **host shim**: a syscall handler (ROM listing, save/load,
 asset streaming — see [Syscalls](syscalls.md)), a way to load a `.rom` into `memory[0]`, and a way
@@ -125,10 +133,10 @@ it to the PPU as a byte buffer:
 `ppu_receive()` copies that buffer in and executes it; bulk art (tilesets, sprite sheets, palettes)
 skips the command stream entirely and goes straight into PPU RAM via `ppu_write()` (backing
 `sys_ppu_dma`/`sys_ppu_upload`). This design has one invariant that everything else follows from:
-**the PPU never touches CPU memory (`cpu_instance.memory`)**. On today's single-chip build,
-"crossing the bus" is just a function call and a `memcpy`; the wire format was designed so that a
-future two-chip split (the PPU as a second physical MCU talked to over SPI) is the *same bytes*
-crossing a real wire instead of a function call — no game code would need to change.
+**the PPU never touches CPU memory (`cpu_instance.memory`)**. On a single-chip build,
+"crossing the bus" is a function call and a `memcpy`; on the **two-chip split** it's the *same bytes*
+crossing an SPI wire to a second ESP32-S3 running `ppu.cpp`, with no change to any game
+([firmware.md](firmware.md#one-or-two-chips-the-build-configs)).
 
 Per frame the PPU composes in fixed order — **background tilemap → sprites → text plane** — into an
 indexed framebuffer, then converts that through its 256-entry RGB565 palette on `PRESENT`. Collision
@@ -153,8 +161,9 @@ lives in **instruments** — per-frame macro tables (volume / duty / arpeggio) p
 stepped on a 60 Hz frame-tick inside the APU. The *song sequencer* and the SFX channel arbiter are
 CPU-side (`lib/music.lib`), not in the APU: the split mirrors real hardware (a sound chip + a software
 music driver) and keeps the hot per-sample work native while the light per-row sequencing stays in the
-game. Same portability story as the PPU — on a two-chip split the APU rides the CPU chip's spare core
-and feeds an I2S DAC; the command stream is designed to cross a wire if it ever moves.
+game. On real hardware the APU runs on a dedicated core and feeds a MAX98357A I2S amp; on the two-chip
+split it stays on the CPU chip (audio is local + free-running, so it adds no cross-chip sync) while
+only the *video* command stream crosses the wire ([firmware.md](firmware.md#audio)).
 
 ## Software (the dev-machine side)
 

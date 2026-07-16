@@ -69,8 +69,8 @@ python tools/map_set.py <maps_dir> <legend.txt> <out_dir> \
 
 Every `*.png` in `<maps_dir>` must have a matching `<name>.map.txt` descriptor (same basename) — the
 tool globs the whole directory, so an orphaned PNG without a descriptor is a hard error, not a silent
-skip (this bit during development: dropping an unrelated PNG into a maps folder "just to tidy up"
-broke the build). All maps share **one legend**, validated so every map's PNG only uses palette
+skip (don't drop stray PNGs into a maps folder). All maps share **one legend**, validated so every
+map's PNG only uses palette
 indices the legend defines — this is what catches "tile 17 = water in forest, lava in cave" before it
 becomes a silent, gameplay-breaking bug.
 

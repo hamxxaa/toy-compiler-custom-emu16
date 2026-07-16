@@ -310,13 +310,11 @@ tokenizer.
 
 ## A dead keyword: `print`
 
-`print(expr);` still **parses** and still **type-checks** (`PrintNode` exists in the grammar and the
-semantic analyzer happily assigns it a type) — but the backend hits it and raises
+`print(expr);` **parses** and **type-checks** (`PrintNode` exists in the grammar and the semantic
+analyzer assigns it a type) — but the backend raises
 `RuntimeError("Print is not supported in EmuBackend")` the moment it tries to generate code for one.
-It's a leftover from an earlier VRAM-console-output era of the language; nothing in `examples/` or
-`lib/` uses it, and nothing should. `print` is still a reserved keyword (you cannot name a variable
-`print`), it just has no working code generator. If you see it in an old file, that file predates
-the current backend and needs a real host output call (`tile_text`/`tile_number` on the PPU) instead.
+It has no code generator and nothing in `examples/` or `lib/` uses it. It stays a reserved word (you
+can't name a variable `print`); for on-screen output use the PPU text plane (`tile_text`/`tile_number`).
 
 ## Compile-time constants
 

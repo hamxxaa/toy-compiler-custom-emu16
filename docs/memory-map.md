@@ -22,9 +22,9 @@ noted below).
 | SYSCALL_PORT | `0xFFFE` | 1 B | write-triggered host call — see [Syscalls](syscalls.md) |
 | INPUT | `0xFFFF` | 1 B | button state, read-only from the guest's perspective |
 
-There is no VRAM/PRAM anymore — the legacy indexed-framebuffer display path was reclaimed once every
-ROM had been ported to drive the PPU (see [file-formats.md](file-formats.md) history); that freed
-~21 KB, split between a bigger DATA section and a bigger CODE+stack region.
+There is no video RAM in the CPU's address space — graphics memory belongs to the PPU (see [PPU
+graphics RAM](#ppu-graphics-ram) below), reached only through commands. The full 64 KB here is CPU
+territory: bootstrap, DATA, CODE, and the stack.
 
 `STACK_FLOOR` (`emulator/definitions.h`) and `CODE_START_ADDRESS` (`EmuBackend.py`) are **the same
 number by construction** (`0x8000`) — `STACK_FLOOR` is the emulator core's stack-underflow sanity
@@ -58,11 +58,9 @@ depth-first (see [Architecture](architecture.md#compiler-src)), that order is:
 3. The game's own top-level globals/arrays, last.
 
 There is no way to force a particular global to a particular address, and no padding/alignment
-beyond "next free byte" — a `byte` array and an `int` array pack back-to-back with no gap. DATA has
-been bumped twice: 16 KB → 24 KB when the map system landed (`map_buf` alone is 9,728 bytes, and it
-has to coexist with everything else already declared ahead of it in the include chain), then
-24 KB → 32 KB when the legacy VRAM/PRAM path was reclaimed and its freed space was split between a
-bigger DATA section and a bigger CODE+stack region.
+beyond "next free byte" — a `byte` array and an `int` array pack back-to-back with no gap. DATA is
+32 KB, which has to hold everything at once: the largest single consumer is a PPU game's `map_buf`
+(9,728 bytes) coexisting with every library's globals declared ahead of it in the include chain.
 
 ### Calling convention
 
@@ -105,9 +103,9 @@ exactly where the previous one ends.
 
 Region base constants (`PPU_PAT`, `PPU_FONT`, `PPU_TILEMAP`, `PPU_PAL`) are defined in `lib/ppu.lib`
 and **must** match this table exactly — there's no runtime negotiation, they're baked into both the
-C++ core and the compiled library. (`PPU_PAL` sits at `0x8D40` rather than the more "expected"
-`0x8C00` because TEXTMAP grew from 2 to 3 bytes/cell partway through development — a reminder that
-these offsets are load-bearing, not incidental, if you ever touch `ppu.cpp`'s layout.)
+C++ core and the compiled library. The offsets are load-bearing, not incidental (e.g. `PPU_PAL` sits
+at `0x8D40`, not a rounder `0x8C00`, because TEXTMAP ahead of it is 3 bytes/cell) — recompute the whole
+table if you ever touch `ppu.cpp`'s layout.
 
 Command stream, DMA/upload paths, and the "why a separate chip-shaped RAM" rationale are covered in
 [Architecture → PPU](architecture.md#ppu); the byte-level wire protocol for the command stream is

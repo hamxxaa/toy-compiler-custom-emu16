@@ -167,4 +167,17 @@
               STR R0, [R3], byte
               RET }
     }
+
+    // num 17 = APU_TICKS: R0 = the APU's free-running 60 Hz frame-tick counter (low 16 bits).
+    // This is the clock the APU steps instrument macros on, counted from RENDERED AUDIO -- not
+    // from game frames and not from wall time. lib/music.lib sequences off it so a song's tempo
+    // is right even when the game misses 60 fps (real hardware does: at ~44 fps the song used to
+    // drag to 73% speed). Wraps every ~18 min at 60 Hz; only ever use DIFFERENCES, which wrap
+    // correctly. See emulator/apu.h for the full rationale.
+    int sys_apu_ticks() {
+        asm { LDI R0, 17
+              LDI R3, 0xFFFE
+              STR R0, [R3], byte
+              RET }
+    }
 }

@@ -1,6 +1,6 @@
 /**
  * APU AudioWorkletProcessor — the browser's audio-rate consumer AND the driver of the whole
- * streaming pipeline (Phase 2, see plans/buzzy-streaming-tanaka.md). Runs on the browser's
+ * streaming pipeline. Runs on the browser's
  * dedicated, high-priority audio thread, separate from the main thread that runs the emulator.
  *
  * PULL MODEL (this is the v2 rewrite — see the plan's "Bug #3" for why the old push model was

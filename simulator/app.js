@@ -15,7 +15,7 @@ class App {
         this.display = new Display('screen');
         this.input = new InputHandler();
         this.debug = new DebugPanel();
-        this.audio = new AudioEngine(core);   // Phase 2 APU prototype (see plans/buzzy-streaming-tanaka.md)
+        this.audio = new AudioEngine(core);
 
         // Simulation state
         this.isRunning = false;
@@ -58,7 +58,7 @@ class App {
     // audio thread requests refills on its own, independent of RAF), but the AudioEngine ANSWERS
     // those requests on the main thread -- which is also throttled when hidden -- so the worklet
     // starves and underruns climb while backgrounded too. All of it recovers on refocus. This is a
-    // real confound for the Phase 2 latency test (see plans/buzzy-streaming-tanaka.md), so surface it
+    // real confound for audio latency, so surface it
     // directly instead of leaving "everything got weird for a while" a mystery.
     _bindVisibilityWarning() {
         document.addEventListener('visibilitychange', () => {
@@ -359,7 +359,7 @@ class App {
         if (!this.isRunning) return;
         const now = performance.now();
 
-        // NOTE: audio is NOT driven from here. In the pull model (see plans/buzzy-streaming-tanaka.md),
+        // NOTE: audio is NOT driven from here. In the pull model,
         // the AudioWorklet requests refills on its own audio-thread cadence and AudioEngine answers
         // them via a port message handler -- fully decoupled from this RAF loop and the FPS cap, which
         // is exactly the two-clock behavior we want (and it can't be starved by a 30fps-capped game).

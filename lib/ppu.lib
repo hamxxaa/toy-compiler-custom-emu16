@@ -9,7 +9,7 @@
 //     ... build commands (ppu_backdrop / scroll, oam, tiles, text) ...
 //     ppu_present();        // appends PRESENT + flushes; the host composes, displays, and paces
 //
-// Command wire format (little-endian, terminated by PRESENT) — see tiling-scrolling-ricoh.md:
+// Command wire format (little-endian, terminated by PRESENT):
 //     0x01 SET_REG [reg:1][val:2]              0x04 TEXT    [x,y,w,h][w*h x {glyph,fg,bg}]
 //     0x02 OAM     [count:1][count x sprite]   0x05 PAL     [first:1][count:1][count x rgb565:2]
 //     0x03 TM_EDIT [x,y,w,h][w*h tiles]        0x06 PRESENT []

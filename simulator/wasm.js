@@ -64,7 +64,7 @@ class EmuCore {
         this._ppuMemSize  = this._opt('emu_ppu_mem_size', 'number');
         this._didPresent  = this._opt('emu_did_present',  'number');
         this._instrCount  = this._opt('emu_instr_count',  'number');
-        // APU audio bridge (Phase 2, see plans/buzzy-streaming-tanaka.md) -- optional like the debug/
+        // APU audio bridge -- optional like the debug/
         // perf bridges above, since it's brand new and a stale cached wasm won't have it yet.
         this._apuRenderPtr = this._opt('emu_apu_render', 'number', ['number']);
         this._apuRateF      = this._opt('emu_apu_rate',   'number');
@@ -139,7 +139,7 @@ class EmuCore {
         return new Uint16Array(this.m.HEAPU8.buffer, ptr, SCREEN_WIDTH * SCREEN_HEIGHT);
     }
 
-    // --- APU audio bridge (Phase 2, see plans/buzzy-streaming-tanaka.md) ---
+    // --- APU audio bridge ---
     // The APU's sample rate (fixed at build time; see emulator/apu.h APU_RATE).
     apuRate() { return this._apuRateF(); }
 

@@ -1,4 +1,4 @@
-// EMU16 APU — a software audio synthesizer, the PPU's twin (see plans/buzzy-streaming-tanaka.md).
+// EMU16 APU — a software audio synthesizer, the PPU's twin.
 // It is a SEPARATE unit from the CPU: the CPU never produces a sample. It posts sparse voice-state
 // updates (a handful of bytes, a few times a frame) via a command stream; the APU free-runs at
 // audio rate from that resident state between submits. This is what makes the audio stream
@@ -40,6 +40,25 @@ int apu_render(int16_t* out, int nframes);
 // The sample rate render() produces at. Hosts need this to size buffers / write WAV headers /
 // convert to the audio output's native rate.
 int apu_rate();
+
+// A free-running count of the APU's 60 Hz frame-ticks -- the same tick that steps instrument macros
+// (volume/duty/arp envelopes, vibrato, slides). It is SAMPLE-COUNTED inside apu_render, so it
+// advances with rendered audio and nothing else: not with the game's frame rate, not with wall time.
+//
+// This exists so the CPU-side song sequencer (lib/music.lib, via sys_apu_ticks) can advance on the
+// SAME clock its envelopes run on. Previously the sequencer advanced once per music_frame() call --
+// i.e. once per GAME frame -- so on any host that missed 60 fps the song dragged (measured: ~44 fps
+// on the ESP32 => music at 73% speed) while envelopes still ticked at 60. Two clocks; the music was
+// on the wrong one. Timing off this counter makes drift between them structurally impossible.
+//
+// Per-host behaviour falls out for free, which is the point:
+//   * firmware / browser -- apu_render is driven by real audio hardware, so this is true 60 Hz
+//     real time, and the tempo is correct at ANY game frame rate.
+//   * pc_emu -- renders exactly APU_RATE/60 samples per emulated frame, so this advances exactly
+//     once per frame: identical to the old behaviour, keeping the runner deterministic and every
+//     existing audio/sequencer regression test valid.
+// Wraps at 2^32 (~2.3 years); callers only ever take DIFFERENCES, so wraparound is a non-issue.
+uint32_t apu_ticks();
 
 // Debug/host inspection seam (mirrors ppu_mem()/ppu_mem_size()): a raw byte view of voice state.
 // NOT part of the render path -- for tooling only (a future memory/audio viewer).

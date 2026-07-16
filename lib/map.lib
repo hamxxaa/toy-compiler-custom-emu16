@@ -1,7 +1,7 @@
 // lib/map.lib — pak-loaded map blobs: parse a headered map asset into the resident world
 // (lib/scene.lib then reflects that world onto the screen), read its spawns/warps/entries, and
-// answer CPU-side tile-collision queries against it. See plans/swapping-worldmaps-kojima.md and
-// docs/file-formats.md for the exact blob layout.
+// answer CPU-side tile-collision queries against it. See docs/file-formats.md for the exact
+// blob layout.
 include "../lib/ppu.lib";     // PPU_PAT/PPU_TILEMAP/PPU_PAL, ppu_rdbyte
 include "../lib/sys.lib";     // sys_asset_load / sys_ppu_dma / sys_ppu_upload
 {

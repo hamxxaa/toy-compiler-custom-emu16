@@ -93,11 +93,13 @@ graph TD
     class CPU,PPU,APU core;
 ```
 
-- **Hardware** — an ESP32-S3 handheld: TFT display, 8 buttons, an SD reader wired for later. Pins:
-  [`firmware/src/hw_pins.h`](firmware/src/hw_pins.h).
+- **Hardware** — an ESP32-S3 handheld: TFT display, 8 buttons, an I2S amp + speaker, an SD reader
+  wired for later. Pins: [`firmware/src/hw_pins.h`](firmware/src/hw_pins.h).
 - **Firmware** — a PlatformIO/Arduino project (`firmware/`) that boots the shared core on the ESP32.
   It doesn't contain a second emulator: `emu_shim.cpp`/`ppu_shim.cpp`/`apu_shim.cpp` `#include` the
-  real `emulator/*.cpp` directly.
+  real `emulator/*.cpp` directly. The same tree also builds as a **two-chip split** — game + audio on
+  one ESP32-S3, the display driven by a second over SPI — since the CPU↔PPU seam was already a
+  command stream designed to cross a wire ([docs/firmware.md](docs/firmware.md)).
 - **The shared core** (`emulator/emu.cpp` + `ppu.cpp` + `apu.cpp`) — the actual CPU + PPU + APU
   emulation, compiled three ways (native for `pc_emu`, Arduino for firmware, Emscripten for the
   browser) with zero source drift. This is *why* one `.rom` runs — and sounds — identical everywhere.

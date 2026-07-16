@@ -1,7 +1,7 @@
 // lib/music.lib — the song sequencer + SFX channel arbiter (the CPU-side music driver). It sits on
 // top of lib/apu.lib: the APU is the sound chip (instruments + per-note modulation); THIS is the
 // "tape player" that walks a song and drives the chip, and the traffic cop that lets a sound effect
-// borrow a channel from the music. See plans/warbling-sequencing-kondo.md (phases D + E).
+// borrow a channel from the music.
 //
 // SONG DATA (the game bakes these as byte arrays):
 //   order[]    -- pattern indices to play in sequence, terminated by 255 (loops back to 0 at the end)
@@ -17,6 +17,9 @@
 include "../lib/apu.lib";
 {
     const MUSIC_CHANNELS = 4;
+    // Max sequencer ticks one music_frame() may advance. 4 ticks = 67ms, so tempo stays correct
+    // down to ~15 fps; below that the song slows instead of stuttering through rows in bursts.
+    const MUS_MAX_CATCHUP = 4;
 
     var int mus_order      = 0;   // &order[]
     var int mus_patterns   = 0;   // &patterns[]
@@ -28,6 +31,8 @@ include "../lib/apu.lib";
     var int mus_orderidx   = 0;
     var int mus_row        = 0;
     var int mus_tick       = 0;
+    var int mus_last_tick  = 0;   // last sys_apu_ticks() seen -- the sequencer's clock (see music_frame)
+    var int mus_clock_live = 0;   // 0 until the APU tick is seen to ADVANCE (real hw); 0 = test host, floor to 1/call
     var int mus_playing    = 0;
     var byte mus_speed1[1];       // holds the single speed for the simple music_play() form
 
@@ -69,6 +74,8 @@ include "../lib/apu.lib";
         mus_tick       = 0;
         mus_groove_idx = 0;
         mus_playing    = 1;
+        mus_last_tick  = sys_apu_ticks();   // start the clock here; the first music_frame() plays row 0
+        mus_clock_live = 0;
         mus_reset_channels();
     }
 
@@ -169,24 +176,57 @@ include "../lib/apu.lib";
         }
     }
 
+    // Advance the sequencer exactly ONE 60Hz tick: play the current row on its first tick, then
+    // count. This row's length comes from the groove table (cycled per row); when it elapses,
+    // advance the row AND the groove cursor.
+    void mus_tick_once() {
+        var int spd;
+        if mus_tick == 0 { mus_play_row(); }
+        mus_tick = mus_tick + 1;
+        spd = apu_rdbyte(mus_groove + mus_groove_idx);
+        if spd < 1 { spd = 1; }
+        if mus_tick >= spd {
+            mus_tick = 0;
+            mus_advance();
+            mus_groove_idx = mus_groove_idx + 1;
+            if mus_groove_idx >= mus_groove_len { mus_groove_idx = 0; }
+        }
+    }
+
     // Call ONCE per frame. Owns the APU command batch for this frame (au_reset .. apu_submit).
+    //
+    // TEMPO IS CLOCKED BY THE APU, NOT BY THE GAME LOOP. It used to advance exactly one tick per
+    // call, which silently tied the song's speed to the frame rate: on real hardware block_blast
+    // runs ~44 fps, so the song dragged to 73% speed while the APU's envelopes -- which are
+    // sample-counted at a true 60 Hz -- kept correct time. Two clocks, and the music was on the
+    // wrong one. Now we ask the APU how many of ITS ticks actually elapsed and advance that many,
+    // so the sequencer and the envelopes it drives can never drift apart. See emulator/apu.h.
     void music_frame() {
         var int c;
-        var int spd;
+        var int now;
+        var int delta;
         au_reset();
 
-        // Sequencer: play the current row on its first frame, then tick. This row's length comes from
-        // the groove table (cycled per row); when it elapses, advance the row AND the groove cursor.
         if mus_playing == 1 {
-            if mus_tick == 0 { mus_play_row(); }
-            mus_tick = mus_tick + 1;
-            spd = apu_rdbyte(mus_groove + mus_groove_idx);
-            if spd < 1 { spd = 1; }
-            if mus_tick >= spd {
-                mus_tick = 0;
-                mus_advance();
-                mus_groove_idx = mus_groove_idx + 1;
-                if mus_groove_idx >= mus_groove_len { mus_groove_idx = 0; }
+            now   = sys_apu_ticks();
+            delta = now - mus_last_tick;    // 16-bit wraparound subtracts correctly
+            mus_last_tick = now;
+            // Once the APU clock is seen to ADVANCE, trust delta forever after -- including delta==0,
+            // which at >60 fps legitimately means "no 60Hz tick elapsed since the last call, don't
+            // advance a row". Flooring that to 1 was what sped the music up on a light/high-fps scene.
+            if delta >= 1 { mus_clock_live = 1; }
+            // FALLBACK for the deterministic test hosts, where the audio clock does NOT advance between
+            // music_frame() calls (pc_emu renders audio only between frames; verify_wasm renders none,
+            // and test_music_sequencer calls music_frame() several times inside ONE frame). There the
+            // clock never goes live, so keep the old "one call = one tick" contract. Also rescues a
+            // >32767-tick gap that read negative before the clock was ever live.
+            if mus_clock_live == 0 { delta = 1; }
+            else { if delta < 0 { delta = 0; } }
+            // CEILING: a long hitch shouldn't machine-gun through rows; skip rather than sprint.
+            if delta > MUS_MAX_CATCHUP { delta = MUS_MAX_CATCHUP; }
+            while delta > 0 {
+                mus_tick_once();
+                delta = delta - 1;
             }
         }
 

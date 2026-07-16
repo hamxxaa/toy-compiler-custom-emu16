@@ -234,6 +234,13 @@ static void wasm_syscall_handler(uint16_t num)
         apu_receive(&cpu_instance.memory[r1], static_cast<int>(len));
         break;
     }
+    case SYSCALL_APU_TICKS: // 17: R0 = the APU's 60 Hz frame-tick counter (low 16 bits)
+    {
+        // Driven by the AudioWorklet's real-time render requests, so the song keeps correct tempo
+        // even when the RAF/game loop stutters.
+        cpu_instance.registers[0].word = (uint16_t)(apu_ticks() & 0xFFFF);
+        break;
+    }
     default:
         break;
     }
@@ -294,7 +301,7 @@ EMSCRIPTEN_KEEPALIVE uint16_t *emu_ppu_framebuffer()
     return fb;
 }
 
-// ---- APU audio bridge (Phase 2, see plans/buzzy-streaming-tanaka.md) ----
+// ---- APU audio bridge ----
 // emu_apu_render(n) renders n samples from the APU's CURRENT voice state into a static buffer and
 // returns a pointer; JS reads n int16 samples from it (via Module.HEAP16) on its own audio-rate
 // cadence, independent of emu_run_frame's RAF cadence -- this is the whole point: the synth is a

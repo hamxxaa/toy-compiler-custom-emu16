@@ -6,8 +6,7 @@ Usage:
 
 The .song blob is loaded at runtime by lib/music.lib's music_load_song() (pack it into a .pak as a
 `raw` asset via tools/pack_assets.py). It is self-contained: it carries its own instrument
-definitions, so different songs can use completely different sounds. See
-plans/warbling-sequencing-kondo.md and docs on the raw music format.
+definitions, so different songs can use completely different sounds.
 
 MML QUICK REFERENCE
 -------------------
@@ -396,8 +395,8 @@ def main():
         wav_path = os.path.splitext(song_path)[0] + ".wav"
     if wav_path:
         render_wav(song_path, wav_path, args.seconds, args.loops)
-    if (args.play or args.preview) and wav_path:
-        play_wav(wav_path)
+    # if (args.play or args.preview) and wav_path:
+        # play_wav(wav_path)
     return 0
 
 

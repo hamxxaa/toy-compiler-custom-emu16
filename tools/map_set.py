@@ -5,8 +5,7 @@
         [--name GAME] [--sprite-slots 80] [--assets <preceding_manifest>]
 
 Where tools/pixel_map.py bakes ONE map into ROM source, this tool packs MANY maps into headered
-binary blobs meant for the `.pak` (loaded at runtime via `map_load` in lib/ppuscene.lib -- see
-plans/swapping-worldmaps-kojima.md). All maps in the folder share ONE legend, so they share one
+binary blobs meant for the `.pak` (loaded at runtime via `map_load` in lib/map.lib). All maps in the folder share ONE legend, so they share one
 tileset vocabulary and one resident tile_flags shape; the tool VALIDATES every map's PNG only uses
 palette indices the shared legend defines (the bug this catches: "tile 17 = water in forest, lava
 in cave", which is silent and gameplay-breaking without this check).
@@ -43,7 +42,7 @@ A `tileset`/`palette` name that resolves to nothing (not in --assets, not anothe
 is a hard error -- silently falling back to "keep current" would be a silent, hard-to-debug failure
 for a map that clearly asked for a specific tileset.
 
-BLOB FORMAT (little-endian; matches plans/swapping-worldmaps-kojima.md §6 exactly):
+BLOB FORMAT (little-endian):
     Header (16 bytes):
         0  2   magic "MP"
         2  1   version (=1)

@@ -1,5 +1,5 @@
 // lib/apu.lib — CPU-side command-buffer builder for the APU (a software synth, the PPU's twin).
-// See plans/buzzy-streaming-tanaka.md for the full design discussion. The CPU never produces a
+// The CPU never produces a
 // sample: it posts sparse voice-state updates (a handful of bytes, a few times a frame) via a
 // command stream flushed with sys_apu_submit (lib/sys.lib); the APU free-runs at audio rate from
 // that resident state between submits. The exact same bytes work whether the APU is a function

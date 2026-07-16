@@ -1,8 +1,8 @@
 /**
- * AudioEngine — main-thread half of the APU streaming path (Phase 2, see
- * plans/buzzy-streaming-tanaka.md). Owns the AudioContext + AudioWorkletNode.
+ * AudioEngine — main-thread half of the APU streaming path. Owns the AudioContext +
+ * AudioWorkletNode.
  *
- * PULL MODEL (v2 rewrite — see the plan's "Bug #3"). The worklet drives everything; this class is
+ * PULL MODEL: the worklet drives everything; this class is
  * now almost stateless. It does exactly three things:
  *   1. sets up the AudioContext + worklet (once, on a user gesture);
  *   2. answers the worklet's 'need' requests by rendering that many samples from the APU's CURRENT

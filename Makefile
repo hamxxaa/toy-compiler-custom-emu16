@@ -52,7 +52,7 @@ RM_BUILD = rm -rf build/roms
 RM_PCEMU = rm -rf build/pc_emulator
 RM_PIO   = rm -rf firmware/.pio
 
-.PHONY: all pc_emu song_render wasm test verify flash uploadfs monitor clean clean-roms
+.PHONY: all pc_emu song_render wasm test verify flash uploadfs monitor flash-cpu flash-ppu mon-cpu mon-ppu clean clean-roms
 
 all: pc_emu wasm
 
@@ -82,7 +82,9 @@ $(WASM_OUT): emulator/emu.cpp emulator/ppu.cpp emulator/apu.cpp emulator/emu_was
 	$(EMCC) emulator/emu.cpp emulator/ppu.cpp emulator/apu.cpp emulator/emu_wasm.cpp $(EMCC_FLAGS) -o $(WASM_OUT)
 
 # ── Firmware (ESP32) ─────────────────────────────────────────────────────────
-# `cd x && y` works in both cmd.exe and sh.
+# `cd x && y` works in both cmd.exe and sh. Three build configs (firmware/platformio.ini):
+#   single (default) = one-board firmware · cpu / ppu = the two-chip roles.
+# flash/uploadfs/monitor default to `single`; the two-chip role targets are below.
 
 flash:
 	cd firmware && $(PIO) run -t upload
@@ -92,6 +94,20 @@ uploadfs:
 
 monitor:
 	cd firmware && $(PIO) device monitor -b 115200
+
+# Two-chip roles. Connect ONE board at a time (or pass UPLOAD_PORT=COMx / MON_PORT=COMx).
+# CPU chip = the clone; PPU chip = the original ESP32-S3.
+flash-cpu:
+	cd firmware && $(PIO) run -e cpu -t upload $(if $(UPLOAD_PORT),--upload-port $(UPLOAD_PORT))
+
+flash-ppu:
+	cd firmware && $(PIO) run -e ppu -t upload $(if $(UPLOAD_PORT),--upload-port $(UPLOAD_PORT))
+
+mon-cpu:
+	cd firmware && $(PIO) device monitor -e cpu -b 115200 $(if $(MON_PORT),-p $(MON_PORT))
+
+mon-ppu:
+	cd firmware && $(PIO) device monitor -e ppu -b 115200 $(if $(MON_PORT),-p $(MON_PORT))
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 

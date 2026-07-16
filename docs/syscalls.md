@@ -33,10 +33,12 @@ after their arguments are already in place.
 | 14 | `sys_ppu_dma(pak_id, ppu_addr)` | pak_id, ppu_addr | bytes streamed | Streams a `.pak` asset straight into PPU RAM (tilesets, sheets, palettes) — no CPU-side buffer |
 | 15 | `sys_ppu_upload(ppu_addr, cpu_src, len)` | ppu_addr, cpu_src, len | bytes copied | Copies a CPU buffer into PPU RAM (baked/computed data, no pak involved) |
 | 16 | `sys_apu_submit(buf, len)` | buf, len | — | Executes an APU command stream — applies **immediately** (no `PRESENT`-style latch), since audio is a continuous stream, not a per-frame image |
+| 17 | `sys_apu_ticks()` | — | ticks (low 16 bits) | The APU's free-running 60 Hz frame-tick counter, counted from rendered audio. `lib/music.lib` times a song off it so tempo tracks real audio time, not the game's frame rate |
 
-Wrappers live in `lib/sys.lib` (1-9, 12, 16) and `lib/ppu.lib` (13-15); asset-related wrappers (10-11)
-are also in `sys.lib` since they're used regardless of whether a game touches the PPU. `sys_apu_submit`
-sits in `sys.lib` too — `lib/apu.lib` builds the command batch CPU-side and just calls it to flush.
+Wrappers live in `lib/sys.lib` (1-9, 12, 16, 17) and `lib/ppu.lib` (13-15); asset-related wrappers
+(10-11) are also in `sys.lib` since they're used regardless of whether a game touches the PPU.
+`sys_apu_submit`/`sys_apu_ticks` sit in `sys.lib` too — `lib/apu.lib` builds the command batch
+CPU-side and just calls it to flush.
 
 ## Notes & per-host differences
 

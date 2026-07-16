@@ -75,17 +75,16 @@ static bool save_ppm(const fs::path &path, const std::vector<uint16_t> &framebuf
     return static_cast<bool>(file);
 }
 
-// Convert the PPU's composed indexed framebuffer through its palette. Every ROM drives the PPU
-// now (the legacy VRAM+PRAM path was reclaimed), so this is the only frame source.
+// Convert the PPU's composed indexed framebuffer through its palette.
 static void present_frame(std::vector<uint16_t> &framebuffer)
 {
     ppu_convert_rgb565(framebuffer.data());
 }
 
-// Offline audio render (Phase 1 of the APU prototype, see plans/buzzy-streaming-tanaka.md): unlike
+// Offline audio render: unlike
 // the browser, pc_emu has no real-time clock to stream against, so it renders the whole run's audio
 // into one buffer and writes a standard 16-bit PCM mono .wav at exit -- the audio twin of frame.ppm.
-// This is deterministic and checksummable (unlike the browser's live AudioWorklet path in Phase 2).
+// This is deterministic and checksummable.
 static bool save_wav(const fs::path &path, const std::vector<int16_t> &samples, int rate)
 {
     std::ofstream file(path, std::ios::binary);
@@ -359,6 +358,13 @@ static void pc_syscall_handler(uint16_t num)
         uint32_t len = r2;
         if (static_cast<uint32_t>(r1) + len > 65536u) len = 65536u - r1;
         apu_receive(&cpu_instance.memory[r1], static_cast<int>(len));
+        break;
+    }
+    case SYSCALL_APU_TICKS: // 17: R0 = the APU's 60 Hz frame-tick counter (low 16 bits)
+    {
+        // This runner renders exactly APU_RATE/60 samples per emulated frame, so this advances once
+        // per frame -- deterministic, and identical to the pre-Option-C sequencer behaviour.
+        cpu_instance.registers[0].word = static_cast<uint16_t>(apu_ticks() & 0xFFFF);
         break;
     }
     default:

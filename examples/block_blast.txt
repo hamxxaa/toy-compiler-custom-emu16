@@ -1,6 +1,11 @@
 // block_blast — brick-breaker ported to the PPU model (from the pre-PPU VRAM original; see git
-// history for that version). Fully self-contained: no .pak, all art is baked directly into the ROM
-// as tiny hand-computed 16x16 patterns (a circle for the ball/aim-dot, bordered boxes for bricks).
+// history for that version). All ART is baked directly into the ROM as tiny hand-computed 16x16
+// patterns (a circle for the ball/aim-dot, bordered boxes for bricks) — no art assets needed.
+// It DOES ship a .pak, but only for MUSIC: asset 0 is bb.song (compiled from assets/music/bb.mml by
+// tools/mml.py), loaded at boot via music_load_song. Build recipe:
+//   python tools/mml.py assets/music/bb.mml build/music/bb.song
+//   python tools/pack_assets.py build/music/songs.manifest build/roms/block_blast
+//   python main.py examples/block_blast.txt --save-rom block_blast
 //
 // Screen (160x128 = 10 cols x 8 rows of 16px tiles):
 //   row 0        HUD (text plane only; tile background stays blank)
@@ -483,7 +488,7 @@ include "../lib/music.lib";
                                     idx = row * MAP_W + col;
                                     if bricks[idx] != 0 {
                                         bricks[idx] = bricks[idx] - 1;
-                                        sfx_play(3, N_C4, INST_SFX_HIT, 6, 2);
+                                        sfx_play(2, N_G5, INST_SFX_HIT, 6, 2);   // voice 2 = triangle; see boot setup
                                         if bricks[idx] == 0 { destroyed = destroyed + 1; }
                                         oldcol = (opx >> 7) / CELL;
                                         if (opy >> 7) < GRID_Y0 {
@@ -544,8 +549,12 @@ include "../lib/music.lib";
         apu_inst_vol(INST_SFX_SHOOT, 255, &sfx_shoot_vol, 7);
         apu_inst_arp(INST_SFX_SHOOT, 255, &sfx_shoot_arp, 7);
 
+        // Pitched, not noise: the hit fires on voice 2 (triangle), NOT voice 3. Voice 3 is the only
+        // noise voice, so a noise-based hit would have to steal the song's drum channel -- and at
+        // speed 6 a 6-frame SFX lock is exactly one row, i.e. every brick hit deleted a drum hit.
+        // Stealing the arpeggio for 6 frames instead is nearly inaudible. (Classic NES tradeoff:
+        // drums and noise SFX only ever have one channel to fight over.)
         apu_inst_vol(INST_SFX_HIT, 255, &sfx_hit_vol, 5);
-        apu_inst_noise(INST_SFX_HIT, 0); 
 
         apu_master_vol(40);
 

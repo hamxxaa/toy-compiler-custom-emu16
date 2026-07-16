@@ -25,14 +25,23 @@ inst arp_min
 
 # Davullar
 inst kick
-    vol 15 10 5 0 | 0
+    # Was `vol 15 10 5 0`. Measured on the drums-only render: the FIRST value of this macro sets the
+    # kick's peak cone excursion (15 -> +-8160, 10 -> +-5440), and that peak -- not the note -- is
+    # what makes a small unbaffled speaker slam and distort ("booming"). Dropping 15 -> 10 cuts the
+    # excursion by a third. Quieter, but it's a thump instead of a fart.
+    vol 10 7 3 0 | 0
     noise 0
 
 inst hat
     vol 9 3 0 | 0
     noise 1
 
-drum k kick 30
+# The noise voice clocks its LFSR once per phase wrap, so a drum's "note" is really its rumble RATE:
+# low = deep boom, high = tight click. Was 30 (~46 Hz) -- a real kick's fundamental is simply beyond
+# a 1 W mini speaker, so aiming there just wastes cone travel on sound that never comes out. 52
+# (~165 Hz) puts the thump where this hardware can actually deliver it. (Measured: this shifts the
+# low-frequency ENERGY RATIO 0.885 -> 0.78, but NOT the peak -- see the vol macro above for that.)
+drum k kick 52
 drum h hat 50
 
 # --- ŞARKI (A ve B Bölümleri) ---
