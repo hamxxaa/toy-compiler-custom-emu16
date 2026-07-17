@@ -8,7 +8,7 @@
 //   patterns[] -- cells of 2 bytes [note, inst], laid out pattern-major, then row, then channel:
 //                 offset = (((p * ROWS) + row) * 4 + ch) * 2
 //                 note: 0 = empty (hold whatever's playing), 1 = note-OFF, >=2 = MIDI note number
-//   rows       -- rows per pattern     speed -- frames per row (the tempo). 4 channels (all voices).
+//   rows       -- rows per pattern     speed -- ticks per row (the tempo). 4 channels (all voices).
 //
 // USAGE: music_play(&order, &patterns, rows, speed) once; music_frame() ONCE per frame (it owns the
 // whole frame's APU batch); sfx_play(...) whenever a sound effect should fire (before music_frame).
@@ -17,15 +17,17 @@
 include "../lib/apu.lib";
 {
     const MUSIC_CHANNELS = 4;
-    // Max sequencer ticks one music_frame() may advance. 4 ticks = 67ms, so tempo stays correct
-    // down to ~15 fps; below that the song slows instead of stuttering through rows in bursts.
+    // Ceiling on the shared per-frame tick delta (see music_frame): the most 60Hz ticks one call may
+    // advance the song OR age an SFX. A long hitch then skips rather than machine-gunning through rows
+    // (or expiring an effect in one jump). 4 ticks = 67ms, so tempo stays correct down to ~15 fps;
+    // below that the song slows instead of stuttering.
     const MUS_MAX_CATCHUP = 4;
 
     var int mus_order      = 0;   // &order[]
     var int mus_patterns   = 0;   // &patterns[]
     var int mus_rows       = 0;
     var int mus_order_loop = 0;   // order index to jump to when the order list ends (usually 0)
-    var int mus_groove     = 0;   // &groove[] -- per-row frame counts, cycled (the "speed table")
+    var int mus_groove     = 0;   // &groove[] -- per-row tick counts, cycled (the "speed table")
     var int mus_groove_len = 1;
     var int mus_groove_idx = 0;
     var int mus_orderidx   = 0;
@@ -39,7 +41,7 @@ include "../lib/apu.lib";
     var int mus_last_note[4];   // last note the sequencer set per channel (to resume after an SFX)
     var int mus_last_inst[4];
 
-    var int sfx_lock[4];        // frames an SFX still owns this channel (0 = music owns it)
+    var int sfx_lock[4];        // 60Hz ticks an SFX still owns this channel (0 = music owns it)
     var int sfx_prio[4];
     var int sfx_pending[4];     // a queued SFX to trigger this frame
     var int sfx_pnote[4];
@@ -58,7 +60,7 @@ include "../lib/apu.lib";
         }
     }
 
-    // Start playing a song with a GROOVE table: `groove` is a &byte-array of per-row frame counts
+    // Start playing a song with a GROOVE table: `groove` is a &byte-array of per-row tick counts
     // that the sequencer cycles through, one per row. A 2-entry groove like {7,5} makes every other
     // row longer -> SWING/shuffle; a longer table fine-tunes the average tempo (since a single speed
     // only gives 60/N rows-per-second). `order_loop` is where the order list restarts when it ends.
@@ -124,9 +126,10 @@ include "../lib/apu.lib";
         apu_submit();
     }
 
-    // Request a sound effect on channel `ch`: play MIDI `note` with instrument `inst` for `dur`
-    // frames at priority `prio`. It steals the channel from the music (or from a lower-priority SFX);
-    // when it ends the music note that was playing there resumes. Call before music_frame().
+    // Request a sound effect on channel `ch`: play MIDI `note` with instrument `inst` for `dur` 60Hz
+    // ticks (== frames at 60 fps) at priority `prio`. It steals the channel from the music (or from a
+    // lower-priority SFX); when it ends the music note that was playing there resumes. Call before
+    // music_frame().
     void sfx_play(int ch, int note, int inst, int dur, int prio) {
         var int take;
         take = 0;
@@ -195,38 +198,45 @@ include "../lib/apu.lib";
 
     // Call ONCE per frame. Owns the APU command batch for this frame (au_reset .. apu_submit).
     //
-    // TEMPO IS CLOCKED BY THE APU, NOT BY THE GAME LOOP. It used to advance exactly one tick per
-    // call, which silently tied the song's speed to the frame rate: on real hardware block_blast
-    // runs ~44 fps, so the song dragged to 73% speed while the APU's envelopes -- which are
-    // sample-counted at a true 60 Hz -- kept correct time. Two clocks, and the music was on the
-    // wrong one. Now we ask the APU how many of ITS ticks actually elapsed and advance that many,
-    // so the sequencer and the envelopes it drives can never drift apart. See emulator/apu.h.
+    // BOTH THE SONG AND ITS SFX ARE CLOCKED BY THE APU, NOT BY THE GAME LOOP. music_frame used to
+    // advance exactly one tick per call, which silently tied playback speed to the frame rate: on
+    // real hardware block_blast runs ~44 fps, so the song dragged to 73% speed while the APU's
+    // envelopes -- sample-counted at a true 60 Hz -- kept correct time. Two clocks, and the music was
+    // on the wrong one. Now we ask the APU how many of ITS ticks actually elapsed and pace by that:
+    // the sequencer AND the SFX-lock aging below both count down `delta`, so a sound effect's length
+    // (and the moment its ducked music note resumes) stay locked to real time at any fps. See apu.h.
     void music_frame() {
         var int c;
         var int now;
-        var int delta;
+        var int delta;   // elapsed 60Hz APU ticks this frame -- the ONE clock for the song AND its SFX
+        var int steps;
         au_reset();
 
+        // How many 60Hz ticks actually elapsed since the last call. Computed unconditionally (an SFX
+        // can play with no song), then paces both the sequencer and the SFX locks.
+        now   = sys_apu_ticks();
+        delta = now - mus_last_tick;    // 16-bit wraparound subtracts correctly
+        mus_last_tick = now;
+        // Once the APU clock is seen to ADVANCE, trust delta forever after -- including delta==0, which
+        // at >60 fps legitimately means "no 60Hz tick elapsed since the last call, don't advance".
+        // Flooring that to 1 was what sped playback up on a light/high-fps scene.
+        if delta >= 1 { mus_clock_live = 1; }
+        // FALLBACK for the deterministic test hosts, where the audio clock does NOT advance between
+        // music_frame() calls (pc_emu renders audio only between frames; verify_wasm renders none, and
+        // test_music_sequencer calls music_frame() several times inside ONE frame). There the clock
+        // never goes live, so keep the old "one call = one tick" contract. Also rescues a >32767-tick
+        // gap that read negative before the clock was ever live.
+        if mus_clock_live == 0 { delta = 1; }
+        else { if delta < 0 { delta = 0; } }
+        // CEILING: a long hitch shouldn't machine-gun through rows (or expire an SFX in one jump); skip
+        // rather than sprint.
+        if delta > MUS_MAX_CATCHUP { delta = MUS_MAX_CATCHUP; }
+
         if mus_playing == 1 {
-            now   = sys_apu_ticks();
-            delta = now - mus_last_tick;    // 16-bit wraparound subtracts correctly
-            mus_last_tick = now;
-            // Once the APU clock is seen to ADVANCE, trust delta forever after -- including delta==0,
-            // which at >60 fps legitimately means "no 60Hz tick elapsed since the last call, don't
-            // advance a row". Flooring that to 1 was what sped the music up on a light/high-fps scene.
-            if delta >= 1 { mus_clock_live = 1; }
-            // FALLBACK for the deterministic test hosts, where the audio clock does NOT advance between
-            // music_frame() calls (pc_emu renders audio only between frames; verify_wasm renders none,
-            // and test_music_sequencer calls music_frame() several times inside ONE frame). There the
-            // clock never goes live, so keep the old "one call = one tick" contract. Also rescues a
-            // >32767-tick gap that read negative before the clock was ever live.
-            if mus_clock_live == 0 { delta = 1; }
-            else { if delta < 0 { delta = 0; } }
-            // CEILING: a long hitch shouldn't machine-gun through rows; skip rather than sprint.
-            if delta > MUS_MAX_CATCHUP { delta = MUS_MAX_CATCHUP; }
-            while delta > 0 {
+            steps = delta;
+            while steps > 0 {
                 mus_tick_once();
-                delta = delta - 1;
+                steps = steps - 1;
             }
         }
 
@@ -240,13 +250,16 @@ include "../lib/apu.lib";
             c = c + 1;
         }
 
-        // Age the SFX locks; when one expires, hand the channel back to the music (resume the note
-        // that was interrupted, or silence the effect's tail if there wasn't one).
+        // Age the SFX locks on the SAME tick clock the music runs on. When one expires, hand the
+        // channel back to the music (resume the interrupted note, or silence the effect's tail if
+        // there wasn't one). Clamp to 0: delta can overshoot the remaining lock, and sfx_play reads
+        // sfx_lock==0 as "channel free" -- a negative would wrongly keep it reserved.
         c = 0;
         while c < MUSIC_CHANNELS {
             if sfx_lock[c] > 0 {
-                sfx_lock[c] = sfx_lock[c] - 1;
-                if sfx_lock[c] == 0 {
+                sfx_lock[c] = sfx_lock[c] - delta;
+                if sfx_lock[c] <= 0 {
+                    sfx_lock[c] = 0;
                     if mus_last_note[c] >= 2 { note_on_inst(c, mus_last_note[c], mus_last_inst[c]); }
                     else { note_off(c); }
                 }

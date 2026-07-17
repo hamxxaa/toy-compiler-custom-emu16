@@ -269,18 +269,23 @@ checksums the exact bytes emitted (the command-stream analogue of `test_ppu_back
 The CPU-side music driver: it walks a song and drives `apu.lib`, and lets sound effects borrow a
 voice from the music. Call `music_frame()` **once per frame** — it owns that frame's APU batch.
 
+All timing here is measured in **ticks** — the APU's 60 Hz frame-tick (one game frame at 60 fps),
+the same clock its instrument envelopes run on ([`sys_apu_ticks`](syscalls.md)). Because that tick is
+counted from rendered audio rather than the game loop, song tempo and effect lengths track real time
+at any frame rate: `music_frame()` reads how many ticks actually elapsed and advances by that many.
+
 - `music_play(&order, &patterns, rows, speed)` — play a baked song. `order` = pattern indices
   (255-terminated, loops); `patterns` = cells of `[note, inst]` (`(((p*rows)+row)*4 + ch)*2`; note
-  0 = hold, 1 = off, ≥2 = MIDI); `speed` = frames per row.
+  0 = hold, 1 = off, ≥2 = MIDI); `speed` = ticks per row.
 - `music_play_groove(&order, &patterns, rows, order_loop, &groove, groove_len)` — same, but with a
-  **groove table**: a byte array of per-row frame counts cycled one per row (a 2-entry `{7,5}` =
+  **groove table**: a byte array of per-row tick counts cycled one per row (a 2-entry `{7,5}` =
   swing; longer tables fine-tune tempo). `order_loop` = where the order list restarts.
 - `music_load_song(pak_id, &buf, maxlen)` — **load a packed song from the `.pak`** into `buf`, upload
   its instruments, and play. Self-contained: different songs carry different instruments, so swapping
   a track (map theme ↔ fight theme) is one call with a different `pak_id`. Returns bytes loaded (0 =
   fail). Songs are authored in MML and compiled by [`tools/mml.py`](tools.md#mmlpy).
 - `music_stop()`.
-- `sfx_play(chan, note, inst, dur, prio)` — fire a sound effect: it steals `chan` for `dur` frames at
+- `sfx_play(chan, note, inst, dur, prio)` — fire a sound effect: it steals `chan` for `dur` ticks at
   priority `prio` (the music on that channel "ducks"), then the interrupted music note resumes.
 
 Regression coverage: `tests/test_music_sequencer.txt` drives a hand-baked 2-row song through
