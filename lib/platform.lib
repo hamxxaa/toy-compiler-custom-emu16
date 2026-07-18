@@ -33,7 +33,7 @@ include "../lib/ppu.lib";     // ppu_rdbyte — read the world / flags byte arra
     // Solid body box inside the 16x16 sprite (narrower than the sprite so the digger fits a 1-tile
     // tunnel). Feet = plat_box_b, head = plat_box_t.
     var int plat_box_l = 4;   var int plat_box_r = 11;
-    var int plat_box_t = 2;   var int plat_box_b = 14;
+    var int plat_box_t = 1;   var int plat_box_b = 15;
 
     // World binding: `world` = byte array of tile ids (map_w x map_h), `flags` = byte array indexed by
     // tile id, bit0 = solid. Set once with plat_bind.

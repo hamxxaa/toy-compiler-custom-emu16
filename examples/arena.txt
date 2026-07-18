@@ -39,6 +39,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     // (assets/maps/legend.txt). Sprites avoid the terrain ids the map uses (80..87, 104).
     const S_H_SIDE = 0;  const S_H_ATK = 4; const S_H_UP = 8;  const S_H_DOWN = 12;
     const S_E_SIDE = 24; const S_E_UP = 29; const S_E_DOWN = 34; const S_NPC = 39;
+    const ANIM_PERIOD = 200;   // ms per animation frame (arena's clips are uniform; anim.lib is per-clip)
     const T_TREE5 = 104;  // imported, not yet painted into any map -- ready for a future repaint
 
     const C_WHITE = 21; const C_RED = 27; const C_BLACK = 0; const C_GREEN = 10;
@@ -58,7 +59,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     var int on_warp;    // edge-detect for map_warp_at: only transition on the frame you STEP ONTO it
 
     const PLAYER_HP = 6; const ENEMY_HP = 3; const ATTACK_REACH = 10; const STRIKE_FRAME = 1;
-    // The swing anim is 4 frames * anim_period(200ms) = 800ms; at a real, correctly-paced 60fps
+    // The swing anim is 4 frames * ANIM_PERIOD(200ms) = 800ms; at a real, correctly-paced 60fps
     // that's 48 logic frames. attack_lock used to be a mismatched 12 (=200ms), which raced against
     // STRIKE_FRAME's own >=200ms requirement and lost every time -- attack_lock hit 0 (and
     // resolve_attack's "if attack_lock<=0 return" bailed) in the SAME frame af first reached 1, so
@@ -105,7 +106,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
         oi = I_E0 + e;
         ox[oi] = en_spawn_x[e]; oy[oi] = en_spawn_y[e];   // back to THIS map's painted spawn
         ohp[oi] = ENEMY_HP; oactive[oi] = 1; oblink[oi] = 0;
-        anim_play(oi, S_E_SIDE, 5);
+        anim_play(oi, S_E_SIDE, 5, ANIM_PERIOD);
         en_dir[e] = rand_range(4); en_timer[e] = 40 + rand_range(60);
     }
 
@@ -131,13 +132,13 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
                     en_spawn_x[en_count] = tx * 16; en_spawn_y[en_count] = ty * 16;
                     ox[oi] = en_spawn_x[en_count]; oy[oi] = en_spawn_y[en_count];
                     ohp[oi] = ENEMY_HP; oactive[oi] = 1; oblink[oi] = 0;
-                    set_collider(oi, 4, 11, 8, 4); anim_play(oi, S_E_SIDE, 5);
+                    set_collider(oi, 4, 11, 8, 4); anim_play(oi, S_E_SIDE, 5, ANIM_PERIOD);
                     en_dir[en_count] = rand_range(4); en_timer[en_count] = 40 + rand_range(60); en_respawn[en_count] = 0;
                     en_count = en_count + 1;
                 }
             } else { if type == SPAWN_NPC {
                 ox[I_NPC] = tx * 16; oy[I_NPC] = ty * 16; oactive[I_NPC] = 1;
-                set_collider(I_NPC, 0, 0, 16, 16); anim_play(I_NPC, S_NPC, 1);
+                set_collider(I_NPC, 0, 0, 16, 16); anim_play(I_NPC, S_NPC, 1, ANIM_PERIOD);
             } }
             i = i + 1;
         }
@@ -177,10 +178,10 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
             if (input & 0x02) != 0 { dy = 0 - 1; moving = 1; player_dir = DIR_UP; }
             if (input & 0x08) != 0 { dy = 1;     moving = 1; player_dir = DIR_DOWN; }
             move_obj(I_PLAYER, dx, dy);
-            if (input & 0x10) != 0 { attack_lock = ATTACK_LOCK; attack_fired = 0; anim_play(I_PLAYER, S_H_ATK, 4); anim_restart(I_PLAYER); }
+            if (input & 0x10) != 0 { attack_lock = ATTACK_LOCK; attack_fired = 0; anim_play(I_PLAYER, S_H_ATK, 4, ANIM_PERIOD); anim_restart(I_PLAYER); }
             else {
-                if player_dir == DIR_UP { anim_play(I_PLAYER, S_H_UP, 4); }
-                else { if player_dir == DIR_DOWN { anim_play(I_PLAYER, S_H_DOWN, 4); } else { anim_play(I_PLAYER, S_H_SIDE, 4); } }
+                if player_dir == DIR_UP { anim_play(I_PLAYER, S_H_UP, 4, ANIM_PERIOD); }
+                else { if player_dir == DIR_DOWN { anim_play(I_PLAYER, S_H_DOWN, 4, ANIM_PERIOD); } else { anim_play(I_PLAYER, S_H_SIDE, 4, ANIM_PERIOD); } }
                 if moving == 0 { anim_restart(I_PLAYER); }
             }
         }
@@ -196,10 +197,10 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
                 en_timer[e] = en_timer[e] - 1;
                 if en_timer[e] <= 0 { en_dir[e] = rand_range(4); en_timer[e] = 40 + rand_range(60); }
                 dx = 0; dy = 0;
-                if en_dir[e] == 0      { dx = 1;     ofacing[oi] = 0; anim_play(oi, S_E_SIDE, 5); }
-                else { if en_dir[e] == 1 { dx = 0 - 1; ofacing[oi] = 1; anim_play(oi, S_E_SIDE, 5); }
-                else { if en_dir[e] == 2 { dy = 0 - 1; anim_play(oi, S_E_UP, 5); }
-                else                     { dy = 1;     anim_play(oi, S_E_DOWN, 5); } } }
+                if en_dir[e] == 0      { dx = 1;     ofacing[oi] = 0; anim_play(oi, S_E_SIDE, 5, ANIM_PERIOD); }
+                else { if en_dir[e] == 1 { dx = 0 - 1; ofacing[oi] = 1; anim_play(oi, S_E_SIDE, 5, ANIM_PERIOD); }
+                else { if en_dir[e] == 2 { dy = 0 - 1; anim_play(oi, S_E_UP, 5, ANIM_PERIOD); }
+                else                     { dy = 1;     anim_play(oi, S_E_DOWN, 5, ANIM_PERIOD); } } }
                 bl = move_obj(oi, dx, dy);
                 if bl == 1 { en_timer[e] = 0; }
             } else {
@@ -213,7 +214,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     void resolve_attack() {
         var int af; var int e; var int oi; var int hx; var int hy; var int hw; var int hh; var int kdx; var int kdy;
         if attack_lock <= 0 { return; }
-        af = anim_elapsed(I_PLAYER); af = af / anim_period;
+        af = anim_elapsed(I_PLAYER); af = af / ANIM_PERIOD;
         if af < STRIKE_FRAME { return; }
         if attack_fired == 1 { return; }
         attack_fired = 1;
@@ -353,7 +354,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
         // One-time player setup (stats/collider/anim) -- NOT map-specific, so it happens once at
         // boot, unlike position (which always comes from an entry point via go_to_map below).
         ohp[I_PLAYER] = PLAYER_HP; oactive[I_PLAYER] = 1;
-        set_collider(I_PLAYER, 4, 11, 8, 4); anim_play(I_PLAYER, S_H_DOWN, 4);
+        set_collider(I_PLAYER, 4, 11, 8, 4); anim_play(I_PLAYER, S_H_DOWN, 4, ANIM_PERIOD);
         player_dir = DIR_DOWN; player_iframes = 0; attack_lock = 0; flash_timer = 0; flash_restore = 0;
         dialog_on = 0; prev_b = 0; dialog_dirty = 0; dialog_first_time = 0; on_warp = 0;
 

@@ -8,8 +8,9 @@
 // frame, uploaded to PPU_PAT like any sprite. Timing is DIVISION on elapsed ms, so the render rate
 // only samples the timeline more or less finely; it never changes the animation speed.
 //
-// Usage: anim_play(i, base, count) when the clip should change; oam_set(anim_pat(i), x, y, attr) each
-// frame. Idle-freeze on frame 0 by calling anim_restart(i) while the entity isn't moving.
+// Usage: anim_play(i, base, count, period) when the clip should change; oam_set(anim_pat(i), x, y, attr)
+// each frame. `period` is ms per frame -- pass clip_period[asset_id] (from image_import) to run at the
+// speed you set in LibreSprite. Idle-freeze on frame 0 by calling anim_restart(i) while not moving.
 include "../lib/sys.lib";     // sys_time
 {
     const ANIM_MAX = 16;                 // index space for simultaneously-animated entities
@@ -17,20 +18,24 @@ include "../lib/sys.lib";     // sys_time
     var int anim_base[ANIM_MAX];         // current clip's base pattern slot (-1 = cleared)
     var int anim_count[ANIM_MAX];        // frames in the current clip
     var int anim_start[ANIM_MAX];        // sys_time() ms when the current clip began
-    var int anim_period = 200;           // ms per frame (a global; a game may set it once)
+    var int anim_period[ANIM_MAX];       // ms per frame, PER entity (set by anim_play)
 
-    // Start/continue a clip on entity `i` (frames base..base+count-1). Timing restarts ONLY when the
-    // clip changes, so holding the same clip (e.g. a walk cycle) keeps its phase across calls.
-    void anim_play(int i, int base, int count) {
+    // Start/continue a clip on entity `i` (frames base..base+count-1) at `period` ms per frame. Timing
+    // restarts ONLY when the clip CHANGES, so holding the same clip (e.g. a walk) keeps its phase.
+    // `period` usually comes from image_import's clip_period[asset_id] -- i.e. the frame duration you
+    // set in LibreSprite -- so your export drives the animation speed, not a magic number here.
+    void anim_play(int i, int base, int count, int period) {
         if anim_base[i] != base { anim_base[i] = base; anim_start[i] = sys_time(); }
         anim_count[i] = count;
+        anim_period[i] = period;
     }
 
     // The pattern slot to draw for entity `i` right now (fps-independent frame = elapsed/period % count).
     int anim_pat(int i) {
-        var int f;
+        var int f; var int p;
+        p = anim_period[i]; if p < 1 { p = 1; }        // guard: never divide by zero
         f = sys_time() - anim_start[i];
-        f = f / anim_period;
+        f = f / p;
         f = f % anim_count[i];
         return anim_base[i] + f;
     }
