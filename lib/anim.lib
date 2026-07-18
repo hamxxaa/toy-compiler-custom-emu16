@@ -1,0 +1,50 @@
+// lib/anim.lib — sprite-frame animation for the PPU model. This is the TIMING half of the retired
+// VRAM-era anim.lib, reborn for tiles + OAM: per-entity clip state and fps-independent frame
+// selection that returns a PATTERN SLOT (base + current frame) to hand to oam_set. It does NOT blit
+// pixels — the PPU composites the sprite from that slot. (The old lib's clip_blit / sprite pool /
+// sheet streaming were the CPU-draws-pixels model the PPU replaced, so they stayed dead.)
+//
+// A "clip" is a run of consecutive pattern slots (base, base+1, ... base+count-1) — one per animation
+// frame, uploaded to PPU_PAT like any sprite. Timing is DIVISION on elapsed ms, so the render rate
+// only samples the timeline more or less finely; it never changes the animation speed.
+//
+// Usage: anim_play(i, base, count) when the clip should change; oam_set(anim_pat(i), x, y, attr) each
+// frame. Idle-freeze on frame 0 by calling anim_restart(i) while the entity isn't moving.
+include "../lib/sys.lib";     // sys_time
+{
+    const ANIM_MAX = 16;                 // index space for simultaneously-animated entities
+
+    var int anim_base[ANIM_MAX];         // current clip's base pattern slot (-1 = cleared)
+    var int anim_count[ANIM_MAX];        // frames in the current clip
+    var int anim_start[ANIM_MAX];        // sys_time() ms when the current clip began
+    var int anim_period = 200;           // ms per frame (a global; a game may set it once)
+
+    // Start/continue a clip on entity `i` (frames base..base+count-1). Timing restarts ONLY when the
+    // clip changes, so holding the same clip (e.g. a walk cycle) keeps its phase across calls.
+    void anim_play(int i, int base, int count) {
+        if anim_base[i] != base { anim_base[i] = base; anim_start[i] = sys_time(); }
+        anim_count[i] = count;
+    }
+
+    // The pattern slot to draw for entity `i` right now (fps-independent frame = elapsed/period % count).
+    int anim_pat(int i) {
+        var int f;
+        f = sys_time() - anim_start[i];
+        f = f / anim_period;
+        f = f % anim_count[i];
+        return anim_base[i] + f;
+    }
+
+    // Restart the current clip from frame 0 — re-trigger a one-shot, or call each frame while idle to
+    // hold frame 0.
+    void anim_restart(int i) { anim_start[i] = sys_time(); }
+
+    // Milliseconds elapsed in entity `i`'s current clip (to time a strike/event to a particular frame).
+    int anim_elapsed(int i) { return sys_time() - anim_start[i]; }
+
+    // The base (frame-0) pattern slot of entity `i`'s current clip — the still frame (e.g. when frozen).
+    int anim_base_pat(int i) { return anim_base[i]; }
+
+    // Drop entity `i`'s clip; its base becomes -1 so the next anim_play restarts timing.
+    void anim_clear(int i) { anim_base[i] = 0 - 1; }
+}

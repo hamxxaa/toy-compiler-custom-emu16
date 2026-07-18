@@ -7,16 +7,20 @@
 # from these markers or from hardcoded constants in examples/arena.txt.
 #
 # Tile ids shifted +64 (16->80 etc.) for the map system's pattern-slot split (PPU_SPRITE_SLOTS=80 in
-# lib/ppuscene.lib): slots 0..79 are reserved for sprites (hero/enemy/npc), so terrain now lives at
-# 80+. Shared by every map in assets/maps/ (map_set.py validates they all use this one legend).
-0 tile 80 0      # Çimen (Yürünebilir zemin)
-1 tile 84 1      # Ağaç 1 (solid)
-2 tile 85 1      # Ağaç 2 (solid)
-3 tile 86 1      # Ağaç 3 (solid)
-4 tile 87 1      # Ağaç 4 (solid)
-5 tile 82 0      # Toprak Patika (Yürünebilir)
-6 tile 83 1      # Nehir / Su (Geçilemez)
-7 tile 81 0      # Bridge (walkable, over water)
-8 tile 80 0      # (oyuncu işareti -> çimen)
-9 tile 82 0      # (slime işareti -> toprak patika)
-10 tile 80 0     # (ninja işareti -> çimen)
+# lib/map.lib): slots 0..79 are reserved for sprites (hero/enemy/npc), so terrain now lives at 80+.
+# Shared by every map in assets/maps/ (map_set.py validates they all use this one legend).
+#
+# Flag bits: the tool just ORs named bits into a byte; what a bit MEANS is the code's call --
+# bit 0 = solid (lib/map.lib's map_solid_at tests it).
+flags solid=0
+0 80          # Çimen (Yürünebilir zemin)
+1 84 solid    # Ağaç 1 (solid)
+2 85 solid    # Ağaç 2 (solid)
+3 86 solid    # Ağaç 3 (solid)
+4 87 solid    # Ağaç 4 (solid)
+5 82          # Toprak Patika (Yürünebilir)
+6 83 solid    # Nehir / Su (Geçilemez)
+7 81          # Bridge (walkable, over water)
+8 80          # (oyuncu işareti -> çimen)
+9 82          # (slime işareti -> toprak patika)
+10 80         # (ninja işareti -> çimen)

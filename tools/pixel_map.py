@@ -17,15 +17,18 @@ produces the tilemap + its collision flags.
 Output is a brace-wrapped compilation unit the game `include`s:
     const MAP_W / MAP_H
     var byte world[MAP_W*MAP_H]      -- tile id per cell (row-major); doubles as the CPU collision map
-    var byte tile_flags[N]           -- property byte per tile id (b0 solid), from the legend
+    var byte tile_flags[N]           -- property byte per tile id (OR of the legend's flag bits)
 
-Legend format (whitespace-separated, '#' comment). One palette index per line:
-    <index> tile <tile_id> <solid 0|1>
+Legend format (whitespace-separated, '#' comment):
+    flags <name>=<bit> ...           -- declare flag bits ONCE; names/meanings are yours, not the tool's
+    <index> <tile_id> [flag-name ...]  -- a palette index -> pattern slot, plus any of those flags
 Example:
-    0 tile 16 0        # grass  (walkable)
-    1 tile 17 1        # water  (solid)
-    2 tile 18 0        # flowers
-    3 tile 20 1        # tree   (solid; its own tile art, painted directly into the map)
+    flags solid=0 hazard=1           # the CODE decides bit 0 = solid (map.lib), bit 1 = hazard, ...
+    0 16               # grass  (walkable, no flags)
+    1 17 solid         # water  (solid)
+    2 18               # flowers
+    3 20 solid         # tree   (solid; its own tile art, painted directly into the map)
+    4 21 solid hazard  # lava   (solid + hazard)
 
 STDLIB only (+ tools/png.py).
 """
@@ -37,7 +40,15 @@ import png  # noqa: E402
 
 
 def parse_legend(path):
-    """-> {index: (tile_id, solid)}."""
+    """-> {index: (tile_id, flags_byte)}.
+
+    Format (whitespace-separated, '#' = comment):
+        flags <name>=<bit> <name>=<bit> ...    # declare flag bits (any names; do this before use)
+        <index> <tile_id> [flag-name ...]      # PNG palette index -> pattern slot + the named flags
+    This tool is MEANING-AGNOSTIC: it just ORs the named bits into a property byte. What each bit
+    MEANS is defined by the code/libraries that read the flags table (e.g. lib/map.lib's map_solid_at
+    tests bit 0 for solid), so add a tile property with a code constant + a legend bit, tool untouched."""
+    flag_bits = {}
     tiles = {}
     with open(path, encoding="utf-8") as f:
         for lineno, raw in enumerate(f, 1):
@@ -45,10 +56,26 @@ def parse_legend(path):
             if not line:
                 continue
             parts = line.split()
-            if len(parts) != 4 or parts[1] != "tile":
-                raise SystemExit(f"{path}:{lineno}: expected '<index> tile <tile_id> <solid 0|1>'")
-            idx, _kw, tid, solid = parts
-            tiles[int(idx, 0)] = (int(tid, 0), int(solid, 0))
+            if parts[0] == "flags":                      # a flag-bit declaration line
+                for tok in parts[1:]:
+                    if "=" not in tok:
+                        raise SystemExit(f"{path}:{lineno}: flag decl must be name=bit, got '{tok}'")
+                    nm, bit = tok.split("=", 1)
+                    b = int(bit, 0)
+                    if not 0 <= b <= 7:
+                        raise SystemExit(f"{path}:{lineno}: flag bit {b} out of range 0..7 (one byte)")
+                    flag_bits[nm] = b
+                continue
+            if len(parts) < 2:
+                raise SystemExit(f"{path}:{lineno}: expected '<index> <tile_id> [flag-name ...]'")
+            idx, tid = int(parts[0], 0), int(parts[1], 0)
+            fl = 0
+            for nm in parts[2:]:
+                if nm not in flag_bits:
+                    raise SystemExit(f"{path}:{lineno}: unknown flag '{nm}' -- declare it first "
+                                     f"with a 'flags {nm}=<bit>' line")
+                fl |= 1 << flag_bits[nm]
+            tiles[idx] = (tid, fl)
     return tiles
 
 
@@ -69,24 +96,23 @@ def build_world(png_path, img, tiles):
             idx = img.index_at(tx, ty)
             if idx not in tiles:
                 raise SystemExit(f"{png_path}: palette index {idx} at ({tx},{ty}) is not in the legend")
-            tid, _solid = tiles[idx]
+            tid, _fl = tiles[idx]
             world[ty * W + tx] = tid
             max_tile = max(max_tile, tid)
     return world, max_tile
 
 
 def build_flags(tiles):
-    """-> tile_flags[]: a property byte per tile id (b0 = solid), sized to the LEGEND's own highest
-    tile id -- NOT whatever a given image happens to use (an image that skips the legend's
-    highest-numbered tile would otherwise size this array too small and overflow the `flags[tid]|=1`
-    write below). flags is a lookup table for any tile id the shared legend defines, which matters
-    once one legend is shared across a whole map SET (tools/map_set.py) where different maps use
-    different subsets of it."""
-    max_tile = max((tid for (tid, _solid) in tiles.values()), default=-1)
+    """-> tile_flags[]: the property byte per tile id (the OR of its legend-declared flag bits), sized
+    to the LEGEND's own highest tile id -- NOT whatever a given image happens to use (an image that
+    skips the legend's highest-numbered tile would otherwise size this array too small and overflow
+    the `flags[tid] |= fl` write below). flags is a lookup table for any tile id the shared legend
+    defines, which matters once one legend is shared across a whole map SET (tools/map_set.py) where
+    different maps use different subsets of it."""
+    max_tile = max((tid for (tid, _fl) in tiles.values()), default=-1)
     flags = [0] * (max_tile + 1)
-    for (tid, solid) in tiles.values():
-        if solid:
-            flags[tid] |= 1
+    for (tid, fl) in tiles.values():
+        flags[tid] |= fl
     return flags
 
 

@@ -4,12 +4,15 @@
 Usage:
     python tools/image_import.py <project_list> <out_dir>
 
-project_list lines (whitespace-separated, '#' = comment):  <name> <src> <json|-> <fps_default|->
+project_list lines (whitespace-separated, '#' = comment):  <name> <src> <json|-> <fps_default|-> [rot=<csv>]
   - a row whose json is '-' is the MASTER PALETTE source: its colours become a 512-byte palette asset.
     <src> may be a `.gpl` (GIMP/LibreSprite palette -- the editable, git-friendly source of truth) or
     an indexed PNG (its embedded PLTE is used). Line/index order == PRAM order: APPEND, never reorder.
   - every other row is a sprite sheet PNG; each animation tag (or the whole sheet if untagged) becomes
     one concatenated sheet asset (all its frames' index bytes back to back).
+  - an optional 5th field `rot=90,180,270` bakes those clockwise rotations of EVERY frame as extra
+    slots after the base ones -- draw a tile once, get its rotations (the PPU can't rotate at render).
+    90/270 need square frames. Rotated tile k @ the n-th listed angle is at base_slot + (n+1)*count + k.
 
 Emits into <out_dir>:
   *.bin              one blob per asset (palette = 512 B RGB565; sheet = w*h*count index bytes)
@@ -78,6 +81,22 @@ def slice_frame(img, rect):
     return bytes(out), w, h
 
 
+def rotate_pattern(data, w, h, turns):
+    """Rotate a w*h row-major index buffer `turns` * 90 degrees CLOCKWISE. Returns (bytes, nw, nh).
+    Dims swap on odd turns (90/270). The PPU can't rotate at render time (a tilemap cell is just a
+    pattern id), so a rotated tile is a baked pattern slot -- this bakes it."""
+    out = bytes(data)
+    cw, ch = w, h
+    for _ in range(turns % 4):
+        rot = bytearray(cw * ch)
+        for y in range(ch):
+            for x in range(cw):
+                rot[x * ch + (ch - 1 - y)] = out[y * cw + x]   # (x,y) -> (ch-1-y, x) in the ch-wide result
+        out = bytes(rot)
+        cw, ch = ch, cw
+    return out, cw, ch
+
+
 def main():
     if len(sys.argv) != 3:
         print(__doc__)
@@ -97,9 +116,19 @@ def main():
             if not line:
                 continue
             parts = line.split()
-            if len(parts) != 4:
-                raise SystemExit(f"{list_path}:{lineno}: expected '<name> <src> <json|-> <fps|->'")
-            name, src_rel, json_rel, fps_default = parts
+            if len(parts) not in (4, 5):
+                raise SystemExit(f"{list_path}:{lineno}: expected "
+                                 f"'<name> <src> <json|-> <fps|-> [rot=<deg,csv>]'")
+            name, src_rel, json_rel, fps_default = parts[:4]
+            rot_angles = []                                       # extra rotated slots to bake (deg CW)
+            if len(parts) == 5:
+                if not parts[4].startswith("rot="):
+                    raise SystemExit(f"{list_path}:{lineno}: 5th field must be rot=<csv>, got '{parts[4]}'")
+                for a in parts[4][4:].split(","):
+                    deg = int(a)
+                    if deg not in (90, 180, 270):
+                        raise SystemExit(f"{list_path}:{lineno}: rotation must be 90/180/270, got {deg}")
+                    rot_angles.append(deg)
 
             if json_rel == "-":                                  # master palette source
                 binname = f"{name}.bin"
@@ -134,6 +163,19 @@ def main():
                         raise SystemExit(f"{name}/{tag['name']}: frame {fi} is {w}x{h}, expected {fw}x{fh}")
                     blob += data
                 count = to - fr + 1
+                # Bake rotated variants as EXTRA slots after the base frames (one block per angle, in
+                # order): rotated tile k @ the n-th listed angle sits at base_slot + (n+1)*count + k.
+                # The game references those slots like any other tile -- rotation is invisible to it.
+                for deg in rot_angles:
+                    turns = deg // 90
+                    if turns % 2 == 1 and fw != fh:
+                        raise SystemExit(f"{name}/{tag['name']}: 90/270 rotation needs square frames "
+                                         f"(got {fw}x{fh})")
+                    for fi in range(fr, to + 1):
+                        data, w, h = slice_frame(img, frames[fi]["frame"])
+                        rdata, _rw, _rh = rotate_pattern(data, w, h, turns)
+                        blob += rdata
+                count *= 1 + len(rot_angles)
                 dur = frames[fr].get("duration", 0)
                 fps = round(1000 / dur) if dur else int(fps_default)
                 # The runtime divides elapsed_ms by the per-frame PERIOD (no fps multiply -> no

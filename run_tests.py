@@ -101,6 +101,7 @@ TESTS = [
 TOOL_TESTS = [
     "tests/test_png.py",
     "tests/test_image_import.py",
+    "tests/test_rotate.py",
     "tests/test_pixel_map.py",
     "tests/test_map_set.py",
     "tests/test_mml.py",

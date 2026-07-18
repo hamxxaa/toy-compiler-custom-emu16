@@ -26,6 +26,7 @@ include "../lib/game.lib";            // rand_range / srand_time / aabb (pulls s
 include "../lib/event.lib";           // flags (the NPC's one-time line)
 include "../lib/scene.lib";           // camera + Y-sort cast (pulls ppu.lib -- also font8x8 now)
 include "../lib/map.lib";             // map_load + spawn/warp/entry reads + map_solid_at
+include "../lib/anim.lib";            // clip timing -> OAM pattern slot (anim_play / anim_pat)
 include "generated/arena_assets.gen.txt";  // ANIM_*_ID / PAL_MASTER sprite asset ids
 include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_set.py)
 
@@ -39,7 +40,6 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     const S_H_SIDE = 0;  const S_H_ATK = 4; const S_H_UP = 8;  const S_H_DOWN = 12;
     const S_E_SIDE = 24; const S_E_UP = 29; const S_E_DOWN = 34; const S_NPC = 39;
     const T_TREE5 = 104;  // imported, not yet painted into any map -- ready for a future repaint
-    const ANIM_PERIOD = 200;
 
     const C_WHITE = 21; const C_RED = 27; const C_BLACK = 0; const C_GREEN = 10;
 
@@ -47,7 +47,6 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     const NOBJ = 6;
     const I_PLAYER = 0; const I_E0 = 1; const NUM_EN = 4; const I_NPC = 5;
     var int ox[6]; var int oy[6];
-    var int obase[6]; var int ocount[6]; var int ostart[6];
     var int ohp[6]; var int oactive[6]; var int oblink[6]; var int ofacing[6];
     var int ocx[6]; var int ocy[6]; var int ocw[6]; var int och[6];
 
@@ -59,7 +58,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     var int on_warp;    // edge-detect for map_warp_at: only transition on the frame you STEP ONTO it
 
     const PLAYER_HP = 6; const ENEMY_HP = 3; const ATTACK_REACH = 10; const STRIKE_FRAME = 1;
-    // The swing anim is 4 frames * ANIM_PERIOD(200ms) = 800ms; at a real, correctly-paced 60fps
+    // The swing anim is 4 frames * anim_period(200ms) = 800ms; at a real, correctly-paced 60fps
     // that's 48 logic frames. attack_lock used to be a mismatched 12 (=200ms), which raced against
     // STRIKE_FRAME's own >=200ms requirement and lost every time -- attack_lock hit 0 (and
     // resolve_attack's "if attack_lock<=0 return" bailed) in the SAME frame af first reached 1, so
@@ -74,15 +73,6 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     var int en_dir[4]; var int en_timer[4]; var int en_respawn[4];
     var int dialog_on; var int prev_b; var int dialog_dirty; var int dialog_first_time;
 
-    void play_anim(int i, int base, int count) {
-        if obase[i] != base { obase[i] = base; ostart[i] = sys_time(); }
-        ocount[i] = count;
-    }
-    int obj_pat(int i) {
-        var int f;
-        f = sys_time() - ostart[i]; f = f / ANIM_PERIOD; f = f % ocount[i];
-        return obase[i] + f;
-    }
     void set_collider(int i, int cx, int cy, int cw, int ch) { ocx[i] = cx; ocy[i] = cy; ocw[i] = cw; och[i] = ch; }
 
     int obj_hit(int a, int b) {
@@ -115,7 +105,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
         oi = I_E0 + e;
         ox[oi] = en_spawn_x[e]; oy[oi] = en_spawn_y[e];   // back to THIS map's painted spawn
         ohp[oi] = ENEMY_HP; oactive[oi] = 1; oblink[oi] = 0;
-        play_anim(oi, S_E_SIDE, 5);
+        anim_play(oi, S_E_SIDE, 5);
         en_dir[e] = rand_range(4); en_timer[e] = 40 + rand_range(60);
     }
 
@@ -125,8 +115,8 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     void despawn_all() {
         var int i;
         i = I_E0;
-        while i < I_E0 + NUM_EN { oactive[i] = 0; oblink[i] = 0; obase[i] = 0 - 1; i = i + 1; }
-        oactive[I_NPC] = 0; oblink[I_NPC] = 0; obase[I_NPC] = 0 - 1;
+        while i < I_E0 + NUM_EN { oactive[i] = 0; oblink[i] = 0; anim_clear(i); i = i + 1; }
+        oactive[I_NPC] = 0; oblink[I_NPC] = 0; anim_clear(I_NPC);
         en_count = 0;
     }
     void apply_spawns() {
@@ -141,13 +131,13 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
                     en_spawn_x[en_count] = tx * 16; en_spawn_y[en_count] = ty * 16;
                     ox[oi] = en_spawn_x[en_count]; oy[oi] = en_spawn_y[en_count];
                     ohp[oi] = ENEMY_HP; oactive[oi] = 1; oblink[oi] = 0;
-                    set_collider(oi, 4, 11, 8, 4); play_anim(oi, S_E_SIDE, 5);
+                    set_collider(oi, 4, 11, 8, 4); anim_play(oi, S_E_SIDE, 5);
                     en_dir[en_count] = rand_range(4); en_timer[en_count] = 40 + rand_range(60); en_respawn[en_count] = 0;
                     en_count = en_count + 1;
                 }
             } else { if type == SPAWN_NPC {
                 ox[I_NPC] = tx * 16; oy[I_NPC] = ty * 16; oactive[I_NPC] = 1;
-                set_collider(I_NPC, 0, 0, 16, 16); play_anim(I_NPC, S_NPC, 1);
+                set_collider(I_NPC, 0, 0, 16, 16); anim_play(I_NPC, S_NPC, 1);
             } }
             i = i + 1;
         }
@@ -187,11 +177,11 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
             if (input & 0x02) != 0 { dy = 0 - 1; moving = 1; player_dir = DIR_UP; }
             if (input & 0x08) != 0 { dy = 1;     moving = 1; player_dir = DIR_DOWN; }
             move_obj(I_PLAYER, dx, dy);
-            if (input & 0x10) != 0 { attack_lock = ATTACK_LOCK; attack_fired = 0; play_anim(I_PLAYER, S_H_ATK, 4); ostart[I_PLAYER] = sys_time(); }
+            if (input & 0x10) != 0 { attack_lock = ATTACK_LOCK; attack_fired = 0; anim_play(I_PLAYER, S_H_ATK, 4); anim_restart(I_PLAYER); }
             else {
-                if player_dir == DIR_UP { play_anim(I_PLAYER, S_H_UP, 4); }
-                else { if player_dir == DIR_DOWN { play_anim(I_PLAYER, S_H_DOWN, 4); } else { play_anim(I_PLAYER, S_H_SIDE, 4); } }
-                if moving == 0 { ostart[I_PLAYER] = sys_time(); }
+                if player_dir == DIR_UP { anim_play(I_PLAYER, S_H_UP, 4); }
+                else { if player_dir == DIR_DOWN { anim_play(I_PLAYER, S_H_DOWN, 4); } else { anim_play(I_PLAYER, S_H_SIDE, 4); } }
+                if moving == 0 { anim_restart(I_PLAYER); }
             }
         }
     }
@@ -206,10 +196,10 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
                 en_timer[e] = en_timer[e] - 1;
                 if en_timer[e] <= 0 { en_dir[e] = rand_range(4); en_timer[e] = 40 + rand_range(60); }
                 dx = 0; dy = 0;
-                if en_dir[e] == 0      { dx = 1;     ofacing[oi] = 0; play_anim(oi, S_E_SIDE, 5); }
-                else { if en_dir[e] == 1 { dx = 0 - 1; ofacing[oi] = 1; play_anim(oi, S_E_SIDE, 5); }
-                else { if en_dir[e] == 2 { dy = 0 - 1; play_anim(oi, S_E_UP, 5); }
-                else                     { dy = 1;     play_anim(oi, S_E_DOWN, 5); } } }
+                if en_dir[e] == 0      { dx = 1;     ofacing[oi] = 0; anim_play(oi, S_E_SIDE, 5); }
+                else { if en_dir[e] == 1 { dx = 0 - 1; ofacing[oi] = 1; anim_play(oi, S_E_SIDE, 5); }
+                else { if en_dir[e] == 2 { dy = 0 - 1; anim_play(oi, S_E_UP, 5); }
+                else                     { dy = 1;     anim_play(oi, S_E_DOWN, 5); } } }
                 bl = move_obj(oi, dx, dy);
                 if bl == 1 { en_timer[e] = 0; }
             } else {
@@ -223,7 +213,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     void resolve_attack() {
         var int af; var int e; var int oi; var int hx; var int hy; var int hw; var int hh; var int kdx; var int kdy;
         if attack_lock <= 0 { return; }
-        af = sys_time() - ostart[I_PLAYER]; af = af / ANIM_PERIOD;
+        af = anim_elapsed(I_PLAYER); af = af / anim_period;
         if af < STRIKE_FRAME { return; }
         if attack_fired == 1 { return; }
         attack_fired = 1;
@@ -302,7 +292,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
     // (oam_n) each frame; skipping this during dialog would emit an empty OAM command and every
     // sprite (player, ninja, enemies) would vanish until the next normal frame rebuilds it.
     // `frozen`=1 (used during dialog, since update() calls are skipped and positions don't move) holds
-    // everyone on their base/idle pattern instead of obj_pat's time-based walk cycle, which would
+    // everyone on their base/idle pattern instead of anim_pat's time-based walk cycle, which would
     // otherwise keep advancing off the real clock and make the player appear to walk in place.
     void build_cast(int frozen) {
         var int i; var int pat;
@@ -311,11 +301,11 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
         while i < NOBJ {
             if oactive[i] == 1 {
                 if oblink[i] > 0 { if (oblink[i] & 2) != 0 { i = i; } else {
-                    if frozen == 1 { pat = obase[i]; } else { pat = obj_pat(i); }
+                    if frozen == 1 { pat = anim_base_pat(i); } else { pat = anim_pat(i); }
                     if ofacing[i] == 1 { scene_obj(pat, ox[i], oy[i], 1); } else { scene_obj(pat, ox[i], oy[i], 0); }
                 } }
                 else {
-                    if frozen == 1 { pat = obase[i]; } else { pat = obj_pat(i); }
+                    if frozen == 1 { pat = anim_base_pat(i); } else { pat = anim_pat(i); }
                     if ofacing[i] == 1 { scene_obj(pat, ox[i], oy[i], 1); } else { scene_obj(pat, ox[i], oy[i], 0); }
                 }
             }
@@ -363,7 +353,7 @@ include "generated/arena_maps.gen.txt";    // SPAWN_* type ids (from tools/map_s
         // One-time player setup (stats/collider/anim) -- NOT map-specific, so it happens once at
         // boot, unlike position (which always comes from an entry point via go_to_map below).
         ohp[I_PLAYER] = PLAYER_HP; oactive[I_PLAYER] = 1;
-        set_collider(I_PLAYER, 4, 11, 8, 4); play_anim(I_PLAYER, S_H_DOWN, 4);
+        set_collider(I_PLAYER, 4, 11, 8, 4); anim_play(I_PLAYER, S_H_DOWN, 4);
         player_dir = DIR_DOWN; player_iframes = 0; attack_lock = 0; flash_timer = 0; flash_restore = 0;
         dialog_on = 0; prev_b = 0; dialog_dirty = 0; dialog_first_time = 0; on_warp = 0;
 

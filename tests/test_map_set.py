@@ -67,7 +67,7 @@ def write_cave(maps_dir, base=90):
 
 def write_legend(path):
     with open(path, "w") as f:
-        f.write("0 tile 5 0\n1 tile 6 1\n")   # tile 5 = walkable, tile 6 = solid
+        f.write("flags solid=0\n0 5\n1 6 solid\n")   # tile 5 = walkable, tile 6 = solid
 
 
 def test_happy_path_with_assets():

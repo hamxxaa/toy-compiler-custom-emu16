@@ -1,0 +1,174 @@
+// examples/dig_proto.txt — Phase 0 THROWAWAY prototype for the "Deeper" digger walkthrough.
+// NOT the tutorial's final source: it exists only to prove the side-view movement FEELS right and
+// that a runtime dig updates render + collision for free. Delete or refactor once Phase 0 closes.
+//
+// Controls: LEFT/RIGHT walk · A jump · B dig (in the held d-pad direction, or straight down).
+// HUD shows the player's tile row (a depth proxy) and grounded flag for feel-tuning.
+include "../lib/io.lib";          // buttons
+include "../lib/ppu.lib";         // frame shape, patterns, text
+include "../lib/scene.lib";       // follow camera + tile streaming + sprite draw
+include "../lib/platform.lib";    // gravity / walk / jump / block-and-slide
+{
+    const MAP_W = 24;   const MAP_H = 40;      // 24x40 tiles = 384x640 px world
+    const PAT_PLAYER = 8;
+
+    const T_AIR  = 0;   const T_DIRT = 1;   const T_ROCK = 2;
+    const F_DIG  = 4;                          // tile-flags bit: diggable
+
+    // ── Baked palette (RGB565, little-endian) ────────────────────────────────────────────────────
+    var byte game_pal[16] = {
+        0x00, 0x00,   // 0 black      — backdrop / air / sprite-transparent
+        0xFF, 0xFF,   // 1 white      — HUD text, player eyes
+        0x10, 0x84,   // 2 gray       — bedrock border
+        0x26, 0x93,   // 3 brown      — dirt
+        0x03, 0x62,   // 4 dark brown — dirt border (tile grid)
+        0x60, 0xFC,   // 5 orange     — player body
+        0x00, 0xF8,   // 6 red        — player trim
+        0x00, 0x00    // 7 unused
+    };
+
+    // ── Baked 16x16 patterns (1 byte/pixel = palette index; slot 0 stays blank = air) ─────────────
+    var byte pat_dirt[256] = {
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4
+    };
+    var byte pat_rock[256] = {
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
+    };
+    var byte pat_player[256] = {
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,
+        0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,
+        0,0,0,0,0,5,1,5,5,1,5,0,0,0,0,0,
+        0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,
+        0,0,0,0,6,6,6,6,6,6,6,6,0,0,0,0,
+        0,0,0,0,6,5,5,5,5,5,5,6,0,0,0,0,
+        0,0,0,0,6,5,5,5,5,5,5,6,0,0,0,0,
+        0,0,0,0,6,5,5,5,5,5,5,6,0,0,0,0,
+        0,0,0,0,6,5,5,5,5,5,5,6,0,0,0,0,
+        0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,
+        0,0,0,0,0,5,5,0,0,5,5,0,0,0,0,0,
+        0,0,0,0,0,5,5,0,0,5,5,0,0,0,0,0,
+        0,0,0,0,0,6,6,0,0,6,6,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    };
+
+    // tile id -> properties (bit0 solid, bit2 diggable). air=0, dirt=solid+dig, rock=solid.
+    var byte tile_flags[8] = { 0, 5, 1, 0, 0, 0, 0, 0 };
+
+    var byte world[960];   // MAP_W * MAP_H, filled by build_world()
+
+    // Solid bedrock border ring, dirt fill, and a carved starting pocket (rows 1..5) to stand in.
+    void build_world() {
+        var int x; var int y; var int idx;
+        y = 0;
+        while y < MAP_H {
+            x = 0;
+            while x < MAP_W {
+                idx = y * MAP_W + x;
+                if x == 0            { world[idx] = T_ROCK; }
+                else if x == MAP_W - 1 { world[idx] = T_ROCK; }
+                else if y == 0         { world[idx] = T_ROCK; }
+                else if y == MAP_H - 1 { world[idx] = T_ROCK; }
+                else                   { world[idx] = T_DIRT; }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        y = 1;
+        while y <= 5 {
+            x = 1;
+            while x < MAP_W - 1 { world[y * MAP_W + x] = T_AIR; x = x + 1; }
+            y = y + 1;
+        }
+    }
+
+    // Dig the tile in the held direction (default: straight down below the feet). Diggable -> air.
+    void do_dig() {
+        var int tx; var int ty; var int idx; var int cx; var int t;
+        cx = (plat_x + 8) >> 4;                         // player's center column
+        tx = cx;  ty = ((plat_y + 14) >> 4) + 1;        // default: tile below the feet
+        if button(BTN_UP)    { tx = cx; ty = ((plat_y + 2) >> 4) - 1; }
+        if button(BTN_LEFT)  { tx = ((plat_x + 4) >> 4) - 1;  ty = (plat_y + 8) >> 4; }
+        if button(BTN_RIGHT) { tx = ((plat_x + 11) >> 4) + 1; ty = (plat_y + 8) >> 4; }
+        if tx < 0 { return; }
+        if tx >= MAP_W { return; }
+        if ty < 0 { return; }
+        if ty >= MAP_H { return; }
+        idx = ty * MAP_W + tx;
+        t = world[idx];
+        if (tile_flags[t] & F_DIG) != 0 { world[idx] = T_AIR; }
+    }
+
+    int main() {
+        var int ix; var int jmp; var int pattr;
+
+        sys_ppu_upload(PPU_PAL, &game_pal, 16);
+        ppu_upload_font(&font8x8);
+        sys_ppu_upload(PPU_PAT + T_DIRT * 256,      &pat_dirt,   256);
+        sys_ppu_upload(PPU_PAT + T_ROCK * 256,      &pat_rock,   256);
+        sys_ppu_upload(PPU_PAT + PAT_PLAYER * 256,  &pat_player, 256);
+
+        build_world();
+        plat_bind(&world, MAP_W, MAP_H, &tile_flags);
+        plat_spawn(12 * 16, 2 * 16);
+        sys_set_fps(60);
+
+        while (true) {
+            ix = 0;
+            if button(BTN_LEFT)  { ix = 0 - 1; }
+            if button(BTN_RIGHT) { ix = 1; }
+            jmp = 0;
+            if button_pressed(BTN_A) { jmp = 1; }
+            plat_update(ix, jmp);
+            if button_pressed(BTN_B) { do_dig(); }
+
+            scene_follow(plat_x, plat_y, MAP_W, MAP_H);
+            cmd_reset();
+            ppu_backdrop(0x0000);
+            scene_stream(&world, MAP_W, MAP_H);
+            scene_clear();
+            pattr = 0;
+            if plat_facing == (0 - 1) { pattr = 1; }
+            scene_obj(PAT_PLAYER, plat_x, plat_y, pattr);
+            scene_draw();
+
+            tile_number(0, 0, plat_y >> 4, 1);      // tile row (depth proxy)
+            tile_number(0, 1, plat_grounded, 1);    // grounded flag
+
+            buttons_update();
+            ppu_present();
+        }
+        return 0;
+    }
+}

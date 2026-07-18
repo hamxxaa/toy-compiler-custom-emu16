@@ -1,0 +1,144 @@
+// lib/platform.lib — side-view platformer physics on the flags-grid world model (the twin of the
+// top-down mover in scene.lib / arena's move_obj). Gravity, walk, jump, and axis-separated
+// block-and-slide against a solid tilemap, for a single entity to start — built to grow into
+// per-entity arrays, dig interaction, and the rest of the digger.
+//
+// Collision reads the SAME byte-grid the renderer draws (`world[]` = tile ids) through a `flags[]`
+// table (bit0 = solid), so a runtime tile edit moves physics and pixels together with no extra work.
+// It depends only on that grid contract (via ppu_rdbyte), NOT on map.lib's pak loader, so the world
+// may be baked into the ROM or loaded from a pak.
+//
+// Coordinates are INTEGER world pixels — 16-bit-safe for a deep world, where 8.8 fixed-point would
+// overflow past ~127 px. Sub-pixel motion is carried in an 8.8 velocity plus a per-axis remainder,
+// and applied one pixel at a time (testing each step), so a fast fall can never tunnel through a tile.
+//
+// Frame usage:
+//     plat_bind(&world, MAP_W, MAP_H, &flags);   // once
+//     plat_spawn(x, y);                           // once
+//     ... each frame:
+//     plat_update(input_x, jump_pressed);         // input_x in {-1,0,1}; jump on the fresh press only
+//     ... render the entity at (plat_x, plat_y), flip by plat_facing ...
+//
+// The WORLD MUST have a solid border ring: plat_update samples one pixel past the body, so the entity
+// must never reach the array edge (same contract as the top-down maps).
+include "../lib/ppu.lib";     // ppu_rdbyte — read the world / flags byte arrays through their pointers
+{
+    // ── Tunables (8.8 fixed-point: 256 = 1 px/frame). Defaults set by feel; a game may overwrite
+    //    these globals after the include to retune without editing the lib. ─────────────────────────
+    var int plat_gravity  = 40;     // added to vy each frame     (~0.16 px/frame^2)
+    var int plat_terminal = 1024;   // max fall speed             (4 px/frame — < 16 px so no tunneling)
+    var int plat_walk     = 336;    // horizontal speed           (~1.3 px/frame)
+    var int plat_jump     = 1120;   // initial jump-up speed      (~4.4 px/frame)
+
+    // Solid body box inside the 16x16 sprite (narrower than the sprite so the digger fits a 1-tile
+    // tunnel). Feet = plat_box_b, head = plat_box_t.
+    var int plat_box_l = 4;   var int plat_box_r = 11;
+    var int plat_box_t = 2;   var int plat_box_b = 14;
+
+    // World binding: `world` = byte array of tile ids (map_w x map_h), `flags` = byte array indexed by
+    // tile id, bit0 = solid. Set once with plat_bind.
+    var int plat_world = 0;   var int plat_w = 0;   var int plat_h = 0;   var int plat_flags = 0;
+
+    // Entity state (single entity for v1; read plat_x / plat_y for rendering).
+    var int plat_x = 0;    var int plat_y = 0;      // top-left, world pixels
+    var int plat_vx = 0;   var int plat_vy = 0;     // velocity, 8.8 px/frame
+    var int plat_rx = 0;   var int plat_ry = 0;     // sub-pixel remainder, 8.8
+    var int plat_grounded = 0;
+    var int plat_facing = 1;                          // -1 = left, +1 = right (last horizontal input)
+    var int plat_impact = 0;                          // downward speed (8.8) at THIS frame's landing, else 0
+                                                       //   -- read after plat_update for fall damage
+
+    void plat_bind(int world, int w, int h, int flags) {
+        plat_world = world; plat_w = w; plat_h = h; plat_flags = flags;
+    }
+
+    void plat_spawn(int x, int y) {
+        plat_x = x; plat_y = y;
+        plat_vx = 0; plat_vy = 0; plat_rx = 0; plat_ry = 0;
+        plat_grounded = 0; plat_facing = 1; plat_impact = 0;
+    }
+
+    // Is the world tile under pixel (wx,wy) solid?  flags[world[tile]] bit0.
+    int plat_solid_px(int wx, int wy) {
+        var int tile;
+        tile = ppu_rdbyte(plat_world + (wy >> 4) * plat_w + (wx >> 4));
+        return ppu_rdbyte(plat_flags + tile) & 1;
+    }
+
+    // The `mask` bits of the flags byte for the tile under pixel (wx,wy) — nonzero if any are set.
+    // The general form of plat_solid_px (which is just mask = 1); use it for other tile properties the
+    // game defines, e.g. plat_flag_at(px, py, F_HAZARD) to check lava.
+    int plat_flag_at(int wx, int wy, int mask) {
+        var int tile;
+        tile = ppu_rdbyte(plat_world + (wy >> 4) * plat_w + (wx >> 4));
+        return ppu_rdbyte(plat_flags + tile) & mask;
+    }
+
+    // Would the body box at top-left (px,py) overlap any solid tile? (samples the 4 box corners)
+    int plat_blocked(int px, int py) {
+        if plat_solid_px(px + plat_box_l, py + plat_box_t) == 1 { return 1; }
+        if plat_solid_px(px + plat_box_r, py + plat_box_t) == 1 { return 1; }
+        if plat_solid_px(px + plat_box_l, py + plat_box_b) == 1 { return 1; }
+        if plat_solid_px(px + plat_box_r, py + plat_box_b) == 1 { return 1; }
+        return 0;
+    }
+
+    // Solid directly beneath the feet? (the grounded test — sample one pixel below both feet corners)
+    int plat_on_ground() {
+        if plat_solid_px(plat_x + plat_box_l, plat_y + plat_box_b + 1) == 1 { return 1; }
+        if plat_solid_px(plat_x + plat_box_r, plat_y + plat_box_b + 1) == 1 { return 1; }
+        return 0;
+    }
+
+    // Consume the whole-pixel part of the X remainder one pixel at a time; stop dead at a wall.
+    void plat_move_x() {
+        plat_rx = plat_rx + plat_vx;
+        while plat_rx >= 256 {
+            if plat_blocked(plat_x + 1, plat_y) == 1 { plat_rx = 0; plat_vx = 0; return; }
+            plat_x = plat_x + 1;
+            plat_rx = plat_rx - 256;
+        }
+        while plat_rx <= (0 - 256) {
+            if plat_blocked(plat_x - 1, plat_y) == 1 { plat_rx = 0; plat_vx = 0; return; }
+            plat_x = plat_x - 1;
+            plat_rx = plat_rx + 256;
+        }
+    }
+
+    // Same for Y; landing or a head-bonk zeroes vy.
+    void plat_move_y() {
+        plat_ry = plat_ry + plat_vy;
+        while plat_ry >= 256 {
+            if plat_blocked(plat_x, plat_y + 1) == 1 { plat_impact = plat_vy; plat_ry = 0; plat_vy = 0; return; }
+            plat_y = plat_y + 1;
+            plat_ry = plat_ry - 256;
+        }
+        while plat_ry <= (0 - 256) {
+            if plat_blocked(plat_x, plat_y - 1) == 1 { plat_ry = 0; plat_vy = 0; return; }
+            plat_y = plat_y - 1;
+            plat_ry = plat_ry + 256;
+        }
+    }
+
+    // One physics step. input_x in {-1,0,1} (walk); jump_pressed = 1 ONLY on the fresh press frame.
+    void plat_update(int input_x, int jump_pressed) {
+        plat_impact = 0;                 // set to the landing speed below if we hit ground this frame
+        plat_vx = input_x * plat_walk;
+        if input_x == 1        { plat_facing = 1; }
+        if input_x == (0 - 1)  { plat_facing = 0 - 1; }
+
+        // Rest on the ground: clear leftover downward speed so it can't accumulate while standing.
+        if plat_grounded == 1 { if plat_vy > 0 { plat_vy = 0; plat_ry = 0; } }
+
+        // Jump only from the ground.
+        if jump_pressed == 1 { if plat_grounded == 1 { plat_vy = 0 - plat_jump; plat_grounded = 0; } }
+
+        // Gravity, capped at terminal.
+        plat_vy = plat_vy + plat_gravity;
+        if plat_vy > plat_terminal { plat_vy = plat_terminal; }
+
+        plat_move_x();
+        plat_move_y();
+        plat_grounded = plat_on_ground();
+    }
+}

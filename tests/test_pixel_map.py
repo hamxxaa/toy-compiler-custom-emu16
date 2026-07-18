@@ -44,7 +44,7 @@ def main():
         palette = [(i, i, i) for i in range(16)]
         write_indexed_png(png_path, 4, 3, indices, palette)
         with open(legend_path, "w") as f:
-            f.write("0 tile 16 0\n1 tile 17 1\n2 tile 20 1\n")
+            f.write("flags solid=0\n0 16\n1 17 solid\n2 20 solid\n")
 
         r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "pixel_map.py"),
                             png_path, legend_path, out_path],
