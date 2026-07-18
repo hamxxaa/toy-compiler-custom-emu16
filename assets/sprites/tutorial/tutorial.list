@@ -1,0 +1,16 @@
+# Deeper (the walkthrough game) -- asset project list for tools/image_import.py.
+# Paths are relative to THIS file. The palette is deeper_palette.gpl (in assets/palettes/); every
+# sprite's index bytes reference it. Build:
+#   python tools/image_import.py assets/sprites/tutorial/tutorial.list build/tutorial_assets
+#   python tools/pack_assets.py  build/tutorial_assets/assets.manifest  build/roms/deeper
+#
+#   name        src                 json                  fps  (fps is a fallback; the .json's own
+#                                                               per-frame durations win when present)
+master      ../../palettes/deeper_palette.gpl  -         -
+dirt        dirt.png            dirt.json             10
+stone       stone.png           stone.json            10
+dirt_bg     dirt_background.png dirt_background.json  10
+miner       miner.png           miner.json            5
+miner_walk  miner_walking.png   miner_walking.json    5
+miner_jump  miner_jumping.png   miner_jumping.json    5
+miner_mine  miner_mining.png    miner_mining.json     5

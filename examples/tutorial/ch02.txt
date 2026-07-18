@@ -1,0 +1,73 @@
+// examples/tutorial/ch02.txt
+// Deeper -- Chapter 2: the digger appears.
+//
+// Adds the player SPRITE on top of Chapter 1's world. Sprites are separate from tiles: they're OAM
+// entries the PPU composites over the background. We DMA the miner's idle clip from the pak and let
+// lib/anim.lib pick which frame to draw. Still no movement -- that's Chapter 3.
+include "../../lib/io.lib";
+include "../../lib/ppu.lib";
+include "../../lib/scene.lib";   // scene_obj / scene_draw: place a sprite in WORLD space, draw it
+include "../../lib/anim.lib";    // anim_play / anim_pat: a clip is consecutive pattern slots
+include "deeper_assets.gen.txt";
+{
+    const MAP_W = 24;   const MAP_H = 40;
+    const T_AIR = 0;   const T_DIRT = 1;   const T_STONE = 2;
+
+    // The idle clip's frames get DMA'd to slots 8..9. Sprites and tiles share the one pattern table; we
+    // just keep the player well clear of the tile slots (1, 2).
+    const PAT_IDLE = 8;
+
+    var byte world[960];
+    var byte tile_flags[8] = { 0, 5, 1, 0, 0, 0, 0, 0 };
+
+    // The player lives in WORLD pixel coordinates (not screen). scene_draw converts to the screen.
+    var int player_x = 0;   var int player_y = 0;
+
+    void build_world() {
+        var int x; var int y; var int idx;
+        y = 0;
+        while y < MAP_H {
+            x = 0;
+            while x < MAP_W {
+                idx = y * MAP_W + x;
+                if x == 0              { world[idx] = T_STONE; }
+                else if x == MAP_W - 1 { world[idx] = T_STONE; }
+                else if y == 0         { world[idx] = T_STONE; }
+                else if y == MAP_H - 1 { world[idx] = T_STONE; }
+                else                   { world[idx] = T_DIRT; }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        y = 1;
+        while y <= 3 { x = 1; while x < MAP_W - 1 { world[y * MAP_W + x] = T_AIR; x = x + 1; } y = y + 1; }
+    }
+
+    int main() {
+        sys_ppu_dma(PAL_MASTER, PPU_PAL);
+        ppu_upload_font(&font8x8);
+        sys_ppu_dma(ANIM_DIRT_ID,  PPU_PAT + T_DIRT * 256);
+        sys_ppu_dma(ANIM_STONE_ID, PPU_PAT + T_STONE * 256);
+        sys_ppu_dma(ANIM_MINER_ID, PPU_PAT + PAT_IDLE * 256);      // the miner's 2-frame idle -> slots 8,9
+
+        build_world();
+        player_x = 5 * 16;   player_y = 48;             // stand in the pocket, on top of the dirt
+
+        // Start the idle clip on entity 0. anim.lib advances it on its own; we ask anim_pat(0) for the
+        // current frame each render.
+        anim_play(0, PAT_IDLE, 2, clip_period[ANIM_MINER_ID]);   // period from the miner's LibreSprite duration
+
+        while (true) {
+            cmd_reset();
+            ppu_backdrop(0x0000);
+            scene_stream(&world, MAP_W, MAP_H);
+
+            scene_clear();                                       // begin this frame's sprite cast
+            scene_obj(anim_pat(0), player_x, player_y, 0);       // the miner, at its world position
+            scene_draw();                                        // world -> screen -> OAM
+
+            ppu_present();
+        }
+        return 0;
+    }
+}

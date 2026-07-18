@@ -1,0 +1,102 @@
+// examples/tutorial/ch05.txt
+// Deeper -- Chapter 5: down the mine.
+//
+// Swaps the hand-built world for a real AUTHORED map (painted in LibreSprite, imported by pixel_map),
+// lets the camera FOLLOW the miner as he digs down, and shows his depth on the text plane. A broken
+// tile now becomes the dirt-BACKGROUND tile -- visible but not solid -- so tunnels read as carved dirt,
+// not black void.
+include "../../lib/io.lib";
+include "../../lib/ppu.lib";
+include "../../lib/scene.lib";
+include "../../lib/anim.lib";
+include "../../lib/platform.lib";
+include "deeper_assets.gen.txt";     // PAL_MASTER / ANIM_*_ID -- the pak
+include "deeper_map.gen.txt";        // MAP_W / MAP_H / world[] / tile_flags[] -- the painted 100x100 map
+{
+    const T_AIR = 0;   const T_DIRT = 1;   const T_STONE = 2;   const T_DIRT_BG = 3;
+
+    const PAT_IDLE = 8;    const PAT_WALK = 10;   const PAT_JUMP = 13;   const PAT_MINE = 15;
+
+    const F_DIG    = 4;
+    const DIG_TIME = 30;
+    const SURFACE_ROW = 5;    // first solid-dirt row (rows 1..4 are the open dirt-background surface)
+    const C_WHITE  = 21;      // palette index of white, for the HUD text
+
+    var int digging = 0;   var int dig_tx = 0;   var int dig_ty = 0;   var int dig_timer = 0;
+    var byte s_depth[7] = { 68, 69, 80, 84, 72, 58, 0 };   // "DEPTH:"
+
+    int main() {
+        var int ix; var int jmp; var int pattr;
+        var int tx; var int ty; var int t; var int dig_now; var int depth;
+
+        sys_ppu_dma(PAL_MASTER, PPU_PAL);
+        ppu_upload_font(&font8x8);
+        sys_ppu_dma(ANIM_DIRT_ID,       PPU_PAT + T_DIRT * 256);
+        sys_ppu_dma(ANIM_STONE_ID,      PPU_PAT + T_STONE * 256);
+        sys_ppu_dma(ANIM_DIRT_BG_ID,    PPU_PAT + T_DIRT_BG * 256);
+        sys_ppu_dma(ANIM_MINER_ID,      PPU_PAT + PAT_IDLE * 256);
+        sys_ppu_dma(ANIM_MINER_WALK_ID, PPU_PAT + PAT_WALK * 256);
+        sys_ppu_dma(ANIM_MINER_JUMP_ID, PPU_PAT + PAT_JUMP * 256);
+        sys_ppu_dma(ANIM_MINER_MINE_ID, PPU_PAT + PAT_MINE * 256);
+
+        // The map (world[] + tile_flags[]) came in from deeper_map.gen.txt -- no build_world this time.
+        plat_bind(&world, MAP_W, MAP_H, &tile_flags);
+        plat_spawn(12 * 16, 1 * 16);     // in the open surface band; gravity lands him on the dirt
+        anim_play(0, PAT_IDLE, 2, clip_period[ANIM_MINER_ID]);
+        sys_set_fps(60);
+
+        while (true) {
+            ix = 0;
+            if button(BTN_LEFT)  { ix = 0 - 1; }
+            if button(BTN_RIGHT) { ix = 1; }
+            jmp = 0;
+            if button_pressed(BTN_A) { jmp = 1; }
+            plat_update(ix, jmp);
+
+            // aim (as Chapter 4)
+            if button(BTN_DOWN) { tx = (plat_x + 8) >> 4; ty = ((plat_y + 15) >> 4) + 1; }
+            else { if button(BTN_UP) { tx = (plat_x + 8) >> 4; ty = ((plat_y + 1) >> 4) - 1; }
+                   else { if plat_facing == 1 { tx = (plat_x + 12) >> 4; } else { tx = (plat_x + 3) >> 4; }
+                          ty = (plat_y + 8) >> 4; } }
+            dig_now = 0;
+            if tx >= 0 { if tx < MAP_W { if ty >= 0 { if ty < MAP_H {
+                t = world[ty * MAP_W + tx];
+                if (tile_flags[t] & F_DIG) != 0 { if button(BTN_B) { dig_now = 1; } }
+            } } } }
+            if dig_now == 1 {
+                if dig_tx != tx { digging = 0; }
+                if dig_ty != ty { digging = 0; }
+                if digging == 0 { digging = 1; dig_tx = tx; dig_ty = ty; dig_timer = DIG_TIME; }
+                dig_timer = dig_timer - 1;
+                if dig_timer <= 0 { world[dig_ty * MAP_W + dig_tx] = T_DIRT_BG; digging = 0; }   // reveal the wall
+            } else { digging = 0; }
+
+            if digging == 1 { anim_play(0, PAT_MINE, 5, clip_period[ANIM_MINER_MINE_ID]); }
+            else { if plat_grounded == 0 { anim_play(0, PAT_JUMP, 2, clip_period[ANIM_MINER_JUMP_ID]); }
+                   else { if ix == 0 { anim_play(0, PAT_IDLE, 2, clip_period[ANIM_MINER_ID]); }
+                          else { anim_play(0, PAT_WALK, 3, clip_period[ANIM_MINER_WALK_ID]); } } }
+
+            // --- CAMERA: keep the miner on screen as he descends the tall world ---
+            scene_follow(plat_x, plat_y, MAP_W, MAP_H);
+
+            cmd_reset();
+            ppu_backdrop(0x0000);
+            scene_stream(&world, MAP_W, MAP_H);
+            scene_clear();
+            pattr = 0;
+            if plat_facing == (0 - 1) { pattr = 1; }
+            scene_obj(anim_pat(0), plat_x, plat_y, pattr);
+            scene_draw();
+
+            // --- depth HUD (text plane, over everything): tiles below the surface ---
+            depth = ((plat_y + 15) >> 4) - SURFACE_ROW;
+            if depth < 0 { depth = 0; }
+            tile_text(0, 0, &s_depth, C_WHITE);
+            tile_number(7, 0, depth, C_WHITE);
+
+            buttons_update();
+            ppu_present();
+        }
+        return 0;
+    }
+}

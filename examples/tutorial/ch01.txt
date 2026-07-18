@@ -1,0 +1,67 @@
+// examples/tutorial/ch01.txt
+// Deeper -- Chapter 1: a world on screen.
+//
+// The mine is a grid of bytes; each byte is one 16x16 tile's PPU pattern slot. We draw the tile art in
+// LibreSprite, import it with the tools into a .pak, load it into PPU memory, and let the PPU draw the
+// grid. No player, no physics yet -- just a world.
+include "../../lib/io.lib";      // (buttons arrive in Chapter 3; included now so the loop is ready)
+include "../../lib/ppu.lib";     // the PPU command builder + the frame shape
+include "../../lib/scene.lib";   // scene_stream: push the visible window of the world to the screen
+include "deeper_assets.gen.txt"; // PAL_MASTER / ANIM_DIRT_ID / ANIM_STONE_ID -- ids from image_import
+{
+    const MAP_W = 24;   const MAP_H = 40;        // the mine is 24 tiles wide, 40 deep (384x640 px)
+
+    // A tile id is BOTH the PPU pattern slot to draw AND the index into tile_flags (below). We DMA the
+    // dirt art to slot 1 and the stone art to slot 2, so those ids draw those tiles.
+    const T_AIR = 0;   const T_DIRT = 1;   const T_STONE = 2;
+
+    // THE WORLD. One byte per tile = its pattern slot. This exact array becomes the COLLISION grid in
+    // Chapter 3: a tile is solid (or diggable) purely by what its id maps to in tile_flags.
+    var byte world[960];   // MAP_W * MAP_H
+
+    // Per-tile-id properties, read from Chapter 3 on (bit 0 = solid, bit 2 = diggable). Introduced now
+    // so the "one grid, two readers -- the renderer and the physics" idea is on the table from day one.
+    var byte tile_flags[8] = { 0, 5, 1, 0, 0, 0, 0, 0 };   // air=0  dirt=solid+dig(5)  stone=solid(1)
+
+    // Fill the grid: a stone border ring, dirt everywhere inside, and a small carved pocket up top.
+    void build_world() {
+        var int x; var int y; var int idx;
+        y = 0;
+        while y < MAP_H {
+            x = 0;
+            while x < MAP_W {
+                idx = y * MAP_W + x;
+                if x == 0              { world[idx] = T_STONE; }
+                else if x == MAP_W - 1 { world[idx] = T_STONE; }
+                else if y == 0         { world[idx] = T_STONE; }
+                else if y == MAP_H - 1 { world[idx] = T_STONE; }
+                else                   { world[idx] = T_DIRT; }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        y = 1;
+        while y <= 3 { x = 1; while x < MAP_W - 1 { world[y * MAP_W + x] = T_AIR; x = x + 1; } y = y + 1; }
+    }
+
+    int main() {
+        // Load the palette and tile art from the pak straight into PPU memory. PAL_MASTER and the
+        // ANIM_*_ID ids come from deeper_assets.gen.txt, which image_import generated.
+        sys_ppu_dma(PAL_MASTER, PPU_PAL);
+        ppu_upload_font(&font8x8);
+        sys_ppu_dma(ANIM_DIRT_ID,  PPU_PAT + T_DIRT * 256);    // dirt art  -> slot 1
+        sys_ppu_dma(ANIM_STONE_ID, PPU_PAT + T_STONE * 256);   // stone art -> slot 2
+
+        build_world();
+
+        // The frame loop: clear the command buffer, set a black backdrop, push the visible tiles,
+        // present. With no camera set yet, scene_stream draws the top-left window of the world.
+        while (true) {
+            cmd_reset();
+            ppu_backdrop(0x0000);
+            scene_stream(&world, MAP_W, MAP_H);
+            ppu_present();
+        }
+        return 0;
+    }
+}

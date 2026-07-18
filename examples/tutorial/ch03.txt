@@ -1,0 +1,96 @@
+// examples/tutorial/ch03.txt
+// Deeper -- Chapter 3: gravity, walk & jump.
+//
+// The miner comes alive. lib/platform.lib gives him velocity, gravity, and block-and-slide collision
+// against the SAME grid we drew -- a tile is solid purely by its tile_flags entry. He walks, falls, and
+// jumps, and with real walk/jump art we swap his animation clip to match his state.
+// (Camera follow is Chapter 5, so stay on-screen for now.)
+include "../../lib/io.lib";
+include "../../lib/ppu.lib";
+include "../../lib/scene.lib";
+include "../../lib/anim.lib";
+include "../../lib/platform.lib";      // gravity / walk / jump / collision
+include "deeper_assets.gen.txt";       // PAL_MASTER / ANIM_*_ID -- the pak asset ids (image_import)
+{
+    const MAP_W = 24;   const MAP_H = 40;
+    const T_AIR = 0;   const T_DIRT = 1;   const T_STONE = 2;
+
+    // PPU pattern-slot layout: we DMA each asset from the pak to a fixed slot. Tiles keep the ids the
+    // world grid uses (1 = dirt, 2 = stone); the player's clips sit above them.
+    const PAT_IDLE = 8;    // miner idle   -> slots 8,9      (2 frames)
+    const PAT_WALK = 10;   // miner walk   -> slots 10,11,12 (3 frames)
+    const PAT_JUMP = 13;   // miner jump   -> slots 13,14     (2 frames)
+    const PAT_MINE = 15;   // miner mining -> slots 15..19    (5 frames) [used from Chapter 4]
+
+    var byte world[960];
+    var byte tile_flags[8] = { 0, 5, 1, 0, 0, 0, 0, 0 };   // air=0  dirt=solid+dig(5)  stone=solid(1)
+
+    void build_world() {
+        var int x; var int y; var int idx;
+        y = 0;
+        while y < MAP_H {
+            x = 0;
+            while x < MAP_W {
+                idx = y * MAP_W + x;
+                if x == 0              { world[idx] = T_STONE; }
+                else if x == MAP_W - 1 { world[idx] = T_STONE; }
+                else if y == 0         { world[idx] = T_STONE; }
+                else if y == MAP_H - 1 { world[idx] = T_STONE; }
+                else                   { world[idx] = T_DIRT; }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        y = 1;
+        while y <= 3 { x = 1; while x < MAP_W - 1 { world[y * MAP_W + x] = T_AIR; x = x + 1; } y = y + 1; }
+    }
+
+    int main() {
+        var int ix; var int jmp; var int pattr;
+
+        // Load the palette + every tile and sprite from the pak straight into PPU memory.
+        sys_ppu_dma(PAL_MASTER, PPU_PAL);
+        ppu_upload_font(&font8x8);
+        sys_ppu_dma(ANIM_DIRT_ID,       PPU_PAT + T_DIRT * 256);
+        sys_ppu_dma(ANIM_STONE_ID,      PPU_PAT + T_STONE * 256);
+        sys_ppu_dma(ANIM_MINER_ID,      PPU_PAT + PAT_IDLE * 256);
+        sys_ppu_dma(ANIM_MINER_WALK_ID, PPU_PAT + PAT_WALK * 256);
+        sys_ppu_dma(ANIM_MINER_JUMP_ID, PPU_PAT + PAT_JUMP * 256);
+        sys_ppu_dma(ANIM_MINER_MINE_ID, PPU_PAT + PAT_MINE * 256);
+
+        build_world();
+        plat_bind(&world, MAP_W, MAP_H, &tile_flags);
+        plat_spawn(5 * 16, 32);
+        anim_play(0, PAT_IDLE, 2, clip_period[ANIM_MINER_ID]);
+        sys_set_fps(60);
+
+        while (true) {
+            // --- input -> one physics step ---
+            ix = 0;
+            if button(BTN_LEFT)  { ix = 0 - 1; }
+            if button(BTN_RIGHT) { ix = 1; }
+            jmp = 0;
+            if button_pressed(BTN_A) { jmp = 1; }
+            plat_update(ix, jmp);
+
+            // --- pick the clip that matches his state (anim_play only restarts on a CHANGE) ---
+            if plat_grounded == 0 { anim_play(0, PAT_JUMP, 2, clip_period[ANIM_MINER_JUMP_ID]); }
+            else { if ix == 0 { anim_play(0, PAT_IDLE, 2, clip_period[ANIM_MINER_ID]); }
+                   else { anim_play(0, PAT_WALK, 3, clip_period[ANIM_MINER_WALK_ID]); } }
+
+            // --- draw at his live position, flipped to face his heading ---
+            cmd_reset();
+            ppu_backdrop(0x0000);
+            scene_stream(&world, MAP_W, MAP_H);
+            scene_clear();
+            pattr = 0;
+            if plat_facing == (0 - 1) { pattr = 1; }         // attr bit 0 = flip-x
+            scene_obj(anim_pat(0), plat_x, plat_y, pattr);
+            scene_draw();
+
+            buttons_update();
+            ppu_present();
+        }
+        return 0;
+    }
+}
