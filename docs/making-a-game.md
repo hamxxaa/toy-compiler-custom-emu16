@@ -32,6 +32,7 @@ Compile a chapter with `python main.py <your-file>.txt --save-rom deeper`.
 6. [The surface & the descent](#chapter-6--the-surface--the-descent) ✅
 7. [Torchlight](#chapter-7--torchlight) ✅
 8. [Ore & the shop](#chapter-8--ore--the-shop) ✅
+9. [Hazards & health](#chapter-9--hazards--health) ✅
 8. Ore & the shop *(next)*
 9. Hazards & health
 10. Sound & feel
@@ -784,8 +785,9 @@ ore, and `tile_flags` already told you it was.
 ### 8.4 A shop at the base
 
 Ore is worth nothing until you can sell it. Stand near your base on the surface (a column range — `plat_x`
-in tiles 3–7) and the game reads two buttons: **UP** sells everything you're carrying, **DOWN** buys a torch
-upgrade if you can afford it:
+in tiles 3–7) and the game reads two buttons: **X** sells everything you're carrying, **Y** buys a torch
+upgrade if you can afford it. (We use X/Y, not the d-pad, because UP/DOWN are already the dig-aim
+directions — reusing them would sell ore every time you tried to mine upward at the base.)
 
 ```c
     const ORE_PRICE  = 5;    // money per ore sold
@@ -794,12 +796,12 @@ upgrade if you can afford it:
 ```
 ```c
             if cur_map == 0 { if plat_x >= 3 * 16 { if plat_x <= 7 * 16 {
-                if button_pressed(BTN_UP)   { money = money + ore_count * ORE_PRICE; ore_count = 0; }
-                if button_pressed(BTN_DOWN) { if money >= TORCH_COST { money = money - TORCH_COST; torch_r2 = torch_r2 + TORCH_STEP; } }
+                if button_pressed(BTN_X) { money = money + ore_count * ORE_PRICE; ore_count = 0; }
+                if button_pressed(BTN_Y) { if money >= TORCH_COST { money = money - TORCH_COST; torch_r2 = torch_r2 + TORCH_STEP; } }
             } } }
 ```
 
-`button_pressed` (the edge, not the hold) means one tap sells or buys *once* — hold UP and you won't dump
+`button_pressed` (the edge, not the hold) means one tap sells or buys *once* — hold X and you won't dump
 your ore frame after frame.
 
 ### 8.5 A torch you can upgrade
@@ -834,3 +836,153 @@ you're standing in the shop.
 > chapter — slots in exactly the same way: one more flag bit.
 
 The mine has a purpose now: dig deeper, get richer, see farther. Next we make it *dangerous*.
+
+---
+
+## Chapter 9 — Hazards & health
+
+So far the only thing stopping you is stone. This chapter adds **teeth**: **lava** that burns you where you
+stand, **fall damage** when you drop too far, **HP** with a moment of invincibility after each hit, and a
+blackout that dumps you back at the surface when it runs out. Two of the three lean on hooks you built way
+back in Phase 0 — `plat_flag_at` and `plat_impact` — finally earning their keep. (The lava art is a
+placeholder.)
+
+### 9.1 A hazard flag bit
+
+You know the drill by now: a new property is a new bit. Add `hazard` on **bit 3** and declare a lava tile
+that is solid and hazardous but *not* diggable — you can't shovel lava away, you have to go around it:
+
+```
+flags solid=0 dig=2 ore=4 hazard=3
+...
+7 8 solid hazard   # lava -- solid, NOT diggable, hurts on contact
+```
+
+That makes `tile_flags[8] = 9` (solid + hazard). Name the tile and its bit in the game:
+
+```c
+    const T_LAVA   = 8;
+    const F_HAZARD = 8;     // tile_flags bit 3 = hurts on contact
+```
+
+There's one wrinkle. Tile ids *are* PPU pattern slots (the fused grid again), and lava now claims slot 8 —
+which is exactly where the miner's idle frames used to live. So the sprite clips shift up by one to make
+room:
+
+```c
+    // Ch2–8 used PAT_IDLE = 8; lava now owns slot 8, so everything above it slides up one.
+    const PAT_IDLE = 9;    const PAT_WALK = 11;   const PAT_JUMP = 14;   const PAT_MINE = 16;
+```
+
+and the boot DMA gains a line for lava, right after ore:
+
+```c
+        sys_ppu_dma(ANIM_LAVA_ID,  PPU_PAT + T_LAVA * 256);
+```
+
+### 9.2 Pool it into the deep dirt
+
+Ore scattered everywhere; lava should be rarer and *deep*. Same idea as `scatter_ore`, but starting far down
+and writing two tiles wide so it reads as a pool:
+
+```c
+    void scatter_lava() {
+        var int x; var int y; var int idx; var int h;
+        y = 22;                                       // nothing lethal near the surface
+        while y < MAP_H - 1 {
+            x = 2;
+            while x < MAP_W - 2 {
+                idx = y * MAP_W + x;
+                h = x * 11 + y * 5;   h = h % 41;     // rarer than ore
+                if world[idx] == T_DIRT { if h == 0 {
+                    world[idx] = T_LAVA;   world[idx + 1] = T_LAVA;
+                } }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+```
+
+### 9.3 HP, damage & i-frames
+
+Health is two globals — the hit points and an invincibility countdown:
+
+```c
+    const MAX_HP    = 3;
+    const INV_TIME  = 60;    // invincibility frames after a hit (also the blink window, and spawn grace)
+    const FALL_HURT = 950;   // landing speed (8.8) above which a fall hurts (a normal jump lands slower)
+    var int hp = 3;   var int inv = 0;
+```
+
+Each frame, if you're not already invincible, check the two damage sources — **lava under your feet**
+(`plat_flag_at`, the generic tile-property probe from Phase 0) and a **hard landing** (`plat_impact`, the
+speed you hit the ground at this frame). Either one costs a heart and starts the i-frame clock:
+
+```c
+            if inv > 0 { inv = inv - 1; }
+            else {
+                hurt = 0;
+                if plat_flag_at(plat_x + 8, plat_y + 16, F_HAZARD) != 0 { hurt = 1; }   // standing on lava
+                if plat_impact > FALL_HURT { hurt = 1; }                                // slammed down hard
+                if hurt == 1 { hp = hp - 1; inv = INV_TIME; }
+            }
+            if hp <= 0 { go_to_surface(); hp = MAX_HP; }   // black out -> wake up at the base
+```
+
+The i-frame gate is what makes lava survivable: you take **one** hit, then have `INV_TIME` frames to scramble
+off before it can bite again — three seconds of grace across three hearts. Fall damage keeps digging honest:
+a single-tile drop is nothing, but free-fall down a shaft you carved and you hit the dirt hard enough to
+hurt. (A normal jump lands *below* `FALL_HURT`, so hopping around never costs you.)
+
+### 9.4 Blink while invincible
+
+Invincibility should be *visible*. While `inv` is counting down, drop the miner sprite on alternating
+frames — don't queue him, and he flickers:
+
+```c
+            show = 1;
+            if inv > 0 { if inv & 4 != 0 { show = 0; } }        // hide him on a ~4-frame cadence
+            if show == 1 { scene_obj(anim_pat(0), plat_x, plat_y, pattr); }
+```
+
+`inv & 4` toggles every four frames, so the miner strobes for the whole i-frame window — the classic "I just
+got hit" blink, for free.
+
+### 9.5 Grace on descent, and a HUD that forgets
+
+Two small fixes fall out of adding damage. First, dropping into the mine is a ~3-tile fall — enough to trip
+`FALL_HURT` and dock you a heart just for going to work. So `go_to_mine` (and `go_to_surface`) hand out an
+`inv = INV_TIME` grace window on spawn, which covers the entry drop.
+
+Second, the text plane *persists* between frames. `DEPTH` is drawn underground and nothing overwrites it up
+top, so after a blackout you'd see a ghostly `DEPTH:` still stuck to the surface sky. Wipe the HUD rows at
+the start of each frame's HUD and the problem's gone (this also stops a shrinking counter from leaving a
+stray digit behind):
+
+```c
+            tile_clear(0, 0, 20, 2);             // wipe last frame's HUD before repainting
+            tile_text(0, 1, &s_ore, C_WHITE);    tile_number(4, 1, ore_count, C_WHITE);
+            // ... ORE / $ / HP, then DEPTH or the shop hint
+```
+
+> **▶ Run it**
+> ```
+> python main.py deeper.txt --save-rom deeper
+> ```
+> Dig down far enough and you'll find glowing pools — step on one and you flash, lose a heart, and had
+> better hop off. Carve a deep shaft and jump in: you hit the bottom hard and lose one too. Run out of
+> hearts and you wake up back at your base with your ore intact.
+>
+> ![Chapter 9 checkpoint](img/ch09.png)
+>
+> 📄 Full source: [`examples/tutorial/ch09.txt`](../examples/tutorial/ch09.txt)
+
+> **The Phase-0 hooks pay off.** `plat_flag_at` and `plat_impact` were built into `platform.lib` chapters
+> ago with no caller — this is the chapter that needed them, and they slotted in without a single library
+> edit. Same story as ore: a hazard is one flag bit plus a couple of `if`s. Health, i-frames, and death are
+> just a running total and a countdown. No new engine, no entity system — the byte-grid and two physics
+> readouts carried the whole thing.
+
+That's a full loop — descend, dig, get rich, get hurt, climb out. What's missing is *feel*: sound. Next we
+give the mine a voice.

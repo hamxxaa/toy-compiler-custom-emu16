@@ -14,6 +14,7 @@ grass       grass.png           grass.json            10
 base        base.png            base.json             10
 entrance    entrance.png        entrance.json         10
 ore         ore.png             ore.json              10
+lava        lava.png            lava.json             10
 miner       miner.png           miner.json            5
 miner_walk  miner_walking.png   miner_walking.json    5
 miner_jump  miner_jumping.png   miner_jumping.json    5

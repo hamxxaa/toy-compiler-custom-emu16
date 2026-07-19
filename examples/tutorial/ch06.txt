@@ -148,6 +148,7 @@ include "deeper_map.gen.txt";        // the mine: world[] / MAP_W / MAP_H / tile
             scene_draw();
 
             // depth HUD only underground
+            tile_clear(0, 0, 20, 1);   // wipe stale DEPTH once we surface
             if cur_map == 1 {
                 depth = ((plat_y + 15) >> 4) - SURFACE_ROW;
                 if depth < 0 { depth = 0; }
