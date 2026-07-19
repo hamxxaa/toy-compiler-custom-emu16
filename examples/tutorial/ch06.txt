@@ -1,0 +1,163 @@
+// examples/tutorial/ch06.txt
+// Deeper -- Chapter 6: the surface & the descent.
+//
+// The game now has TWO places: a grassy SURFACE with your base, and the mine below. A `cur_world`
+// pointer selects which map is live; stepping on a doorway tile warps between them. (Surface art here is
+// PLACEHOLDER -- swap it later.) The mine below is Chapter 5's authored map.
+include "../../lib/io.lib";
+include "../../lib/ppu.lib";
+include "../../lib/scene.lib";
+include "../../lib/anim.lib";
+include "../../lib/platform.lib";
+include "deeper_assets.gen.txt";
+include "deeper_map.gen.txt";        // the mine: world[] / MAP_W / MAP_H / tile_flags[] (shared, size 7)
+{
+    const T_AIR = 0;   const T_DIRT = 1;   const T_STONE = 2;   const T_DIRT_BG = 3;
+    const T_GRASS = 4; const T_BASE = 5;   const T_WARP = 6;
+
+    const PAT_IDLE = 8;    const PAT_WALK = 10;   const PAT_JUMP = 13;   const PAT_MINE = 15;
+
+    const F_DIG    = 4;
+    const DIG_TIME = 30;
+    const SURFACE_ROW = 5;
+    const C_WHITE  = 21;
+
+    // The surface map, built in code (placeholder): 30 wide x 20 tall.
+    const SURF_W = 30;   const SURF_H = 20;
+    var byte surf_world[600];
+
+    // The ACTIVE map: a pointer + its dimensions. plat_bind / scene_stream / the dig all read this, so
+    // switching maps is just re-pointing it. cur_map: 0 = surface, 1 = mine.
+    var int cur_world = 0;   var int cur_w = 0;   var int cur_h = 0;   var int cur_map = 0;
+    var int on_warp = 0;     // edge-detect so standing on a doorway warps once, not every frame
+
+    var int digging = 0;   var int dig_tx = 0;   var int dig_ty = 0;   var int dig_timer = 0;
+    var byte s_depth[7] = { 68, 69, 80, 84, 72, 58, 0 };   // "DEPTH:"
+
+    // Paint the surface: stone edges, open sky, a grass floor, a base building, and a mine doorway.
+    void build_surface() {
+        var int x; var int y; var int idx;
+        y = 0;
+        while y < SURF_H {
+            x = 0;
+            while x < SURF_W {
+                idx = y * SURF_W + x;
+                if x == 0              { surf_world[idx] = T_STONE; }
+                else if x == SURF_W - 1 { surf_world[idx] = T_STONE; }
+                else if y == SURF_H - 1 { surf_world[idx] = T_STONE; }
+                else if y < 14         { surf_world[idx] = T_AIR; }     // sky
+                else if y == 14        { surf_world[idx] = T_GRASS; }   // the ground you walk on
+                else                   { surf_world[idx] = T_STONE; }   // solid underground (no digging up here)
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        surf_world[13 * SURF_W + 4] = T_BASE;   surf_world[13 * SURF_W + 5] = T_BASE;   // your base (decor)
+        surf_world[13 * SURF_W + 6] = T_BASE;   surf_world[12 * SURF_W + 5] = T_BASE;
+        surf_world[14 * SURF_W + 18] = T_WARP;  // the mine doorway, set into the grass
+    }
+
+    void go_to_surface() {
+        cur_world = &surf_world;   cur_w = SURF_W;   cur_h = SURF_H;   cur_map = 0;
+        plat_bind(cur_world, cur_w, cur_h, &tile_flags);
+        plat_spawn(12 * 16, 12 * 16);   // above the grass -- gravity drops him onto it
+        on_warp = 1;
+    }
+    void go_to_mine() {
+        cur_world = &world;   cur_w = MAP_W;   cur_h = MAP_H;   cur_map = 1;
+        world[SURFACE_ROW * MAP_W + 12] = T_WARP;   // a return doorway where he lands
+        plat_bind(cur_world, cur_w, cur_h, &tile_flags);
+        plat_spawn(12 * 16, 1 * 16);
+        on_warp = 1;
+    }
+
+    int main() {
+        var int ix; var int jmp; var int pattr;
+        var int tx; var int ty; var int t; var int dig_now; var int depth;
+        var int gx; var int gy; var int gt;
+
+        sys_ppu_dma(PAL_MASTER, PPU_PAL);
+        ppu_upload_font(&font8x8);
+        sys_ppu_dma(ANIM_DIRT_ID,       PPU_PAT + T_DIRT * 256);
+        sys_ppu_dma(ANIM_STONE_ID,      PPU_PAT + T_STONE * 256);
+        sys_ppu_dma(ANIM_DIRT_BG_ID,    PPU_PAT + T_DIRT_BG * 256);
+        sys_ppu_dma(ANIM_GRASS_ID,      PPU_PAT + T_GRASS * 256);
+        sys_ppu_dma(ANIM_BASE_ID,       PPU_PAT + T_BASE * 256);
+        sys_ppu_dma(ANIM_ENTRANCE_ID,   PPU_PAT + T_WARP * 256);
+        sys_ppu_dma(ANIM_MINER_ID,      PPU_PAT + PAT_IDLE * 256);
+        sys_ppu_dma(ANIM_MINER_WALK_ID, PPU_PAT + PAT_WALK * 256);
+        sys_ppu_dma(ANIM_MINER_JUMP_ID, PPU_PAT + PAT_JUMP * 256);
+        sys_ppu_dma(ANIM_MINER_MINE_ID, PPU_PAT + PAT_MINE * 256);
+
+        build_surface();
+        go_to_surface();                 // start at home, up top
+        anim_play(0, PAT_IDLE, 2, clip_period[ANIM_MINER_ID]);
+        sys_set_fps(60);
+
+        while (true) {
+            ix = 0;
+            if button(BTN_LEFT)  { ix = 0 - 1; }
+            if button(BTN_RIGHT) { ix = 1; }
+            jmp = 0;
+            if button_pressed(BTN_A) { jmp = 1; }
+            plat_update(ix, jmp);
+
+            // --- warp: the tile he's standing on. A doorway sends him to the OTHER map (edge-detected) ---
+            gx = (plat_x + 8) >> 4;   gy = (plat_y + 16) >> 4;
+            gt = 0;
+            if gx >= 0 { if gx < cur_w { if gy >= 0 { if gy < cur_h {
+                gt = ppu_rdbyte(cur_world + gy * cur_w + gx);
+            } } } }
+            if gt == T_WARP {
+                if on_warp == 0 { if cur_map == 0 { go_to_mine(); } else { go_to_surface(); } }
+                on_warp = 1;
+            } else { if plat_grounded == 1 { on_warp = 0; } }   // only re-arm once he's actually standing
+
+            // --- aim + dig (now through the cur_world pointer, so it works on whichever map is live) ---
+            if button(BTN_DOWN) { tx = (plat_x + 8) >> 4; ty = ((plat_y + 15) >> 4) + 1; }
+            else { if button(BTN_UP) { tx = (plat_x + 8) >> 4; ty = ((plat_y + 1) >> 4) - 1; }
+                   else { if plat_facing == 1 { tx = (plat_x + 12) >> 4; } else { tx = (plat_x + 3) >> 4; }
+                          ty = (plat_y + 8) >> 4; } }
+            dig_now = 0;
+            if tx >= 0 { if tx < cur_w { if ty >= 0 { if ty < cur_h {
+                t = ppu_rdbyte(cur_world + ty * cur_w + tx);
+                if (tile_flags[t] & F_DIG) != 0 { if button(BTN_B) { dig_now = 1; } }
+            } } } }
+            if dig_now == 1 {
+                if dig_tx != tx { digging = 0; }
+                if dig_ty != ty { digging = 0; }
+                if digging == 0 { digging = 1; dig_tx = tx; dig_ty = ty; dig_timer = DIG_TIME; }
+                dig_timer = dig_timer - 1;
+                if dig_timer <= 0 { poke_byte(cur_world + dig_ty * cur_w + dig_tx, T_DIRT_BG); digging = 0; }
+            } else { digging = 0; }
+
+            if digging == 1 { anim_play(0, PAT_MINE, 5, clip_period[ANIM_MINER_MINE_ID]); }
+            else { if plat_grounded == 0 { anim_play(0, PAT_JUMP, 2, clip_period[ANIM_MINER_JUMP_ID]); }
+                   else { if ix == 0 { anim_play(0, PAT_IDLE, 2, clip_period[ANIM_MINER_ID]); }
+                          else { anim_play(0, PAT_WALK, 3, clip_period[ANIM_MINER_WALK_ID]); } } }
+
+            scene_follow(plat_x, plat_y, cur_w, cur_h);
+
+            cmd_reset();
+            ppu_backdrop(0x0000);
+            scene_stream(cur_world, cur_w, cur_h);
+            scene_clear();
+            pattr = 0;
+            if plat_facing == (0 - 1) { pattr = 1; }
+            scene_obj(anim_pat(0), plat_x, plat_y, pattr);
+            scene_draw();
+
+            // depth HUD only underground
+            if cur_map == 1 {
+                depth = ((plat_y + 15) >> 4) - SURFACE_ROW;
+                if depth < 0 { depth = 0; }
+                tile_text(0, 0, &s_depth, C_WHITE);
+                tile_number(7, 0, depth, C_WHITE);
+            }
+
+            buttons_update();
+            ppu_present();
+        }
+        return 0;
+    }
+}

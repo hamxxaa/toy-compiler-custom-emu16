@@ -29,9 +29,10 @@ Compile a chapter with `python main.py <your-file>.txt --save-rom deeper`.
 3. [Gravity, walk & jump](#chapter-3--gravity-walk--jump) ✅
 4. [Dig!](#chapter-4--dig) ✅
 5. [Down the mine](#chapter-5--down-the-mine) ✅
-6. The surface & the descent *(next)*
-7. Torchlight
-8. Ore & the shop
+6. [The surface & the descent](#chapter-6--the-surface--the-descent) ✅
+7. [Torchlight](#chapter-7--torchlight) ✅
+8. [Ore & the shop](#chapter-8--ore--the-shop) ✅
+8. Ore & the shop *(next)*
 9. Hazards & health
 10. Sound & feel
 11. Save your mine
@@ -551,3 +552,285 @@ The text plane draws on top of the tiles and sprites, so a HUD costs just a coup
 
 The spine is complete — a digger tunnelling a real, deep, authored mine, camera and all. From here we
 make it a *game*: a surface to return to, torchlight, ore, danger, sound, and saved progress.
+
+---
+
+## Chapter 6 — The surface & the descent
+
+A mine needs somewhere to come *up* to. This chapter adds a second place — a grassy **surface** with your
+base — and lets you **warp** between it and the mine through a doorway. (The surface art here is
+placeholder; the machinery is what matters — swap in real tiles later.)
+
+### 6.1 One active map, by pointer
+
+Until now the game hard-referenced a single `world`. With two maps we keep a **pointer** to whichever is
+live, and everything reads *that*:
+
+```c
+    var int cur_world = 0;   var int cur_w = 0;   var int cur_h = 0;   var int cur_map = 0;
+```
+
+Switching maps is just re-pointing it — the physics, the renderer, and the dig all follow along:
+
+```c
+    void go_to_surface() {
+        cur_world = &surf_world;   cur_w = SURF_W;   cur_h = SURF_H;   cur_map = 0;
+        plat_bind(cur_world, cur_w, cur_h, &tile_flags);
+        plat_spawn(12 * 16, 12 * 16);   on_warp = 1;
+    }
+    void go_to_mine() {
+        cur_world = &world;   cur_w = MAP_W;   cur_h = MAP_H;   cur_map = 1;
+        plat_bind(cur_world, cur_w, cur_h, &tile_flags);
+        plat_spawn(12 * 16, 1 * 16);   on_warp = 1;
+    }
+```
+
+Both maps share one `tile_flags` table (we sized it for every tile id back in the legend), so nothing
+else needs to know which map it's on.
+
+### 6.2 The surface (placeholder)
+
+The surface is small enough to build in code — stone edges, open sky, a grass floor, a base building, and
+one doorway tile set into the grass:
+
+```c
+    const SURF_W = 30;   const SURF_H = 20;
+    var byte surf_world[600];
+    // build_surface(): sky above row 14, grass on row 14, stone below; a few T_BASE tiles; one T_WARP.
+```
+
+### 6.3 Warping through the doorway
+
+Each frame, look at the tile he's **standing on**. A doorway (`T_WARP`) sends him to the *other* map,
+edge-detected with `on_warp` so he warps once — not every frame he stands on it:
+
+```c
+            gx = (plat_x + 8) >> 4;   gy = (plat_y + 16) >> 4;   // the tile under his feet
+            gt = ppu_rdbyte(cur_world + gy * cur_w + gx);        // (bounds-checked in the full source)
+            if gt == T_WARP {
+                if on_warp == 0 { if cur_map == 0 { go_to_mine(); } else { go_to_surface(); } }
+                on_warp = 1;
+            } else { if plat_grounded == 1 { on_warp = 0; } }    // only re-arm once he's standing
+```
+
+That `plat_grounded` guard is the subtle part. `go_to_mine` drops a **return doorway right where he
+lands**, so after warping down he *falls onto* it. If we cleared `on_warp` in mid-air — while he's off
+the doorway during the fall — the moment his feet hit it would count as a fresh step-on and bounce him
+straight back up. Clearing it only when he's **grounded** means the fall never re-arms the door: he lands,
+stands on it, and warps back only once he steps off and returns.
+
+### 6.4 One dig, two maps
+
+The dig from Chapters 4–5 barely changes — it just reads and writes through the pointer now, so it works
+on whichever map is live (and the surface's grass/stone simply aren't diggable):
+
+```c
+            t = ppu_rdbyte(cur_world + ty * cur_w + tx);              // was world[ty*MAP_W + tx]
+            // ...
+            poke_byte(cur_world + dig_ty * cur_w + dig_tx, T_DIRT_BG);
+```
+
+> **▶ Run it**
+> ```
+> python main.py deeper.txt --save-rom deeper
+> ```
+> You start on the grass by your base. Walk right onto the **doorway** and you drop into the mine (the
+> **DEPTH** HUD appears); find the doorway down there to head back up.
+>
+> ![Chapter 6 checkpoint](img/ch06.png)
+>
+> 📄 Full source: [`examples/tutorial/ch06.txt`](../examples/tutorial/ch06.txt)
+
+> **This is the "swap the active world" way** — dead simple, and right for a couple of hand-made maps.
+> For *many* maps, or maps too big to keep resident at once, EMU16's `map.lib` streams pak-loaded maps
+> that carry their own warps and spawns (`map_set.py` builds them) — the scale-up, covered in the appendix.
+
+Two places, one doorway between them. Next we head back underground and turn the lights off — torchlight.
+
+---
+
+## Chapter 7 — Torchlight
+
+Down in the mine it should be *dark* — just a pool of light around the miner's lamp. So far `scene_stream`
+has faithfully drawn every visible tile; now we write our own push that decides, per tile, whether it's
+close enough to be lit.
+
+### 7.1 Your own tile push
+
+`scene_stream` is short — it walks the on-screen window and pushes each tile. We copy that loop into a
+`light_stream` and add one decision per cell: draw the real tile if it's within the torch radius of the
+miner, otherwise draw tile 0 (black).
+
+```c
+    const LIT_R2 = 8;    // torch radius, squared (~2.8 tiles)
+```
+```c
+    void light_stream(int wrld, int mw, int mh, int ptx, int pty) {
+        // ... the same window loop as scene_stream, but per cell:
+                        dx = tx - ptx;   if dx < 0 { dx = 0 - dx; }
+                        dy = ty - pty;   if dy < 0 { dy = 0 - dy; }
+                        tile = 0;                                   // dark beyond the light
+                        if dx * dx + dy * dy <= LIT_R2 { tile = ppu_rdbyte(wrld + ty * mw + tx); }
+                        cu8(3); cu8(tx & 31); cu8(ty & 31); cu8(1); cu8(1);   cu8(tile);
+        // ...
+    }
+```
+
+`dx*dx + dy*dy <= LIT_R2` is a circle, so the lit area is a round bubble centred on the miner. (`cu8` and
+`scene_cam_x/y` are the same PPU/camera pieces `scene_stream` uses — we're just rebuilding it with a rule.)
+
+### 7.2 Dark below, daylight above
+
+Torchlight only makes sense underground — the surface is broad daylight. So pick the push by which map
+you're on:
+
+```c
+            if cur_map == 1 { light_stream(cur_world, cur_w, cur_h, (plat_x + 8) >> 4, (plat_y + 8) >> 4); }
+            else            { scene_stream(cur_world, cur_w, cur_h); }
+```
+
+The miner is a *sprite*, drawn on top of the tiles, so he's always visible in his own pool of light.
+
+> **▶ Run it**
+> ```
+> python main.py deeper.txt --save-rom deeper
+> ```
+> Warp into the mine and it falls to darkness — a round bubble of tiles around you, black beyond. Dig
+> around and the light moves with you. The surface stays bright.
+>
+> ![Chapter 7 checkpoint](img/ch07.png)
+>
+> 📄 Full source: [`examples/tutorial/ch07.txt`](../examples/tutorial/ch07.txt)
+
+> **Why tile-granular?** The PPU has no per-pixel shading, so light is decided a whole tile at a time —
+> which is exactly the blocky, lantern-lit look old mining games have. A softer edge is easy to add: in a
+> one-tile ring just outside the bright radius, draw a *dim* variant of each tile (bake a darker tileset),
+> for a lit → dim → black gradient. Two bands here; three is a small step up.
+
+The mine has atmosphere now. Next it gets a *point*: ore to find, and somewhere to sell it.
+
+---
+
+## Chapter 8 — Ore & the shop
+
+Digging is satisfying, but so far it leads nowhere. This chapter gives it a *point*: **ore** buried in the
+dirt, an **inventory** that fills as you dig it out, and a **shop** at your base that turns ore into money —
+and money into a wider torch. Every piece rides on the fused byte-grid you already have: ore is "just
+another tile" with one extra flag bit. (The ore art is a placeholder — swap it later.)
+
+### 8.1 Give a tile the "ore" property
+
+Back in the legend, `tile_flags` already carries `solid` (bit 0) and `dig` (bit 2). Add one more meaning —
+`ore` on **bit 4** — and declare an ore tile that has all three:
+
+```
+flags solid=0 dig=2 ore=4
+...
+6 7 solid dig ore   # ore -- solid, diggable, AND drops ore when broken
+```
+
+Nothing in the *tool* knows what "ore" means; it just ORs bit 4 into that tile's flag byte
+(`tile_flags[7] = 21`). The **code** decides what the bit does — the same meaning-agnostic split you set up
+in Phase 0. In the game, name the bit:
+
+```c
+    const T_ORE = 7;
+    const F_ORE = 16;     // tile_flags bit 4 = gives ore
+```
+
+### 8.2 Scatter ore through the dirt
+
+The map PNG is all plain dirt below the surface, so we sprinkle ore into it at load time with a fixed hash —
+the same tiles are ore every run (no RNG, and the world stays reproducible):
+
+```c
+    void scatter_ore() {
+        var int x; var int y; var int idx; var int h;
+        y = 6;
+        while y < MAP_H - 1 {
+            x = 1;
+            while x < MAP_W - 1 {
+                idx = y * MAP_W + x;
+                h = x * 7 + y * 13;   h = h % 23;              // a fixed scatter pattern
+                if world[idx] == T_DIRT { if h == 0 { world[idx] = T_ORE; } }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+```
+
+Only dirt becomes ore (stone and the dirt-background band are left alone), so roughly one dirt tile in
+twenty-three turns to a vein. Call it once at boot, right after you build the surface.
+
+### 8.3 Collect it when you dig
+
+The dig loop from Chapter 4 already breaks a tile after `DIG_TIME`. Capture *which* tile you started
+breaking (`dig_tile`), and the moment it breaks, check its ore bit before you clear it:
+
+```c
+                if digging == 0 { digging = 1; dig_tx = tx; dig_ty = ty; dig_timer = DIG_TIME; dig_tile = t; }
+                // ...
+                if dig_timer <= 0 {
+                    if (tile_flags[dig_tile] & F_ORE) != 0 { ore_count = ore_count + 1; }   // it was ore!
+                    poke_byte(cur_world + dig_ty * cur_w + dig_tx, T_DIRT_BG);
+                    digging = 0;
+                }
+```
+
+That's the whole collection mechanic: no pickup entity, no extra collision pass. The tile you break *is* the
+ore, and `tile_flags` already told you it was.
+
+### 8.4 A shop at the base
+
+Ore is worth nothing until you can sell it. Stand near your base on the surface (a column range — `plat_x`
+in tiles 3–7) and the game reads two buttons: **UP** sells everything you're carrying, **DOWN** buys a torch
+upgrade if you can afford it:
+
+```c
+    const ORE_PRICE  = 5;    // money per ore sold
+    const TORCH_COST = 15;   // money to widen the torch
+    const TORCH_STEP = 6;    // how much torch radius^2 grows per purchase
+```
+```c
+            if cur_map == 0 { if plat_x >= 3 * 16 { if plat_x <= 7 * 16 {
+                if button_pressed(BTN_UP)   { money = money + ore_count * ORE_PRICE; ore_count = 0; }
+                if button_pressed(BTN_DOWN) { if money >= TORCH_COST { money = money - TORCH_COST; torch_r2 = torch_r2 + TORCH_STEP; } }
+            } } }
+```
+
+`button_pressed` (the edge, not the hold) means one tap sells or buys *once* — hold UP and you won't dump
+your ore frame after frame.
+
+### 8.5 A torch you can upgrade
+
+Chapter 7's torch radius was a `const`. To let the shop widen it, make it a **variable** — the only change
+to `light_stream`:
+
+```c
+    var int torch_r2 = 8;    // was const LIT_R2 -- now upgradeable
+    // ... inside light_stream:
+                        if dx * dx + dy * dy <= torch_r2 { tile = ppu_rdbyte(wrld + ty * mw + tx); }
+```
+
+Buy a torch and `torch_r2` grows by `TORCH_STEP`, so the lit bubble widens as your pockets deepen. The HUD
+carries the loop: **ORE** and **$** always on screen, **DEPTH** underground, and a `U=SELL D=BUY` hint while
+you're standing in the shop.
+
+> **▶ Run it**
+> ```
+> python main.py deeper.txt --save-rom deeper
+> ```
+> Drop into the mine and dig — gold tiles glint in the torchlight, and **ORE** ticks up as you break them.
+> Head back to the base, tap **UP** to cash out and **DOWN** to buy a wider torch, then dive again.
+>
+> ![Chapter 8 checkpoint](img/ch08.png)
+>
+> 📄 Full source: [`examples/tutorial/ch08.txt`](../examples/tutorial/ch08.txt)
+
+> **One bit, a whole mechanic.** Ore cost you a legend line, a scatter pass, and one `if` in the dig — no
+> new array, no entity list, no collision code. That's the fused byte-grid paying off again: the tile *is*
+> the world, the picture, and now the loot, all from one byte. The next property — hazards, in the next
+> chapter — slots in exactly the same way: one more flag bit.
+
+The mine has a purpose now: dig deeper, get richer, see farther. Next we make it *dangerous*.

@@ -10,6 +10,10 @@ master      ../../palettes/deeper_palette.gpl  -         -
 dirt        dirt.png            dirt.json             10
 stone       stone.png           stone.json            10
 dirt_bg     dirt_background.png dirt_background.json  10
+grass       grass.png           grass.json            10
+base        base.png            base.json             10
+entrance    entrance.png        entrance.json         10
+ore         ore.png             ore.json              10
 miner       miner.png           miner.json            5
 miner_walk  miner_walking.png   miner_walking.json    5
 miner_jump  miner_jumping.png   miner_jumping.json    5

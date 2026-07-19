@@ -1,7 +1,13 @@
 # Deeper map legend (tools/pixel_map.py). Each PNG palette index -> a tile id (PPU pattern slot) + its
 # property flags. The tile ids match the slots the game DMAs art to: 1 = dirt, 2 = stone, 3 = dirt bg.
 # Flag bits are the code's meaning: bit 0 = solid (physics/dig tests it), bit 2 = diggable (F_DIG).
-flags solid=0 dig=2
+flags solid=0 dig=2 ore=4
 0 1 solid dig     # dirt  -- solid, diggable
 1 2 solid         # stone -- solid border, not diggable
 2 3               # dirt background -- visible but NOT solid (walk / fall through)
+# The mine PNG only uses indices 0..2. The rest just size tile_flags so the shared table covers the
+# SURFACE tiles (Ch6: 4 grass, 5 base, 6 warp) and ORE (Ch8: 7 = solid + diggable + ore).
+3 4 solid         # grass
+4 5 solid         # base
+5 6 solid         # warp (doorway)
+6 7 solid dig ore # ore
