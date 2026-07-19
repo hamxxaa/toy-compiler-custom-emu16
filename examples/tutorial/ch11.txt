@@ -1,28 +1,31 @@
-// examples/tutorial/ch09.txt
-// Deeper -- Chapter 9: hazards & health.
+// examples/tutorial/ch11.txt
+// Deeper -- Chapter 11: save & load.
 //
-// The mine bites back. LAVA pools (painted into the map) burn you while you stand on them, and a long fall
-// hurts when you slam down. You get HP, a moment of invincibility after a hit, a white damage FLASH (a live
-// palette edit), and if HP runs out you black out and wake up back at the surface.
+// The world remembers. Climb out of the mine and your tunnels, ore, money, health, and torch are written to
+// a save slot -- RLE-compressed, because a 100x100 grid of mostly-identical tiles squashes tiny. Boot again
+// and it all loads back: the mine is exactly as you left it.
 include "../../lib/io.lib";
 include "../../lib/ppu.lib";
 include "../../lib/scene.lib";
 include "../../lib/anim.lib";
 include "../../lib/platform.lib";
+include "../../lib/apu.lib";
+include "../../lib/music.lib";
 include "deeper_assets.gen.txt";
-include "deeper_map.gen.txt";
-include "deeper_surface.gen.txt";
+include "deeper_map.gen.txt";        // the mine: world[] / MAP_W / MAP_H / tile_flags[] (ore + lava baked in)
+include "deeper_surface.gen.txt";    // the surface: SURF_world[] / SURF_MAP_W / SURF_MAP_H
 {
     const T_AIR = 0;   const T_DIRT = 1;   const T_STONE = 2;   const T_DIRT_BG = 3;
     const T_GRASS = 4; const T_BASE = 5;   const T_LADDER = 6;  const T_ORE = 7;   const T_LAVA = 8;
 
+    // Lava owns tile slot 8, so the miner's sprite clips live at slots 9 and up.
     const PAT_IDLE = 9;    const PAT_WALK = 11;   const PAT_JUMP = 14;   const PAT_MINE = 16;
 
     const F_DIG    = 4;      // tile_flags bit 2 = diggable
     const F_ORE    = 16;     // tile_flags bit 4 = gives ore
     const F_HAZARD = 8;      // tile_flags bit 3 = hurts on contact
     const DIG_TIME = 30;
-    const SURFACE_ROW = 5;
+    const SURFACE_ROW = 5;   // first dirt row in the mine -- DEPTH counts down from here
     const C_WHITE  = 21;
 
     const ORE_PRICE  = 5;
@@ -49,6 +52,28 @@ include "deeper_surface.gen.txt";
     var byte s_hp[4]    = { 72, 80, 58, 0 };                                          // "HP:"
     var byte s_shop[13] = { 88, 61, 83, 69, 76, 76, 32, 89, 61, 66, 85, 89, 0 };      // "X=SELL Y=BUY"
 
+    // --- audio: the song is pak asset NUM_CLIPS (appended right after the sprite/palette assets) ---
+    const SONG_ID = NUM_CLIPS;
+    var byte song_buf[2048];
+
+    const INST_SFX_DIG  = 8;    // a short noise thunk when a tile breaks
+    const INST_SFX_ORE  = 9;    // a bright chime when ore drops
+    const INST_SFX_HURT = 10;   // a harsh descending buzz on damage
+    var byte sfx_dig_vol[3]   = { 12, 6, 0 };
+    var byte sfx_ore_vol[5]   = { 13, 10, 6, 3, 0 };
+    var byte sfx_ore_duty[1]  = { 2 };
+    var byte sfx_hurt_vol[5]  = { 14, 10, 6, 3, 0 };
+    var byte sfx_hurt_duty[1] = { 1 };
+    var byte sfx_hurt_arp[4]  = { 0, 253, 249, 244 };   // 0, -3, -7, -12 (signed: 256 - n) -> a downward slide
+
+    // --- save/load: RLE the mine grid + the scalars into slot 0 ---
+    const SAVE_MAX = 12288;                     // buffer capacity -- RLE keeps a real save far smaller
+    const SAVE_SLOT = 0;
+    var byte save_buf[SAVE_MAX];
+    var byte s_saved[6] = { 83, 65, 86, 69, 68, 0 };   // "SAVED"
+    var int saved_msg = 0;
+
+    // Light-aware push (Chapter 7), using the upgradeable torch_r2 (Chapter 8).
     void light_stream(int wrld, int mw, int mh, int ptx, int pty) {
         var int tox; var int toy; var int r; var int c; var int tx; var int ty;
         var int dx; var int dy; var int tile;
@@ -75,6 +100,57 @@ include "deeper_surface.gen.txt";
         }
     }
 
+    // How many tiles from `start` share world[start]'s value (capped at 255 -- one RLE run).
+    int rle_run_len(int start, int total, int v) {
+        var int run;
+        run = 1;
+        while start + run < total {
+            if world[start + run] != v { return run; }
+            if run >= 255 { return run; }
+            run = run + 1;
+        }
+        return run;
+    }
+
+    // Pack {ore, money, hp, torch} + the RLE'd mine into save_buf and write it to the slot.
+    int save_game() {
+        var int off; var int i; var int run; var int total;
+        total = MAP_W * MAP_H;
+        save_buf[0] = ore_count & 255;    save_buf[1] = ore_count >> 8;    // 16-bit counters, lo then hi
+        save_buf[2] = money & 255;        save_buf[3] = money >> 8;
+        save_buf[4] = hp;
+        save_buf[5] = torch_r2 & 255;     save_buf[6] = torch_r2 >> 8;
+        off = 7;
+        i = 0;
+        while i < total {
+            if off > SAVE_MAX - 2 { return 0; }              // never overflow the buffer -> abort, keep old save
+            run = rle_run_len(i, total, world[i]);
+            save_buf[off] = run;         off = off + 1;      // (count, tile) pair
+            save_buf[off] = world[i];    off = off + 1;
+            i = i + run;
+        }
+        return sys_save(&save_buf, off, SAVE_SLOT);          // write exactly the bytes we filled
+    }
+
+    // Reverse of save_game: restore the scalars and expand the RLE back into world[].
+    void load_game() {
+        var int off; var int i; var int run; var int v; var int k; var int n;
+        n = sys_load(&save_buf, SAVE_MAX, SAVE_SLOT);        // bytes read (0 = no save in this slot)
+        if n == 0 { return; }
+        ore_count = save_buf[0] + save_buf[1] * 256;
+        money     = save_buf[2] + save_buf[3] * 256;
+        hp        = save_buf[4];
+        torch_r2  = save_buf[5] + save_buf[6] * 256;
+        off = 7;
+        i = 0;
+        while off < n {
+            run = save_buf[off];   off = off + 1;
+            v   = save_buf[off];   off = off + 1;
+            k = 0;
+            while k < run { world[i] = v; i = i + 1; k = k + 1; }
+        }
+    }
+
     void go_to_surface() {
         cur_world = &SURF_world;   cur_w = SURF_MAP_W;   cur_h = SURF_MAP_H;   cur_map = 0;
         plat_bind(cur_world, cur_w, cur_h, &tile_flags);
@@ -83,7 +159,7 @@ include "deeper_surface.gen.txt";
     void go_to_mine() {
         cur_world = &world;   cur_w = MAP_W;   cur_h = MAP_H;   cur_map = 1;
         plat_bind(cur_world, cur_w, cur_h, &tile_flags);
-        plat_spawn(29 * 16, 1 * 16);   on_ladder = 1;   inv = INV_TIME;   ground_y = plat_y;    // arrive at the mine ladder
+        plat_spawn(29 * 16, 1 * 16);   on_ladder = 1;   inv = INV_TIME;   ground_y = plat_y;    // arrive at the mine ladder (col 29)
     }
 
     int main() {
@@ -107,8 +183,21 @@ include "deeper_surface.gen.txt";
         sys_ppu_dma(ANIM_MINER_JUMP_ID, PPU_PAT + PAT_JUMP * 256);
         sys_ppu_dma(ANIM_MINER_MINE_ID, PPU_PAT + PAT_MINE * 256);
 
+        // --- audio: register the three SFX instruments, then load + start the song ---
+        apu_inst_vol(INST_SFX_DIG,  255, &sfx_dig_vol,   3);
+        apu_inst_noise(INST_SFX_DIG, 0);
+        apu_inst_vol(INST_SFX_ORE,  255, &sfx_ore_vol,   5);
+        apu_inst_duty(INST_SFX_ORE, 255, &sfx_ore_duty,  1);
+        apu_inst_vol(INST_SFX_HURT, 255, &sfx_hurt_vol,  5);
+        apu_inst_duty(INST_SFX_HURT,255, &sfx_hurt_duty, 1);
+        apu_inst_arp(INST_SFX_HURT, 255, &sfx_hurt_arp,  4);
+        apu_master_vol(60);
+        apu_submit();
+        music_load_song(SONG_ID, &song_buf, 2048);   // loads the song, uploads its instruments, starts it
+
+        if sys_save_exists(SAVE_SLOT) != 0 { load_game(); }   // resume: tunnels + ore + money + hp + torch
+        else { hp = MAX_HP; }                                 // first run: the mine is the authored map as-is
         go_to_surface();
-        hp = MAX_HP;
         anim_play(0, PAT_IDLE, 2, clip_period[ANIM_MINER_ID]);
         sys_set_fps(60);
 
@@ -121,18 +210,18 @@ include "deeper_surface.gen.txt";
             plat_update(ix, jmp);
 
             // --- ladder: drop into it on the surface to descend; press UP at it in the mine to climb out ---
-            gx = (plat_x + 8) >> 4;   gy = (plat_y + 16) >> 4;
-            by = (plat_y + 4) >> 4;
+            gx = (plat_x + 8) >> 4;   gy = (plat_y + 16) >> 4;   // tile under his feet
+            by = (plat_y + 4) >> 4;                              // tile his upper body is in
             gt = 0;   bt = 0;
             if gx >= 0 { if gx < cur_w {
                 if gy >= 0 { if gy < cur_h { gt = ppu_rdbyte(cur_world + gy * cur_w + gx); } }
                 if by >= 0 { if by < cur_h { bt = ppu_rdbyte(cur_world + by * cur_w + gx); } }
             } }
             if cur_map == 0 {
-                if gt == T_LADDER { if on_ladder == 0 { go_to_mine(); } on_ladder = 1; }
+                if gt == T_LADDER { if on_ladder == 0 { go_to_mine(); } on_ladder = 1; }   // fell into the hole
                 else { if plat_grounded == 1 { on_ladder = 0; } }
             } else {
-                if bt == T_LADDER { if button(BTN_UP) { go_to_surface(); } }
+                if bt == T_LADDER { if button(BTN_UP) { go_to_surface();   save_game();   saved_msg = 40; } }
             }
 
             // --- fall distance: how far below the last spot he stood did he land this frame? ---
@@ -147,9 +236,9 @@ include "deeper_surface.gen.txt";
                 hurt = 0;
                 if plat_flag_at(plat_x + 8, plat_y + 16, F_HAZARD) != 0 { hurt = 1; }   // standing on lava
                 if fall_depth > FALL_MIN { hurt = 1; }                                  // dropped a long way
-                if hurt == 1 { hp = hp - 1; inv = INV_TIME; flash_timer = FLASH_T; }
+                if hurt == 1 { hp = hp - 1; inv = INV_TIME; flash_timer = FLASH_T; sfx_play(1, N_A4, INST_SFX_HURT, 12, 3); }
             }
-            if hp <= 0 { go_to_surface(); hp = MAX_HP; }   // black out -> wake up at the base
+            if hp <= 0 { go_to_surface(); hp = MAX_HP; save_game(); saved_msg = 40; }   // waking up banks it too
 
             // --- shop: on the surface, by the base (cols 3..7) -- sell ore / buy torch ---
             if cur_map == 0 { if plat_x >= 3 * 16 { if plat_x <= 7 * 16 {
@@ -173,8 +262,12 @@ include "deeper_surface.gen.txt";
                 if digging == 0 { digging = 1; dig_tx = tx; dig_ty = ty; dig_timer = DIG_TIME; dig_tile = t; }
                 dig_timer = dig_timer - 1;
                 if dig_timer <= 0 {
-                    if (tile_flags[dig_tile] & F_ORE) != 0 { ore_count = ore_count + 1; }
+                    if (tile_flags[dig_tile] & F_ORE) != 0 {
+                        ore_count = ore_count + 1;
+                        sfx_play(1, N_C6, INST_SFX_ORE, 10, 2);   // ore chime on a pulse channel
+                    }
                     poke_byte(cur_world + dig_ty * cur_w + dig_tx, T_DIRT_BG);
+                    sfx_play(3, N_C3, INST_SFX_DIG, 5, 1);         // dig thunk on the noise channel
                     digging = 0;
                 }
             } else { digging = 0; }
@@ -205,7 +298,7 @@ include "deeper_surface.gen.txt";
             } else { if flash_restore == 1 { sys_ppu_dma(PAL_MASTER, PPU_PAL); flash_restore = 0; } }
 
             // --- HUD: ore + money + HP always; DEPTH underground; shop hint at the base ---
-            tile_clear(0, 0, 20, 2);
+            tile_clear(0, 0, 20, 2);             // wipe last frame's HUD so stale DEPTH/shop text can't linger
             tile_text(0, 1, &s_ore, C_WHITE);    tile_number(4, 1, ore_count, C_WHITE);
             tile_text(9, 1, &s_cash, C_WHITE);   tile_number(11, 1, money, C_WHITE);
             tile_text(15, 1, &s_hp, C_WHITE);    tile_number(18, 1, hp, C_WHITE);
@@ -214,7 +307,9 @@ include "deeper_surface.gen.txt";
                 if depth < 0 { depth = 0; }
                 tile_text(0, 0, &s_depth, C_WHITE);   tile_number(7, 0, depth, C_WHITE);
             } else { if plat_x >= 3 * 16 { if plat_x <= 7 * 16 { tile_text(0, 0, &s_shop, C_WHITE); } } }
+            if saved_msg > 0 { tile_text(7, 0, &s_saved, C_WHITE); saved_msg = saved_msg - 1; }
 
+            music_frame();      // advance the sequencer + service any live SFX (after all sfx_play calls)
             buttons_update();
             ppu_present();
         }

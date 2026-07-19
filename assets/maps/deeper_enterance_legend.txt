@@ -1,0 +1,9 @@
+# Deeper SURFACE legend (tools/pixel_map.py) for deeper_enterance_map.png. Same tile ids as the mine
+# legend so one shared tile_flags table covers both maps. The game uses the mine's tile_flags, so this
+# map only needs its world[] grid (generated with --name SURF).
+flags solid=0 dig=2 ore=4 hazard=3
+0 0                 # air    -- open sky, NOT solid
+1 4 solid           # grass  -- the ground you walk on
+2 2 solid           # stone  -- border / underground
+3 6                 # ladder -- NON-solid; a hole in the surface you drop into to descend
+5 5 solid           # base   -- your shop building (decor + solid)

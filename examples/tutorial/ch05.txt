@@ -14,8 +14,10 @@ include "deeper_assets.gen.txt";     // PAL_MASTER / ANIM_*_ID -- the pak
 include "deeper_map.gen.txt";        // MAP_W / MAP_H / world[] / tile_flags[] -- the painted 100x100 map
 {
     const T_AIR = 0;   const T_DIRT = 1;   const T_STONE = 2;   const T_DIRT_BG = 3;
+    const T_LADDER = 6;   const T_ORE = 7;   const T_LAVA = 8;   // painted into the map; scenery for now
 
-    const PAT_IDLE = 8;    const PAT_WALK = 10;   const PAT_JUMP = 13;   const PAT_MINE = 15;
+    // Lava owns tile slot 8, so the miner's sprite clips start at slot 9.
+    const PAT_IDLE = 9;    const PAT_WALK = 11;   const PAT_JUMP = 14;   const PAT_MINE = 16;
 
     const F_DIG    = 4;
     const DIG_TIME = 30;
@@ -34,6 +36,9 @@ include "deeper_map.gen.txt";        // MAP_W / MAP_H / world[] / tile_flags[] -
         sys_ppu_dma(ANIM_DIRT_ID,       PPU_PAT + T_DIRT * 256);
         sys_ppu_dma(ANIM_STONE_ID,      PPU_PAT + T_STONE * 256);
         sys_ppu_dma(ANIM_DIRT_BG_ID,    PPU_PAT + T_DIRT_BG * 256);
+        sys_ppu_dma(ANIM_LADDER_ID,     PPU_PAT + T_LADDER * 256);   // the map paints a ladder, ore veins,
+        sys_ppu_dma(ANIM_ORE_ID,        PPU_PAT + T_ORE * 256);      // and lava pools -- visible scenery here,
+        sys_ppu_dma(ANIM_LAVA_ID,       PPU_PAT + T_LAVA * 256);     // made interactive in Ch8 (ore) and Ch9 (lava)
         sys_ppu_dma(ANIM_MINER_ID,      PPU_PAT + PAT_IDLE * 256);
         sys_ppu_dma(ANIM_MINER_WALK_ID, PPU_PAT + PAT_WALK * 256);
         sys_ppu_dma(ANIM_MINER_JUMP_ID, PPU_PAT + PAT_JUMP * 256);

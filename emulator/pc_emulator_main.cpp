@@ -289,9 +289,13 @@ static void pc_syscall_handler(uint16_t num)
     {
         uint32_t maxlen = std::min<uint32_t>(r2, 65536u - r1);
         std::ifstream f(pc_save_path(r3), std::ios::binary);
-        if (f)
+        bool opened = static_cast<bool>(f);
+        if (opened)
             f.read(reinterpret_cast<char *>(&cpu_instance.memory[r1]), maxlen);
-        cpu_instance.registers[0].word = f ? static_cast<uint16_t>(f.gcount()) : 0;
+        // read() trips failbit at EOF when the file is shorter than maxlen (the normal case: a small
+        // save into a big buffer). gcount() still holds the real byte count, so report that as long as
+        // the file opened -- gating on `f` here would wrongly return 0 for every short read.
+        cpu_instance.registers[0].word = opened ? static_cast<uint16_t>(f.gcount()) : 0;
         break;
     }
     case SYSCALL_SAVE_EXISTS: // 9: R1=slot -> R0 = 1/0

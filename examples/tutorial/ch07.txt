@@ -1,45 +1,41 @@
 // examples/tutorial/ch07.txt
 // Deeper -- Chapter 7: torchlight.
 //
-// The mine goes DARK. Instead of scene_stream (which pushes every visible tile), we write our own push
-// that, per cell, checks its distance from the miner: draw the real tile inside his torch radius, black
-// beyond. The surface stays in daylight (plain scene_stream). The PPU can't do soft per-pixel light --
-// this tile-granular bubble is the retro fit.
+// Underground it should be DARK -- just a pool of light around the miner. We write our own tile push,
+// light_stream, that draws a tile only if it's within the torch radius and black otherwise. The surface
+// stays in daylight.
 include "../../lib/io.lib";
 include "../../lib/ppu.lib";
-include "../../lib/scene.lib";       // scene_follow + scene_cam_x/y (we reuse the camera), scene_stream
+include "../../lib/scene.lib";
 include "../../lib/anim.lib";
 include "../../lib/platform.lib";
 include "deeper_assets.gen.txt";
-include "deeper_map.gen.txt";
+include "deeper_map.gen.txt";        // the mine: world[] / MAP_W / MAP_H / tile_flags[] (ore + lava baked in)
+include "deeper_surface.gen.txt";    // the surface: SURF_world[] / SURF_MAP_W / SURF_MAP_H
 {
     const T_AIR = 0;   const T_DIRT = 1;   const T_STONE = 2;   const T_DIRT_BG = 3;
-    const T_GRASS = 4; const T_BASE = 5;   const T_WARP = 6;
+    const T_GRASS = 4; const T_BASE = 5;   const T_LADDER = 6;  const T_ORE = 7;   const T_LAVA = 8;
 
-    const PAT_IDLE = 8;    const PAT_WALK = 10;   const PAT_JUMP = 13;   const PAT_MINE = 15;
+    const PAT_IDLE = 9;    const PAT_WALK = 11;   const PAT_JUMP = 14;   const PAT_MINE = 16;
 
     const F_DIG    = 4;
     const DIG_TIME = 30;
     const SURFACE_ROW = 5;
     const C_WHITE  = 21;
-    const LIT_R2   = 8;       // torch radius SQUARED (~2.8 tiles) -- tiles farther than this go black
-
-    const SURF_W = 30;   const SURF_H = 20;
-    var byte surf_world[600];
+    const LIT_R2   = 8;    // torch radius, squared (~2.8 tiles)
 
     var int cur_world = 0;   var int cur_w = 0;   var int cur_h = 0;   var int cur_map = 0;
-    var int on_warp = 0;
+    var int on_ladder = 0;
 
     var int digging = 0;   var int dig_tx = 0;   var int dig_ty = 0;   var int dig_timer = 0;
     var byte s_depth[7] = { 68, 69, 80, 84, 72, 58, 0 };   // "DEPTH:"
 
-    // A light-aware tile push: our own version of scene_stream. Same visible-window loop, but each cell
-    // draws the real tile only within the torch radius of (ptx,pty); beyond that it draws tile 0 (black).
+    // A light-aware tile push: scene_stream's visible-window loop, but each cell draws the real tile only
+    // if it's within LIT_R2 of the miner -- otherwise tile 0 (black).
     void light_stream(int wrld, int mw, int mh, int ptx, int pty) {
         var int tox; var int toy; var int r; var int c; var int tx; var int ty;
         var int dx; var int dy; var int tile;
-        tox = scene_cam_x >> 4;
-        toy = scene_cam_y >> 4;
+        tox = scene_cam_x >> 4;   toy = scene_cam_y >> 4;
         ppu_scroll(scene_cam_x & 511, scene_cam_y & 511);
         r = 0;
         while r < 9 {
@@ -51,10 +47,9 @@ include "deeper_map.gen.txt";
                     if tx < mw {
                         dx = tx - ptx;   if dx < 0 { dx = 0 - dx; }
                         dy = ty - pty;   if dy < 0 { dy = 0 - dy; }
-                        tile = 0;                                          // dark beyond the torch
+                        tile = 0;                                   // dark beyond the light
                         if dx * dx + dy * dy <= LIT_R2 { tile = ppu_rdbyte(wrld + ty * mw + tx); }
-                        cu8(3); cu8(tx & 31); cu8(ty & 31); cu8(1); cu8(1);
-                        cu8(tile);
+                        cu8(3); cu8(tx & 31); cu8(ty & 31); cu8(1); cu8(1);   cu8(tile);
                     }
                     c = c + 1;
                 }
@@ -63,44 +58,21 @@ include "deeper_map.gen.txt";
         }
     }
 
-    void build_surface() {
-        var int x; var int y; var int idx;
-        y = 0;
-        while y < SURF_H {
-            x = 0;
-            while x < SURF_W {
-                idx = y * SURF_W + x;
-                if x == 0              { surf_world[idx] = T_STONE; }
-                else if x == SURF_W - 1 { surf_world[idx] = T_STONE; }
-                else if y == SURF_H - 1 { surf_world[idx] = T_STONE; }
-                else if y < 14         { surf_world[idx] = T_AIR; }
-                else if y == 14        { surf_world[idx] = T_GRASS; }
-                else                   { surf_world[idx] = T_STONE; }
-                x = x + 1;
-            }
-            y = y + 1;
-        }
-        surf_world[13 * SURF_W + 4] = T_BASE;   surf_world[13 * SURF_W + 5] = T_BASE;
-        surf_world[13 * SURF_W + 6] = T_BASE;   surf_world[12 * SURF_W + 5] = T_BASE;
-        surf_world[14 * SURF_W + 18] = T_WARP;
-    }
-
     void go_to_surface() {
-        cur_world = &surf_world;   cur_w = SURF_W;   cur_h = SURF_H;   cur_map = 0;
+        cur_world = &SURF_world;   cur_w = SURF_MAP_W;   cur_h = SURF_MAP_H;   cur_map = 0;
         plat_bind(cur_world, cur_w, cur_h, &tile_flags);
-        plat_spawn(12 * 16, 12 * 16);   on_warp = 1;
+        plat_spawn(10 * 16, 14 * 16);   on_ladder = 1;
     }
     void go_to_mine() {
         cur_world = &world;   cur_w = MAP_W;   cur_h = MAP_H;   cur_map = 1;
-        world[SURFACE_ROW * MAP_W + 12] = T_WARP;
         plat_bind(cur_world, cur_w, cur_h, &tile_flags);
-        plat_spawn(12 * 16, 1 * 16);   on_warp = 1;
+        plat_spawn(29 * 16, 1 * 16);   on_ladder = 1;
     }
 
     int main() {
         var int ix; var int jmp; var int pattr;
         var int tx; var int ty; var int t; var int dig_now; var int depth;
-        var int gx; var int gy; var int gt;
+        var int gx; var int gy; var int gt; var int by; var int bt;
 
         sys_ppu_dma(PAL_MASTER, PPU_PAL);
         ppu_upload_font(&font8x8);
@@ -109,13 +81,14 @@ include "deeper_map.gen.txt";
         sys_ppu_dma(ANIM_DIRT_BG_ID,    PPU_PAT + T_DIRT_BG * 256);
         sys_ppu_dma(ANIM_GRASS_ID,      PPU_PAT + T_GRASS * 256);
         sys_ppu_dma(ANIM_BASE_ID,       PPU_PAT + T_BASE * 256);
-        sys_ppu_dma(ANIM_ENTRANCE_ID,   PPU_PAT + T_WARP * 256);
+        sys_ppu_dma(ANIM_LADDER_ID,     PPU_PAT + T_LADDER * 256);
+        sys_ppu_dma(ANIM_ORE_ID,        PPU_PAT + T_ORE * 256);
+        sys_ppu_dma(ANIM_LAVA_ID,       PPU_PAT + T_LAVA * 256);
         sys_ppu_dma(ANIM_MINER_ID,      PPU_PAT + PAT_IDLE * 256);
         sys_ppu_dma(ANIM_MINER_WALK_ID, PPU_PAT + PAT_WALK * 256);
         sys_ppu_dma(ANIM_MINER_JUMP_ID, PPU_PAT + PAT_JUMP * 256);
         sys_ppu_dma(ANIM_MINER_MINE_ID, PPU_PAT + PAT_MINE * 256);
 
-        build_surface();
         go_to_surface();
         anim_play(0, PAT_IDLE, 2, clip_period[ANIM_MINER_ID]);
         sys_set_fps(60);
@@ -128,16 +101,22 @@ include "deeper_map.gen.txt";
             if button_pressed(BTN_A) { jmp = 1; }
             plat_update(ix, jmp);
 
+            // --- ladder: drop into it on the surface to descend; press UP at it in the mine to climb out ---
             gx = (plat_x + 8) >> 4;   gy = (plat_y + 16) >> 4;
-            gt = 0;
-            if gx >= 0 { if gx < cur_w { if gy >= 0 { if gy < cur_h {
-                gt = ppu_rdbyte(cur_world + gy * cur_w + gx);
-            } } } }
-            if gt == T_WARP {
-                if on_warp == 0 { if cur_map == 0 { go_to_mine(); } else { go_to_surface(); } }
-                on_warp = 1;
-            } else { if plat_grounded == 1 { on_warp = 0; } }   // only re-arm once he's actually standing
+            by = (plat_y + 4) >> 4;
+            gt = 0;   bt = 0;
+            if gx >= 0 { if gx < cur_w {
+                if gy >= 0 { if gy < cur_h { gt = ppu_rdbyte(cur_world + gy * cur_w + gx); } }
+                if by >= 0 { if by < cur_h { bt = ppu_rdbyte(cur_world + by * cur_w + gx); } }
+            } }
+            if cur_map == 0 {
+                if gt == T_LADDER { if on_ladder == 0 { go_to_mine(); } on_ladder = 1; }
+                else { if plat_grounded == 1 { on_ladder = 0; } }
+            } else {
+                if bt == T_LADDER { if button(BTN_UP) { go_to_surface(); } }
+            }
 
+            // aim + dig
             if button(BTN_DOWN) { tx = (plat_x + 8) >> 4; ty = ((plat_y + 15) >> 4) + 1; }
             else { if button(BTN_UP) { tx = (plat_x + 8) >> 4; ty = ((plat_y + 1) >> 4) - 1; }
                    else { if plat_facing == 1 { tx = (plat_x + 12) >> 4; } else { tx = (plat_x + 3) >> 4; }

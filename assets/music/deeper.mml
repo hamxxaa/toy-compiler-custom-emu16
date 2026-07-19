@@ -1,0 +1,50 @@
+speed 8
+
+# --- INSTRUMENTS ---
+inst lead
+    vol 10 14 15 13 12 | 12
+    duty 2 2 1 | 1
+    vib 2 4 10
+
+inst bass
+    vol 14 11 8 5 2 | 0
+    duty 1
+
+inst arp_maj
+    vol 8 7 5 | 5
+    duty 0
+    arp 0 4 7 | 7
+
+inst arp_min
+    vol 8 7 5 | 5
+    duty 0
+    arp 0 3 7 | 7
+
+inst kick
+    vol 10 7 3 0 | 0
+    noise 0
+
+inst hat
+    vol 7 3 0 | 0
+    noise 1
+
+drum k kick 52
+drum h hat 50
+
+# --- Song ---
+
+# Channel 0: (Lead)
+ch0 lead o4 [ a4. e8 a4 c4  b4. a8 g4 e4  f4. e8 d4 c4  e2 r4 e4 ]2
+[ f4. e8 d4 f4  e4. d8 c4 e4  d4. c8 < b4 > d4  e2. r4 ]2
+
+# Channel 1: Bass
+ch1 bass o2 [ a4 a8 r8 e4 e4  g4 g8 r8 d4 d4  f4 f8 r8 c4 c4  e4 e8 r8 e4 e4 ]2
+[ d4 d8 r8 a4 a4  a4 a8 r8 e4 e4  f4 f8 r8 c4 c4  e4 e8 r8 e8 e8 r8 ]2
+
+# Channel 2: Arpeggio / Pad 
+ch2 arp_min o3 [ @arp_min a1  @arp_maj g1  @arp_maj f1  @arp_min e1 ]2
+[ @arp_min d1  @arp_min a1  @arp_maj f1  @arp_min e1 ]2
+
+# Channel 3: Drums 
+ch3 kick o3 [ k4 h8 h8 k4 h4  k4 h8 h8 k4 h8 h8 ]4
+[ k4 r8 h8 k4 h4  k8 k8 h8 h8 k4 h8 h8 ]3 [ k8 k8 k8 k8 k4 r4 ]1

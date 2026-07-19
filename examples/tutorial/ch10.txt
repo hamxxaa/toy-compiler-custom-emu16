@@ -1,14 +1,16 @@
-// examples/tutorial/ch09.txt
-// Deeper -- Chapter 9: hazards & health.
+// examples/tutorial/ch10.txt
+// Deeper -- Chapter 10: sound & music.
 //
-// The mine bites back. LAVA pools (painted into the map) burn you while you stand on them, and a long fall
-// hurts when you slam down. You get HP, a moment of invincibility after a hit, a white damage FLASH (a live
-// palette edit), and if HP runs out you black out and wake up back at the surface.
+// The mine gets a voice. A looping theme (authored in MML, compiled to a .song, packed alongside the art)
+// plays under everything, and three sound effects punctuate the action: a thunk when a tile breaks, a chime
+// when you pull ore, and a buzz when you're hurt.
 include "../../lib/io.lib";
 include "../../lib/ppu.lib";
 include "../../lib/scene.lib";
 include "../../lib/anim.lib";
 include "../../lib/platform.lib";
+include "../../lib/apu.lib";
+include "../../lib/music.lib";
 include "deeper_assets.gen.txt";
 include "deeper_map.gen.txt";
 include "deeper_surface.gen.txt";
@@ -18,21 +20,15 @@ include "deeper_surface.gen.txt";
 
     const PAT_IDLE = 9;    const PAT_WALK = 11;   const PAT_JUMP = 14;   const PAT_MINE = 16;
 
-    const F_DIG    = 4;      // tile_flags bit 2 = diggable
-    const F_ORE    = 16;     // tile_flags bit 4 = gives ore
-    const F_HAZARD = 8;      // tile_flags bit 3 = hurts on contact
-    const DIG_TIME = 30;
-    const SURFACE_ROW = 5;
-    const C_WHITE  = 21;
+    const F_DIG    = 4;      const F_ORE    = 16;     const F_HAZARD = 8;
+    const DIG_TIME = 30;     const SURFACE_ROW = 5;   const C_WHITE  = 21;
 
-    const ORE_PRICE  = 5;
-    const TORCH_COST = 15;
-    const TORCH_STEP = 6;
+    const ORE_PRICE  = 5;    const TORCH_COST = 15;   const TORCH_STEP = 6;
 
     const MAX_HP    = 3;
-    const INV_TIME  = 60;    // invincibility frames after a hit
-    const FLASH_T   = 4;     // frames the miner flashes white on a hit
-    const FALL_MIN  = 96;    // land MORE than 6 tiles below where you last stood -> hurt (a jump lands even)
+    const INV_TIME  = 60;
+    const FLASH_T   = 4;
+    const FALL_MIN  = 96;
 
     var int cur_world = 0;   var int cur_w = 0;   var int cur_h = 0;   var int cur_map = 0;
     var int on_ladder = 0;
@@ -40,14 +36,28 @@ include "deeper_surface.gen.txt";
     var int digging = 0;   var int dig_tx = 0;   var int dig_ty = 0;   var int dig_timer = 0;   var int dig_tile = 0;
     var int ore_count = 0; var int money = 0;    var int torch_r2 = 8;
     var int hp = 3;        var int inv = 0;
-    var int flash_timer = 0;  var int flash_restore = 0;                // damage flash (ppu_pal1 -> restore)
-    var int ground_y = 0;  var int was_air = 0;                         // last standing height + airborne flag
+    var int flash_timer = 0;  var int flash_restore = 0;
+    var int ground_y = 0;  var int was_air = 0;
 
     var byte s_depth[7] = { 68, 69, 80, 84, 72, 58, 0 };                              // "DEPTH:"
     var byte s_ore[5]   = { 79, 82, 69, 58, 0 };                                      // "ORE:"
     var byte s_cash[3]  = { 36, 58, 0 };                                              // "$:"
     var byte s_hp[4]    = { 72, 80, 58, 0 };                                          // "HP:"
     var byte s_shop[13] = { 88, 61, 83, 69, 76, 76, 32, 89, 61, 66, 85, 89, 0 };      // "X=SELL Y=BUY"
+
+    // --- audio: the song is pak asset NUM_CLIPS (appended right after the sprite/palette assets) ---
+    const SONG_ID = NUM_CLIPS;
+    var byte song_buf[2048];
+
+    const INST_SFX_DIG  = 8;    // a short noise thunk when a tile breaks
+    const INST_SFX_ORE  = 9;    // a bright chime when ore drops
+    const INST_SFX_HURT = 10;   // a harsh descending buzz on damage
+    var byte sfx_dig_vol[3]   = { 12, 6, 0 };
+    var byte sfx_ore_vol[5]   = { 13, 10, 6, 3, 0 };
+    var byte sfx_ore_duty[1]  = { 2 };
+    var byte sfx_hurt_vol[5]  = { 14, 10, 6, 3, 0 };
+    var byte sfx_hurt_duty[1] = { 1 };
+    var byte sfx_hurt_arp[4]  = { 0, 253, 249, 244 };   // 0, -3, -7, -12 (signed: 256 - n) -> a downward slide
 
     void light_stream(int wrld, int mw, int mh, int ptx, int pty) {
         var int tox; var int toy; var int r; var int c; var int tx; var int ty;
@@ -78,12 +88,12 @@ include "deeper_surface.gen.txt";
     void go_to_surface() {
         cur_world = &SURF_world;   cur_w = SURF_MAP_W;   cur_h = SURF_MAP_H;   cur_map = 0;
         plat_bind(cur_world, cur_w, cur_h, &tile_flags);
-        plat_spawn(10 * 16, 14 * 16);   on_ladder = 1;   inv = INV_TIME;   ground_y = plat_y;   // grace + fall baseline
+        plat_spawn(10 * 16, 14 * 16);   on_ladder = 1;   inv = INV_TIME;   ground_y = plat_y;
     }
     void go_to_mine() {
         cur_world = &world;   cur_w = MAP_W;   cur_h = MAP_H;   cur_map = 1;
         plat_bind(cur_world, cur_w, cur_h, &tile_flags);
-        plat_spawn(29 * 16, 1 * 16);   on_ladder = 1;   inv = INV_TIME;   ground_y = plat_y;    // arrive at the mine ladder
+        plat_spawn(29 * 16, 1 * 16);   on_ladder = 1;   inv = INV_TIME;   ground_y = plat_y;
     }
 
     int main() {
@@ -106,6 +116,18 @@ include "deeper_surface.gen.txt";
         sys_ppu_dma(ANIM_MINER_WALK_ID, PPU_PAT + PAT_WALK * 256);
         sys_ppu_dma(ANIM_MINER_JUMP_ID, PPU_PAT + PAT_JUMP * 256);
         sys_ppu_dma(ANIM_MINER_MINE_ID, PPU_PAT + PAT_MINE * 256);
+
+        // --- audio: register the three SFX instruments, then load + start the song ---
+        apu_inst_vol(INST_SFX_DIG,  255, &sfx_dig_vol,   3);
+        apu_inst_noise(INST_SFX_DIG, 0);
+        apu_inst_vol(INST_SFX_ORE,  255, &sfx_ore_vol,   5);
+        apu_inst_duty(INST_SFX_ORE, 255, &sfx_ore_duty,  1);
+        apu_inst_vol(INST_SFX_HURT, 255, &sfx_hurt_vol,  5);
+        apu_inst_duty(INST_SFX_HURT,255, &sfx_hurt_duty, 1);
+        apu_inst_arp(INST_SFX_HURT, 255, &sfx_hurt_arp,  4);
+        apu_master_vol(60);
+        apu_submit();
+        music_load_song(SONG_ID, &song_buf, 2048);   // loads the song, uploads its instruments, starts it
 
         go_to_surface();
         hp = MAX_HP;
@@ -135,29 +157,29 @@ include "deeper_surface.gen.txt";
                 if bt == T_LADDER { if button(BTN_UP) { go_to_surface(); } }
             }
 
-            // --- fall distance: how far below the last spot he stood did he land this frame? ---
+            // --- fall distance ---
             if plat_grounded == 1 {
                 if was_air == 1 { fall_depth = plat_y - ground_y; } else { fall_depth = 0; }
                 ground_y = plat_y;   was_air = 0;
             } else { fall_depth = 0;   was_air = 1; }
 
-            // --- damage: lava underfoot + a long drop, gated by i-frames; 0 HP -> wake at the surface ---
+            // --- damage: lava underfoot + a long drop, gated by i-frames ---
             if inv > 0 { inv = inv - 1; }
             else {
                 hurt = 0;
-                if plat_flag_at(plat_x + 8, plat_y + 16, F_HAZARD) != 0 { hurt = 1; }   // standing on lava
-                if fall_depth > FALL_MIN { hurt = 1; }                                  // dropped a long way
-                if hurt == 1 { hp = hp - 1; inv = INV_TIME; flash_timer = FLASH_T; }
+                if plat_flag_at(plat_x + 8, plat_y + 16, F_HAZARD) != 0 { hurt = 1; }
+                if fall_depth > FALL_MIN { hurt = 1; }
+                if hurt == 1 { hp = hp - 1; inv = INV_TIME; flash_timer = FLASH_T; sfx_play(1, N_A4, INST_SFX_HURT, 12, 3); }
             }
-            if hp <= 0 { go_to_surface(); hp = MAX_HP; }   // black out -> wake up at the base
+            if hp <= 0 { go_to_surface(); hp = MAX_HP; }
 
-            // --- shop: on the surface, by the base (cols 3..7) -- sell ore / buy torch ---
+            // --- shop ---
             if cur_map == 0 { if plat_x >= 3 * 16 { if plat_x <= 7 * 16 {
                 if button_pressed(BTN_X) { money = money + ore_count * ORE_PRICE; ore_count = 0; }
                 if button_pressed(BTN_Y) { if money >= TORCH_COST { money = money - TORCH_COST; torch_r2 = torch_r2 + TORCH_STEP; } }
             } } }
 
-            // aim + dig (lava has no F_DIG, so it can't be dug -- you route around it)
+            // aim + dig
             if button(BTN_DOWN) { tx = (plat_x + 8) >> 4; ty = ((plat_y + 15) >> 4) + 1; }
             else { if button(BTN_UP) { tx = (plat_x + 8) >> 4; ty = ((plat_y + 1) >> 4) - 1; }
                    else { if plat_facing == 1 { tx = (plat_x + 12) >> 4; } else { tx = (plat_x + 3) >> 4; }
@@ -173,8 +195,12 @@ include "deeper_surface.gen.txt";
                 if digging == 0 { digging = 1; dig_tx = tx; dig_ty = ty; dig_timer = DIG_TIME; dig_tile = t; }
                 dig_timer = dig_timer - 1;
                 if dig_timer <= 0 {
-                    if (tile_flags[dig_tile] & F_ORE) != 0 { ore_count = ore_count + 1; }
+                    if (tile_flags[dig_tile] & F_ORE) != 0 {
+                        ore_count = ore_count + 1;
+                        sfx_play(1, N_C6, INST_SFX_ORE, 10, 2);   // ore chime on a pulse channel
+                    }
                     poke_byte(cur_world + dig_ty * cur_w + dig_tx, T_DIRT_BG);
+                    sfx_play(3, N_C3, INST_SFX_DIG, 5, 1);         // dig thunk on the noise channel
                     digging = 0;
                 }
             } else { digging = 0; }
@@ -204,7 +230,7 @@ include "deeper_surface.gen.txt";
                 if flash_timer == 0 { flash_restore = 1; }
             } else { if flash_restore == 1 { sys_ppu_dma(PAL_MASTER, PPU_PAL); flash_restore = 0; } }
 
-            // --- HUD: ore + money + HP always; DEPTH underground; shop hint at the base ---
+            // --- HUD ---
             tile_clear(0, 0, 20, 2);
             tile_text(0, 1, &s_ore, C_WHITE);    tile_number(4, 1, ore_count, C_WHITE);
             tile_text(9, 1, &s_cash, C_WHITE);   tile_number(11, 1, money, C_WHITE);
@@ -215,6 +241,7 @@ include "deeper_surface.gen.txt";
                 tile_text(0, 0, &s_depth, C_WHITE);   tile_number(7, 0, depth, C_WHITE);
             } else { if plat_x >= 3 * 16 { if plat_x <= 7 * 16 { tile_text(0, 0, &s_shop, C_WHITE); } } }
 
+            music_frame();      // advance the sequencer + service any live SFX (after all sfx_play calls)
             buttons_update();
             ppu_present();
         }

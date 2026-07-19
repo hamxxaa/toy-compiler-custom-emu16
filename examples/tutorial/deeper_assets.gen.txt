@@ -7,7 +7,7 @@
     const ANIM_DIRT_BG_ID = 3;
     const ANIM_GRASS_ID = 4;
     const ANIM_BASE_ID = 5;
-    const ANIM_ENTRANCE_ID = 6;
+    const ANIM_LADDER_ID = 6;
     const ANIM_ORE_ID = 7;
     const ANIM_LAVA_ID = 8;
     const ANIM_MINER_ID = 9;
