@@ -11,10 +11,11 @@ handheld, and a browser simulator all in one repo, all running the same core. Wr
 run it on real hardware, in a terminal, or in a browser tab.
 
 <p align="center">
-  <img src="docs/media/arena_gameplay.gif" alt="EMU16 arena demo PPU-rendered combat, multi-map warps, and a talking NPC" width="380">
-  <img src="docs/media/arena-on-esp.jpeg" alt="The same arena ROM running on the real ESP32-S3 handheld" width="380">
+  <img src="docs/media/arena_gameplay.gif" alt="EMU16 arena demo PPU-rendered combat, multi-map warps, and a talking NPC" width="300">
+  <img src="docs/media/arena-on-esp.jpeg" alt="arena.rom on the original single-chip ESP32-S3 handheld" width="230">
+  <img src="docs/media/arena_two_chip.jpeg" alt="arena.rom on the new two-chip build with audio wired up" width="230">
 </p>
-<p align="center"><sub>Same <code>arena.rom</code>, unmodified the simulator (left) and the real ESP32-S3 handheld (right).</sub></p>
+<p align="center"><sub>Same <code>arena.rom</code>, unmodified in the browser simulator (left), on the original single-chip handheld (middle), and on the new two-chip build with audio wired up (right).</sub></p>
 
 | | |
 |---|---|

@@ -103,7 +103,7 @@ static int write_guest_str(uint16_t dest, const String &s)
 static char g_current_rom[40] = {0};   // basename of the loaded ROM, no dir / no ".rom"
 
 struct TocEntry { uint8_t type, w, h; uint32_t offset, length; };
-static TocEntry g_toc[64];
+static TocEntry g_toc[64];<
 static int  g_asset_count = 0;
 static char g_pak_path[48] = {0};
 
